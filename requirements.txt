@@ -3,3 +3,4 @@ ta
 schedule
 pandas
 python-telegram-bot
+flask

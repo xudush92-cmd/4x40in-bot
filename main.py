@@ -5,6 +5,7 @@ from telegram.error import TelegramError
 
 from brain import TradingBrain
 from auditor import Auditor
+from keep_alive import keep_alive
 from config import REPORT_DAY, REPORT_TIME, TELEGRAM_TOKEN, CHAT_ID
 
 
@@ -41,6 +42,9 @@ async def send_telegram(bot: Bot, text: str):
 
 
 async def start_system():
+    keep_alive()
+    print("🌐 Keep-alive web server yoqildi (port 5000).")
+
     brain = TradingBrain()
     auditor = Auditor()
 
