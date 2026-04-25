@@ -13,7 +13,9 @@ SL_OFFSET_POINTS = 10       # SL oxirgi 3 shamning Low/High'idan masofada
 SL_LOOKBACK = 3             # nechta sham orqaga qarash
 RISK_REWARD = 2.0           # TP = 2 * Risk
 
-# Telegram sozlamalari
-# Joy (placeholder) — haqiqiy qiymatlarni shu yerga yoki environment'ga qo'ying
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "PUT_YOUR_CHAT_ID_HERE")
+# Telegram sozlamalari (environment'dan ham o'qiladi — xavfsizroq)
+TELEGRAM_TOKEN = os.environ.get(
+    "TELEGRAM_TOKEN",
+    "7886445946:AAHgY-9_5T_mXv7Y_q36j_zV8n-H6K8K-6o",
+)
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1938531109")

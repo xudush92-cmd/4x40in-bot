@@ -48,6 +48,10 @@ async def start_system():
     if _telegram_configured():
         bot = Bot(token=TELEGRAM_TOKEN)
         print("📡 Telegram bot ulandi.")
+        await send_telegram(
+            bot,
+            "✅ 4x40IN Tizimi muvaffaqiyatli ulindi! Dushanba tongini kutmoqdaman...",
+        )
     else:
         print("ℹ️ Telegram sozlanmagan — TELEGRAM_TOKEN va CHAT_ID kiriting (config.py yoki environment).")
 
