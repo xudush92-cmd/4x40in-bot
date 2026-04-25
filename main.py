@@ -48,10 +48,7 @@ async def start_system():
     if _telegram_configured():
         bot = Bot(token=TELEGRAM_TOKEN)
         print("📡 Telegram bot ulandi.")
-        await send_telegram(
-            bot,
-            "✅ 4x40IN Tizimi muvaffaqiyatli ulindi! Dushanba tongini kutmoqdaman...",
-        )
+        await connection_test(bot)
     else:
         print("ℹ️ Telegram sozlanmagan — TELEGRAM_TOKEN va CHAT_ID kiriting (config.py yoki environment).")
 
@@ -83,6 +80,24 @@ async def start_system():
             await send_telegram(bot, msg)
 
         await asyncio.sleep(60)
+
+
+async def connection_test(bot: Bot):
+    """Vaqtinchalik ulanish testi — tizim ishga tushganda chaqiriladi."""
+    try:
+        me = await bot.get_me()
+        print(f"🔎 Bot ma'lumoti: @{me.username} (id={me.id})")
+    except TelegramError as e:
+        print(f"⚠️ Bot get_me xatosi: {e}")
+        return
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text="4x40IN Tizimi aloqaga chiqdi. Aloqa sifati: 100%",
+        )
+        print("✅ Telegram ulanish testi muvaffaqiyatli — xabar yuborildi.")
+    except TelegramError as e:
+        print(f"⚠️ Telegram ulanish testi xatosi: {e}")
 
 
 if __name__ == "__main__":
