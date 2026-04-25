@@ -1,3 +1,5 @@
 yfinance
-pandas_ta
+ta
 schedule
+pandas
+python-telegram-bot
