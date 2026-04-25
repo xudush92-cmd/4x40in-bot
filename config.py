@@ -16,6 +16,6 @@ RISK_REWARD = 2.0           # TP = 2 * Risk
 # Telegram sozlamalari (environment'dan ham o'qiladi — xavfsizroq)
 TELEGRAM_TOKEN = os.environ.get(
     "TELEGRAM_TOKEN",
-    "7886445946:AAHgY-9_5T_mXv7Y_q36j_zV8n-H6K8K-6o",
+    "8660573802:AAH5cDX3uvFZVmr-b9WNQBX3FXCOMUNBO6k",
 )
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1938531109")
