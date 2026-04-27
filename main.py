@@ -4,9 +4,8 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from brain import TradingBrain
-from auditor import Auditor
 from keep_alive import keep_alive
-from config import REPORT_DAY, REPORT_TIME, TELEGRAM_TOKEN, CHAT_ID
+from config import TELEGRAM_TOKEN, CHAT_ID
 from sessions import (
     now_tashkent,
     ny_session_window,
@@ -139,10 +138,7 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def trading_loop(bot: Bot, brain: TradingBrain):
-    auditor = Auditor()
-
     print("✅ 4x40IN Tizimi o't oldi. Bozor kuzatilmoqda...")
-    last_report_date = None
     last_session_notify_date = None
     was_session_active = is_ny_session_active(now_tashkent())
 
@@ -169,27 +165,10 @@ async def trading_loop(bot: Bot, brain: TradingBrain):
                 for tf, data in results.items():
                     print(f"{tf}: {data['dir']} ({data['conf']}%) "
                           f"entry={data['entry']} tp={data['tp']} sl={data['sl']}")
-                    auditor.log_result(tf, data['dir'])
                     if "BUY" in data['dir'] or "SELL" in data['dir']:
                         await send_telegram(bot, _format_signal(tf, data, now))
             except Exception as e:
                 print(f"⚠️ Skanerlash xatosi: {e}")
-
-        if (now.weekday() == REPORT_DAY
-                and now.strftime("%H:%M") == REPORT_TIME
-                and last_report_date != now.date()):
-            try:
-                path = auditor.export_weekly_report()
-                last_report_date = now.date()
-                msg = (
-                    "📊 HAFTALIK HISOBOT TAYYOR\n"
-                    f"💾 Saqlandi: {path}\n"
-                    f"🕒 {now.strftime('%Y-%m-%d %H:%M')} (Toshkent)"
-                )
-                print("\n" + msg)
-                await send_telegram(bot, msg)
-            except Exception as e:
-                print(f"⚠️ Hisobot xatosi: {e}")
 
         await asyncio.sleep(60)
 
