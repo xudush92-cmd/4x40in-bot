@@ -13,6 +13,10 @@ SL_OFFSET_POINTS = 10       # SL oxirgi 3 shamning Low/High'idan masofada
 SL_LOOKBACK = 3             # nechta sham orqaga qarash
 RISK_REWARD = 2.0           # TP = 2 * Risk
 
+# Signal yuborish nazorati (spam'ning oldini olish)
+SIGNAL_COOLDOWN_MIN = 15    # bir TF uchun signal oralig'i (daqiqa)
+PRICE_CHANGE_PCT = 0.002    # cooldown'dan keyin qayta yuborish uchun min narx o'zgarishi (0.2%)
+
 # Telegram sozlamalari (environment'dan ham o'qiladi — xavfsizroq)
 TELEGRAM_TOKEN = os.environ.get(
     "TELEGRAM_TOKEN",
