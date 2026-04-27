@@ -1,11 +1,12 @@
 import asyncio
+from datetime import timedelta
 from telegram import Bot, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from brain import TradingBrain
 from keep_alive import keep_alive
-from config import TELEGRAM_TOKEN, CHAT_ID
+from config import TELEGRAM_TOKEN, CHAT_ID, SIGNAL_COOLDOWN_MIN, PRICE_CHANGE_PCT
 from sessions import (
     now_tashkent,
     ny_session_window,
@@ -137,10 +138,29 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+def _should_send(prev: dict | None, direction: str, entry: float, now) -> tuple[bool, str]:
+    """Cooldown va dublikat tekshiruvi.
+    Qaytaradi: (yuborilsinmi, sabab matni)."""
+    if prev is None:
+        return True, "birinchi signal"
+    if prev["dir"] != direction:
+        return True, f"yo'nalish o'zgardi ({prev['dir']} → {direction})"
+    cooldown = timedelta(minutes=SIGNAL_COOLDOWN_MIN)
+    elapsed = now - prev["at"]
+    if elapsed < cooldown:
+        return False, f"cooldown ({int((cooldown - elapsed).total_seconds() / 60) + 1} daq qoldi)"
+    if prev["entry"] and abs(entry - prev["entry"]) / prev["entry"] < PRICE_CHANGE_PCT:
+        return False, f"narx deyarli o'zgarmagan ({prev['entry']} → {entry})"
+    return True, "cooldown tugadi va narx o'zgardi"
+
+
 async def trading_loop(bot: Bot, brain: TradingBrain):
     print("✅ 4x40IN Tizimi o't oldi. Bozor kuzatilmoqda...")
+    print(f"   Signal cooldown: {SIGNAL_COOLDOWN_MIN} daq | "
+          f"min narx o'zgarishi: {PRICE_CHANGE_PCT*100:.2f}%")
     last_session_notify_date = None
     was_session_active = is_ny_session_active(now_tashkent())
+    last_signals: dict[str, dict] = {}  # {tf: {"dir": str, "entry": float, "at": datetime}}
 
     while True:
         now = now_tashkent()
@@ -163,10 +183,19 @@ async def trading_loop(bot: Bot, brain: TradingBrain):
                 results = await brain.full_scan()
                 print(f"\n--- TAHLIL: {now.strftime('%H:%M')} (Toshkent) ---")
                 for tf, data in results.items():
+                    direction = "BUY" if "BUY" in data['dir'] else ("SELL" if "SELL" in data['dir'] else "WAIT")
                     print(f"{tf}: {data['dir']} ({data['conf']}%) "
                           f"entry={data['entry']} tp={data['tp']} sl={data['sl']}")
-                    if "BUY" in data['dir'] or "SELL" in data['dir']:
+                    if direction == "WAIT" or data['entry'] is None:
+                        continue
+                    prev = last_signals.get(tf)
+                    send_it, reason = _should_send(prev, direction, data['entry'], now)
+                    if send_it:
                         await send_telegram(bot, _format_signal(tf, data, now))
+                        last_signals[tf] = {"dir": direction, "entry": data['entry'], "at": now}
+                        print(f"   📤 {tf} signal yuborildi — {reason}")
+                    else:
+                        print(f"   ⏸️ {tf} signal o'tkazildi — {reason}")
             except Exception as e:
                 print(f"⚠️ Skanerlash xatosi: {e}")
 
