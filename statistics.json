@@ -1,0 +1,51 @@
+{
+  "signals": [
+    {
+      "id": 1,
+      "sent_at": "2026-04-27 11:27",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4727.0,
+      "tp": 4735.0,
+      "sl": 4723.0,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bull",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    }
+  ],
+  "last_daily_report": "2026-04-26",
+  "last_weekly_report": "2026-W17",
+  "last_monthly_report": null,
+  "next_id": 2
+}
