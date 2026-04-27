@@ -64,9 +64,9 @@ async def send_telegram(bot: Bot, text: str):
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = (update.effective_user.first_name or "Xudaynazar") if update.effective_user else "Xudaynazar"
     await update.message.reply_text(
-        "🤖 Salom! Men 4x40IN savdo botiman.\n"
-        "Tizim tirik va bozorni kuzatmoqda.\n\n"
+        f"Salom {name}! Tizim aloqada, bozorni tahlil qilyapman...\n\n"
         "Buyruqlar:\n"
         "/signal — joriy bozor tahlilini darhol olish\n"
         "/status — tizim holati"
