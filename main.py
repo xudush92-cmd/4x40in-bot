@@ -5,6 +5,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from brain import TradingBrain
+from auditor import Auditor
 from keep_alive import keep_alive
 from config import TELEGRAM_TOKEN, CHAT_ID, SIGNAL_COOLDOWN_MIN, PRICE_CHANGE_PCT
 from sessions import (
@@ -154,13 +155,17 @@ def _should_send(prev: dict | None, direction: str, entry: float, now) -> tuple[
     return True, "cooldown tugadi va narx o'zgardi"
 
 
-async def trading_loop(bot: Bot, brain: TradingBrain):
+async def trading_loop(bot: Bot, brain: TradingBrain, auditor: Auditor):
     print("✅ 4x40IN Tizimi o't oldi. Bozor kuzatilmoqda...")
     print(f"   Signal cooldown: {SIGNAL_COOLDOWN_MIN} daq | "
           f"min narx o'zgarishi: {PRICE_CHANGE_PCT*100:.2f}%")
+    print(f"   📒 Auditor faol — statistics.json ga yozilmoqda")
     last_session_notify_date = None
     was_session_active = is_ny_session_active(now_tashkent())
     last_signals: dict[str, dict] = {}  # {tf: {"dir": str, "entry": float, "at": datetime}}
+
+    async def _audit_send(text: str):
+        await send_telegram(bot, text)
 
     while True:
         now = now_tashkent()
@@ -182,6 +187,13 @@ async def trading_loop(bot: Bot, brain: TradingBrain):
             try:
                 results = await brain.full_scan()
                 print(f"\n--- TAHLIL: {now.strftime('%H:%M')} (Toshkent) ---")
+
+                # Auditor: ochiq signallarni TP/SL ga qarab yangilash
+                closed = auditor.update_open_signals(results, now)
+                for c in closed:
+                    print(f"   📒 #{c['id']} {c['tf']} {c['direction']} → {c['outcome'].upper()} "
+                          f"@ {c['exit_price']}")
+
                 for tf, data in results.items():
                     direction = "BUY" if "BUY" in data['dir'] else ("SELL" if "SELL" in data['dir'] else "WAIT")
                     print(f"{tf}: {data['dir']} ({data['conf']}%) "
@@ -193,11 +205,19 @@ async def trading_loop(bot: Bot, brain: TradingBrain):
                     if send_it:
                         await send_telegram(bot, _format_signal(tf, data, now))
                         last_signals[tf] = {"dir": direction, "entry": data['entry'], "at": now}
-                        print(f"   📤 {tf} signal yuborildi — {reason}")
+                        # Auditor: signalni saqlash (4 TF × 5 indikator snapshot)
+                        sid = auditor.record_signal(tf, data, results, now)
+                        print(f"   📤 {tf} signal #{sid} yuborildi va auditorga yozildi — {reason}")
                     else:
                         print(f"   ⏸️ {tf} signal o'tkazildi — {reason}")
             except Exception as e:
                 print(f"⚠️ Skanerlash xatosi: {e}")
+
+        # Auditor: kunlik / haftalik / oylik hisobotlar
+        try:
+            await auditor.maybe_send_reports(_audit_send, now)
+        except Exception as e:
+            print(f"⚠️ Auditor hisobot xatosi: {e}")
 
         await asyncio.sleep(60)
 
@@ -211,6 +231,7 @@ async def start_system():
         return
 
     brain = TradingBrain()
+    auditor = Auditor()
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.bot_data["brain"] = brain
@@ -241,7 +262,7 @@ async def start_system():
     )
 
     try:
-        await trading_loop(bot, brain)
+        await trading_loop(bot, brain, auditor)
     finally:
         await application.updater.stop()
         await application.stop()
