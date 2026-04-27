@@ -6,10 +6,22 @@ shu URL'ni har 5 daqiqada chaqirib, loyihani uxlashga qo'ymaydi.
 
 from threading import Thread
 from datetime import datetime
-from flask import Flask, jsonify
+from zoneinfo import ZoneInfo
+from flask import Flask
 
 app = Flask(__name__)
-_started_at = datetime.now()
+TASHKENT = ZoneInfo("Asia/Tashkent")
+_started_at = datetime.now(TASHKENT)
+
+
+def _format_uptime(seconds: int) -> str:
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h} soat {m} daqiqa"
+    if m:
+        return f"{m} daqiqa {s} soniya"
+    return f"{s} soniya"
 
 
 @app.route("/")
@@ -19,11 +31,16 @@ def home():
 
 @app.route("/status")
 def status():
-    return jsonify({
-        "status": "alive",
-        "started_at": _started_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "uptime_seconds": int((datetime.now() - _started_at).total_seconds()),
-    })
+    now = datetime.now(TASHKENT)
+    uptime = int((now - _started_at).total_seconds())
+    return (
+        "✅ 4x40IN bot HOLATI: TIRIK\n"
+        f"🕒 Hozir (Toshkent): {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"🚀 Ishga tushgan: {_started_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"⏳ Ish vaqti: {_format_uptime(uptime)}\n",
+        200,
+        {"Content-Type": "text/plain; charset=utf-8"},
+    )
 
 
 def _run():
