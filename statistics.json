@@ -39,13 +39,2163 @@
           "stoch_zone": "neutral"
         }
       },
+      "outcome": "loss",
+      "closed_at": "2026-04-27 14:59",
+      "exit_price": 4716.0
+    },
+    {
+      "id": 2,
+      "sent_at": "2026-04-27 12:31",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4729.7,
+      "tp": 4742.5,
+      "sl": 4723.3,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bull",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-04-27 14:59",
+      "exit_price": 4716.0
+    },
+    {
+      "id": 3,
+      "sent_at": "2026-04-27 12:47",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4728.9,
+      "tp": 4740.1,
+      "sl": 4723.3,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bull",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-04-27 14:59",
+      "exit_price": 4716.0
+    },
+    {
+      "id": 4,
+      "sent_at": "2026-04-27 13:11",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4728.0,
+      "tp": 4736.0,
+      "sl": 4724.0,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bull",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-04-27 14:59",
+      "exit_price": 4716.0
+    },
+    {
+      "id": 5,
+      "sent_at": "2026-04-27 14:59",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4716.0,
+      "tp": 4679.0,
+      "sl": 4734.5,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 10:55",
+      "exit_price": 4638.8
+    },
+    {
+      "id": 6,
+      "sent_at": "2026-04-27 18:25",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4713.6,
+      "tp": 4682.8,
+      "sl": 4729.0,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 09:11",
+      "exit_price": 4681.8
+    },
+    {
+      "id": 7,
+      "sent_at": "2026-04-27 18:25",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4713.6,
+      "tp": 4682.8,
+      "sl": 4729.0,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 09:11",
+      "exit_price": 4681.8
+    },
+    {
+      "id": 8,
+      "sent_at": "2026-04-27 19:46",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4711.0,
+      "tp": 4675.0,
+      "sl": 4729.0,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 10:55",
+      "exit_price": 4638.8
+    },
+    {
+      "id": 9,
+      "sent_at": "2026-04-27 19:46",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4711.0,
+      "tp": 4695.0,
+      "sl": 4719.0,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 08:56",
+      "exit_price": 4686.3
+    },
+    {
+      "id": 10,
+      "sent_at": "2026-04-27 23:21",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4696.7,
+      "tp": 4686.3,
+      "sl": 4701.9,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 08:56",
+      "exit_price": 4686.3
+    },
+    {
+      "id": 11,
+      "sent_at": "2026-04-27 23:31",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4697.3,
+      "tp": 4688.1,
+      "sl": 4701.9,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 08:56",
+      "exit_price": 4686.3
+    },
+    {
+      "id": 12,
+      "sent_at": "2026-04-27 23:45",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4697.9,
+      "tp": 4689.9,
+      "sl": 4701.9,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 08:56",
+      "exit_price": 4686.3
+    },
+    {
+      "id": 13,
+      "sent_at": "2026-04-27 23:45",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4697.9,
+      "tp": 4689.9,
+      "sl": 4701.9,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-04-28 08:56",
+      "exit_price": 4686.3
+    },
+    {
+      "id": 14,
+      "sent_at": "2026-04-29 22:18",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4564.1,
+      "tp": 4533.7,
+      "sl": 4579.3,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "H4": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-11 11:05",
+      "exit_price": 4659.4
+    },
+    {
+      "id": 15,
+      "sent_at": "2026-05-11 11:40",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4677.4,
+      "tp": 4652.6,
+      "sl": 4689.8,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 16,
+      "sent_at": "2026-05-11 12:11",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4687.0,
+      "tp": 4681.4,
+      "sl": 4689.8,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 12:27",
+      "exit_price": 4681.2
+    },
+    {
+      "id": 17,
+      "sent_at": "2026-05-11 12:11",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4687.0,
+      "tp": 4681.6,
+      "sl": 4689.7,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 12:26",
+      "exit_price": 4681.5
+    },
+    {
+      "id": 18,
+      "sent_at": "2026-05-11 12:57",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4676.1,
+      "tp": 4648.9,
+      "sl": 4689.7,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 19,
+      "sent_at": "2026-05-11 13:14",
+      "tf": "H1",
+      "direction": "SELL",
+      "entry": 4677.4,
+      "tp": 4652.8,
+      "sl": 4689.7,
+      "confidence": 50,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 20,
+      "sent_at": "2026-05-11 13:15",
+      "tf": "H4",
+      "direction": "SELL",
+      "entry": 4678.6,
+      "tp": 4513.0,
+      "sl": 4761.4,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "expired",
+      "closed_at": "2026-05-12 13:15",
+      "exit_price": 4713.6
+    },
+    {
+      "id": 21,
+      "sent_at": "2026-05-11 13:18",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4676.3,
+      "tp": 4720.7,
+      "sl": 4654.1,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 22,
+      "sent_at": "2026-05-11 13:23",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4681.3,
+      "tp": 4700.3,
+      "sl": 4671.8,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 23,
+      "sent_at": "2026-05-11 13:27",
+      "tf": "H4",
+      "direction": "SELL",
+      "entry": 4683.0,
+      "tp": 4526.2,
+      "sl": 4761.4,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "overbought"
+        }
+      },
+      "outcome": "expired",
+      "closed_at": "2026-05-12 13:27",
+      "exit_price": 4706.0
+    },
+    {
+      "id": 24,
+      "sent_at": "2026-05-11 13:27",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4682.6,
+      "tp": 4704.2,
+      "sl": 4671.8,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "overbought"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 25,
+      "sent_at": "2026-05-11 13:27",
+      "tf": "H4",
+      "direction": "SELL",
+      "entry": 4682.5,
+      "tp": 4524.7,
+      "sl": 4761.4,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "overbought"
+        }
+      },
+      "outcome": "expired",
+      "closed_at": "2026-05-12 13:27",
+      "exit_price": 4706.0
+    },
+    {
+      "id": 26,
+      "sent_at": "2026-05-11 13:27",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4682.5,
+      "tp": 4703.9,
+      "sl": 4671.8,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "overbought"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 27,
+      "sent_at": "2026-05-11 13:46",
+      "tf": "H4",
+      "direction": "SELL",
+      "entry": 4679.0,
+      "tp": 4514.2,
+      "sl": 4761.4,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "expired",
+      "closed_at": "2026-05-12 13:46",
+      "exit_price": 4707.7
+    },
+    {
+      "id": 28,
+      "sent_at": "2026-05-11 14:02",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4677.3,
+      "tp": 4723.7,
+      "sl": 4654.1,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 21:58",
+      "exit_price": 4724.6
+    },
+    {
+      "id": 29,
+      "sent_at": "2026-05-11 14:16",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4677.9,
+      "tp": 4690.1,
+      "sl": 4671.8,
+      "confidence": 60,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-11 21:56",
+      "exit_price": 4723.6
+    },
+    {
+      "id": 30,
+      "sent_at": "2026-05-11 21:56",
+      "tf": "D1",
+      "direction": "BUY",
+      "entry": 4723.6,
+      "tp": 5077.6,
+      "sl": 4546.6,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "expired",
+      "closed_at": "2026-05-12 21:56",
+      "exit_price": 4675.3
+    },
+    {
+      "id": 31,
+      "sent_at": "2026-05-11 21:56",
+      "tf": "H4",
+      "direction": "BUY",
+      "entry": 4723.6,
+      "tp": 4862.6,
+      "sl": 4654.1,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:34",
+      "exit_price": 4648.5
+    },
+    {
+      "id": 32,
+      "sent_at": "2026-05-11 21:56",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4723.6,
+      "tp": 4672.6,
+      "sl": 4749.1,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-12 20:24",
+      "exit_price": 4671.8
+    },
+    {
+      "id": 33,
+      "sent_at": "2026-05-12 08:59",
+      "tf": "D1",
+      "direction": "BUY",
+      "entry": 4729.5,
+      "tp": 5095.3,
+      "sl": 4546.6,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 34,
+      "sent_at": "2026-05-12 08:59",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4729.0,
+      "tp": 4735.4,
+      "sl": 4725.8,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-12 09:26",
+      "exit_price": 4739.2
+    },
+    {
+      "id": 35,
+      "sent_at": "2026-05-12 08:59",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4729.0,
+      "tp": 4735.4,
+      "sl": 4725.8,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "win",
+      "closed_at": "2026-05-12 09:26",
+      "exit_price": 4739.2
+    },
+    {
+      "id": 36,
+      "sent_at": "2026-05-12 09:00",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4728.7,
+      "tp": 4636.1,
+      "sl": 4775.0,
+      "confidence": 60,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 37,
+      "sent_at": "2026-05-12 09:25",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4732.5,
+      "tp": 4741.3,
+      "sl": 4728.1,
+      "confidence": 60,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 11:17",
+      "exit_price": 4714.0
+    },
+    {
+      "id": 38,
+      "sent_at": "2026-05-12 09:26",
+      "tf": "D1",
+      "direction": "BUY",
+      "entry": 4739.2,
+      "tp": 4892.4,
+      "sl": 4662.6,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:34",
+      "exit_price": 4648.5
+    },
+    {
+      "id": 39,
+      "sent_at": "2026-05-12 09:26",
+      "tf": "H4",
+      "direction": "BUY",
+      "entry": 4739.2,
+      "tp": 4909.4,
+      "sl": 4654.1,
+      "confidence": 75,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bull",
+          "macd_hist": "positive",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:34",
+      "exit_price": 4648.5
+    },
+    {
+      "id": 40,
+      "sent_at": "2026-05-12 09:39",
+      "tf": "M30",
+      "direction": "SELL",
+      "entry": 4730.9,
+      "tp": 4642.7,
+      "sl": 4775.0,
+      "confidence": 60,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 41,
+      "sent_at": "2026-05-12 11:17",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4714.1,
+      "tp": null,
+      "sl": null,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "n/a",
+          "macd_cross": "n/a",
+          "macd_hist": "n/a",
+          "rsi_zone": "n/a",
+          "stoch_zone": "n/a"
+        },
+        "H1": {
+          "ema_trend": "n/a",
+          "macd_cross": "n/a",
+          "macd_hist": "n/a",
+          "rsi_zone": "n/a",
+          "stoch_zone": "n/a"
+        },
+        "M30": {
+          "ema_trend": "n/a",
+          "macd_cross": "n/a",
+          "macd_hist": "n/a",
+          "rsi_zone": "n/a",
+          "stoch_zone": "n/a"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 42,
+      "sent_at": "2026-05-12 11:17",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4714.0,
+      "tp": null,
+      "sl": null,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "n/a",
+          "macd_cross": "n/a",
+          "macd_hist": "n/a",
+          "rsi_zone": "n/a",
+          "stoch_zone": "n/a"
+        },
+        "H1": {
+          "ema_trend": "n/a",
+          "macd_cross": "n/a",
+          "macd_hist": "n/a",
+          "rsi_zone": "n/a",
+          "stoch_zone": "n/a"
+        },
+        "M30": {
+          "ema_trend": "n/a",
+          "macd_cross": "n/a",
+          "macd_hist": "n/a",
+          "rsi_zone": "n/a",
+          "stoch_zone": "n/a"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 43,
+      "sent_at": "2026-05-12 18:25",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4692.7,
+      "tp": 4735.57,
+      "sl": 4671.26,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:28",
+      "exit_price": 4668.3
+    },
+    {
+      "id": 44,
+      "sent_at": "2026-05-12 18:27",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4689.4,
+      "tp": 4750.48,
+      "sl": 4658.86,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:34",
+      "exit_price": 4648.3
+    },
+    {
+      "id": 45,
+      "sent_at": "2026-05-12 20:10",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4680.0,
+      "tp": 4739.27,
+      "sl": 4650.37,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:34",
+      "exit_price": 4648.3
+    },
+    {
+      "id": 46,
+      "sent_at": "2026-05-12 20:10",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4680.0,
+      "tp": 4724.5,
+      "sl": 4657.75,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "loss",
+      "closed_at": "2026-05-12 20:34",
+      "exit_price": 4647.8
+    },
+    {
+      "id": 47,
+      "sent_at": "2026-05-12 20:28",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4668.3,
+      "tp": 4730.63,
+      "sl": 4637.13,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 48,
+      "sent_at": "2026-05-12 20:28",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4668.3,
+      "tp": 4715.86,
+      "sl": 4644.52,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 49,
+      "sent_at": "2026-05-12 20:34",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4648.3,
+      "tp": 4714.92,
+      "sl": 4614.99,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 50,
+      "sent_at": "2026-05-12 20:34",
+      "tf": "M30",
+      "direction": "BUY",
+      "entry": 4647.8,
+      "tp": 4699.65,
+      "sl": 4621.88,
+      "confidence": 100,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "oversold"
+        }
+      },
+      "outcome": "open",
+      "closed_at": null,
+      "exit_price": null
+    },
+    {
+      "id": 51,
+      "sent_at": "2026-05-12 21:01",
+      "tf": "H1",
+      "direction": "BUY",
+      "entry": 4672.0,
+      "tp": 4738.72,
+      "sl": 4638.64,
+      "confidence": 67,
+      "indicators": {
+        "D1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "neutral"
+        },
+        "H4": {
+          "ema_trend": "bull",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "neutral",
+          "stoch_zone": "oversold"
+        },
+        "H1": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        },
+        "M30": {
+          "ema_trend": "bear",
+          "macd_cross": "bear",
+          "macd_hist": "negative",
+          "rsi_zone": "oversold",
+          "stoch_zone": "neutral"
+        }
+      },
       "outcome": "open",
       "closed_at": null,
       "exit_price": null
     }
   ],
-  "last_daily_report": "2026-04-26",
-  "last_weekly_report": "2026-W17",
+  "last_daily_report": "2026-05-11",
+  "last_weekly_report": "2026-W19",
   "last_monthly_report": null,
-  "next_id": 2
+  "next_id": 52
 }
