@@ -1,6 +1,6 @@
 yfinance
 ta
-schedule
 pandas
+numpy
 python-telegram-bot
 flask
