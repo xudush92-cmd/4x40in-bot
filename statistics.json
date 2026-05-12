@@ -2146,9 +2146,9 @@
           "stoch_zone": "oversold"
         }
       },
-      "outcome": "open",
-      "closed_at": null,
-      "exit_price": null
+      "outcome": "win",
+      "closed_at": "2026-05-12 23:52",
+      "exit_price": 4702.6
     },
     {
       "id": 51,
