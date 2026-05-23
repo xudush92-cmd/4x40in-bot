@@ -24,8 +24,10 @@ import json
 import logging
 import os
 import random
+import shutil
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -121,7 +123,9 @@ INTERVAL_JITTER_S = 30           # interval ±jitter
 DEFAULT_TZ_OFFSET = 5            # UTC+5 (Toshkent)
 
 DATA_DIR = "data"
+MEDIA_DIR = "media"
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(MEDIA_DIR, exist_ok=True)
 
 CHATS_FILE = os.path.join(DATA_DIR, "chats.json")
 ADMINS_FILE = os.path.join(DATA_DIR, "admins.json")
@@ -616,12 +620,44 @@ async def _send_post(client: TelegramClient, chat: str, post: dict) -> None:
     text = post.get("text", "")
     entities = dicts_to_telethon_entities(post.get("entities", []))
     target = await _resolve_chat(client, chat)
-    await client.send_message(
-        entity=target,
-        message=text,
-        formatting_entities=entities or None,
-        link_preview=bool(post.get("link_preview", True)),
-    )
+
+    photo_path = post.get("photo")
+    if photo_path and os.path.exists(photo_path):
+        # Rasm + caption + formatlash
+        await client.send_file(
+            entity=target,
+            file=photo_path,
+            caption=text,
+            formatting_entities=entities or None,
+        )
+    else:
+        await client.send_message(
+            entity=target,
+            message=text,
+            formatting_entities=entities or None,
+            link_preview=bool(post.get("link_preview", True)),
+        )
+
+
+def _user_media_dir(uid: int) -> str:
+    p = os.path.join(MEDIA_DIR, str(uid))
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def _safe_unlink(path: str | None) -> None:
+    if not path:
+        return
+    with contextlib.suppress(Exception):
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def _wipe_user_media(uid: int) -> None:
+    p = os.path.join(MEDIA_DIR, str(uid))
+    with contextlib.suppress(Exception):
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
 
 
 async def _stop_worker(uid: int, *, persist: bool = True) -> None:
@@ -882,6 +918,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await del_schedule(target)
         await del_user_info(target)
         await del_running(target)
+        _wipe_user_media(target)
         log(f"🗑 Admin o'chirildi: {target}")
         await q.edit_message_text(f"🗑 O'chirildi: {target}")
         with contextlib.suppress(Exception):
@@ -910,6 +947,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Postlar tozalash
     if data == "clr:yes":
+        old = await get_posts(uid)
+        for p in old:
+            _safe_unlink(p.get("photo"))
         await set_posts(uid, [])
         log(f"🧹 Postlar tozalandi: {uid}")
         await q.edit_message_text("🧹 Barcha postlar tozalandi.")
@@ -950,7 +990,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if 0 <= i < len(posts):
             removed = posts.pop(i)
             await set_posts(uid, posts)
-            preview = (removed.get("text") or "")[:80]
+            _safe_unlink(removed.get("photo"))
+            preview = (removed.get("text") or "(faqat rasm)")[:80]
             log(f"🗑 Post {i+1} o'chirildi: {uid}")
             await q.edit_message_text(f"🗑 O'chirildi:\n{preview}")
             with contextlib.suppress(Exception):
@@ -1256,7 +1297,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         user_states[uid] = {"step": "add_post", "ts": time.time()}
         await msg.reply_text(
-            "✍️ Reklama matnini formatlash bilan yuboring.\n\n"
+            "✍️ Reklama yuboring:\n\n"
+            "• Faqat matn (formatlash bilan)\n"
+            "• Rasm + caption (formatlash bilan)\n"
+            "• Faqat rasm\n\n"
             "Bold, italic, link va barcha formatlash saqlanadi.\n"
             f"📝 Hozir: {len(posts)}/{MAX_POSTS}"
         )
@@ -1269,8 +1313,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         rows = []
         for i, p in enumerate(posts):
-            preview = (p.get("text") or "")[:30]
-            rows.append([InlineKeyboardButton(f"🗑 {i+1}. {preview}", callback_data=f"delp:{i}")])
+            icon = "🖼" if p.get("photo") else "📝"
+            preview = (p.get("text") or "(rasm)")[:25]
+            rows.append([InlineKeyboardButton(f"🗑 {i+1}. {icon} {preview}", callback_data=f"delp:{i}")])
         rows.append([InlineKeyboardButton("❌ Bekor", callback_data="delp:cancel")])
         await msg.reply_text(
             f"🗑 O'chirish uchun postni tanlang ({len(posts)} ta):",
@@ -1285,8 +1330,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         lines = [f"📋 POSTLAR ({len(posts)} ta):", ""]
         for i, p in enumerate(posts, 1):
-            t = (p.get("text") or "")[:80]
-            lines.append(f"{i}. {t}")
+            icon = "🖼" if p.get("photo") else "📝"
+            t = (p.get("text") or "(faqat rasm)")[:80]
+            lines.append(f"{i}. {icon} {t}")
         await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
         return
 
@@ -1571,29 +1617,59 @@ async def _handle_add_post(update: Update) -> None:
     uid = update.effective_user.id
     user_states.pop(uid, None)
     msg = update.message
+
+    # Matn yoki caption
     text = msg.text or msg.caption or ""
     entities_src = list(msg.entities or []) + list(msg.caption_entities or [])
-    if not text.strip():
+
+    # Rasm bo'lsa — eng katta o'lchamdagisini yuklab olamiz
+    photo_path: str | None = None
+    if msg.photo:
+        try:
+            photo = msg.photo[-1]  # eng katta o'lcham
+            tg_file = await photo.get_file()
+            ext = ".jpg"
+            user_dir = _user_media_dir(uid)
+            photo_path = os.path.join(user_dir, f"{uuid.uuid4().hex}{ext}")
+            await tg_file.download_to_drive(custom_path=photo_path)
+        except Exception as e:
+            log(f"❌ Rasm yuklashda xato {uid}: {type(e).__name__}: {e}", "error")
+            await update.message.reply_text(
+                "❌ Rasmni saqlab bo'lmadi. Qaytadan urinib ko'ring.",
+                reply_markup=await menu_for(uid),
+            )
+            return
+
+    if not text.strip() and not photo_path:
         await update.message.reply_text(
-            "❌ Bo'sh post qabul qilinmaydi.", reply_markup=await menu_for(uid)
+            "❌ Bo'sh post qabul qilinmaydi.\nMatn yoki rasm yuboring.",
+            reply_markup=await menu_for(uid),
         )
         return
+
     posts = await get_posts(uid)
     if len(posts) >= MAX_POSTS:
+        _safe_unlink(photo_path)
         await update.message.reply_text(
             f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
         )
         return
+
     post = {
         "text": text,
         "entities": [entity_to_dict(e) for e in entities_src],
         "link_preview": True,
     }
+    if photo_path:
+        post["photo"] = photo_path
+
     posts.append(post)
     await set_posts(uid, posts)
-    log(f"📝 Post qo'shildi: {uid} (#{len(posts)})")
+    log(f"📝 Post qo'shildi: {uid} (#{len(posts)}) {'+rasm' if photo_path else ''}")
+    preview = (text or "(faqat rasm)")[:100]
+    kind = "🖼 Rasm + matn" if photo_path else "📝 Matn"
     await update.message.reply_text(
-        f"✅ Saqlandi (#{len(posts)})\n\n{text[:100]}",
+        f"✅ Saqlandi (#{len(posts)})\n{kind}\n\n{preview}",
         reply_markup=await menu_for(uid),
     )
 
@@ -1693,7 +1769,7 @@ async def main() -> None:
     # filters.TEXT bilan birga caption-li xabarlarni ham tutamiz.
     app.add_handler(
         MessageHandler(
-            (filters.TEXT | filters.CAPTION) & ~filters.COMMAND, on_message
+            (filters.TEXT | filters.PHOTO) & ~filters.COMMAND, on_message
         )
     )
     app.add_error_handler(on_error)
