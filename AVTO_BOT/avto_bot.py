@@ -117,10 +117,17 @@ MAX_CHATS = 10
 MAX_POSTS = 20
 MIN_INTERVAL_MIN = 4
 MAX_INTERVAL_MIN = 1440          # 24 soat
-LOGIN_TIMEOUT_S = 600           # 10 daqiqa (yangi foydalanuvchilar uchun yetarli)
+LOGIN_TIMEOUT_S = 120            # 2 daqiqa — foydalanuvchi tez kod kiritishi uchun
 SEND_DELAY_S = 5                 # chatlar orasidagi pauza
 INTERVAL_JITTER_S = 30           # interval ±jitter
 DEFAULT_TZ_OFFSET = 5            # UTC+5 (Toshkent)
+
+# Aloqa uchun admin telefon raqami (foydalanuvchilarga ko'rsatiladi)
+ADMIN_CONTACT_PHONE = "+998938670592"
+
+# Bot reklamasi — har bir yuborilgan post oxiriga avtomatik qo'shiladi
+BOT_USERNAME = "@avtoelon_el_uzbot"
+BOT_AD_FOOTER = f"\n\n🤖 AVTO_BOT — {BOT_USERNAME}"
 
 DATA_DIR = "data"
 MEDIA_DIR = "media"
@@ -621,19 +628,23 @@ async def _send_post(client: TelegramClient, chat: str, post: dict) -> None:
     entities = dicts_to_telethon_entities(post.get("entities", []))
     target = await _resolve_chat(client, chat)
 
+    # Har bir post oxiriga bot reklamasi qo'shiladi (mavjud entitylar buzilmaydi —
+    # ular matn boshiga nisbatan offset/length, biz faqat oxiriga qo'shyapmiz)
+    final_text = (text + BOT_AD_FOOTER) if text else BOT_AD_FOOTER.lstrip("\n")
+
     photo_path = post.get("photo")
     if photo_path and os.path.exists(photo_path):
         # Rasm + caption + formatlash
         await client.send_file(
             entity=target,
             file=photo_path,
-            caption=text,
+            caption=final_text,
             formatting_entities=entities or None,
         )
     else:
         await client.send_message(
             entity=target,
-            message=text,
+            message=final_text,
             formatting_entities=entities or None,
             link_preview=bool(post.get("link_preview", True)),
         )
@@ -828,9 +839,37 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     await update.message.reply_text(
-        "🤖 AVTO BOT ga xush kelibsiz!\n\n"
+        "🤖 AVTO BOT — Telegram avto-poster\n"
+        "━━━━━━━━━━━━━━━━━━━\n\n"
+        "📌 BOT NIMA QILADI?\n\n"
+        "Bot sizning Telegram hisobingiz orqali tanlangan chatlarga\n"
+        "siz tayyorlagan postlarni belgilangan vaqt oraliqlarida\n"
+        "AVTOMATIK tarzda joylashtiradi.\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "📋 BOSHLASH:\n\n"
+        "👥 KIMLAR UCHUN?\n\n"
+        "✅ Reklama agentliklari va SMM mutaxassislari\n"
+        "✅ O'z biznesini reklama qiluvchi tadbirkorlar\n"
+        "✅ Onlayn-do'kon egalari (uy jihozlari, kiyim, kosmetika va h.k.)\n"
+        "✅ Xizmat ko'rsatuvchilar (taksi, dasturchilar, repetitorlar)\n"
+        "✅ Telegram-kanal va guruh egalari\n"
+        "✅ Bir vaqtda ko'p chatlarga reklama yubormoqchi bo'lganlar\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "💼 NIMALAR UCHUN?\n\n"
+        "📢 Tovar va xizmatlaringizni reklama qilish\n"
+        "📢 Aksiya va chegirmalarni e'lon qilish\n"
+        "📢 Yangi mahsulot/yangiliklar haqida xabar berish\n"
+        "📢 Auditoriyani kengaytirish (10 ta chatgacha)\n"
+        "📢 Doimiy reklama postlarini avtomatlashtirish (20 ta postgacha)\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "⚙️ IMKONIYATLAR\n\n"
+        f"• Maksimal {MAX_CHATS} ta chat (guruh/kanal)\n"
+        f"• Maksimal {MAX_POSTS} ta post (matn yoki rasm + matn)\n"
+        f"• Interval: {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daqiqa\n"
+        "• Yuborish vaqt oynasi (HH:MM–HH:MM) — siz belgilaysiz\n"
+        "• Bold, italic, link va barcha formatlash saqlanadi\n"
+        "• 24/7 ishlaydi, restart-dan keyin avtomatik tiklanadi\n\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📋 BOSHLASH\n\n"
         "1️⃣ '🔑 Login' tugmasini bosing\n"
         "2️⃣ Telefon raqamingizni kiriting (+998XXXXXXXXX)\n"
         "3️⃣ Telegramdan kelgan kodni 1-2-3-4-5 ko'rinishida yuboring\n"
@@ -838,22 +877,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "4️⃣ 2FA bo'lsa — parolni kiriting\n"
         "5️⃣ Admin tasdiqlashini kuting (ON/OFF)\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "⚠️ TELEGRAM KODI HAQIDA MUHIM:\n\n"
-        "Telegram kodni xabarda \"toza\" ko'rinishda ko'rsa\n"
-        "(masalan: 12345 yoki copy-paste) — uni darhol BEKOR qiladi.\n"
-        "Shuning uchun kodni QO'LDA, chiziqcha bilan yozing: 1-2-3-4-5\n\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
-        "🛡 XAVFSIZLIK:\n\n"
+        "🛡 XAVFSIZLIK\n\n"
         "✅ Kod va parol HECH QAYERDA saqlanmaydi\n"
-        "✅ Faqat session token saqlanadi (siz Logout qilsangiz o'chadi)\n"
+        "✅ Faqat session token saqlanadi (Logout — o'chadi)\n"
+        "✅ Ma'lumotlaringiz boshqalarga ko'rinmaydi\n"
         "✅ Istalgan vaqt '🚪 Logout' orqali chiqishingiz mumkin\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "⚙️ IMKONIYATLAR:\n\n"
-        f"• Maksimal {MAX_CHATS} ta chat\n"
-        f"• Maksimal {MAX_POSTS} ta post\n"
-        f"• Interval: {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daqiqa\n"
-        "• Yuborish vaqt oynasini siz belgilaysiz (HH:MM–HH:MM)\n"
-        "• Postingiz formatlash bilan birga jo'natiladi",
+        "📞 FOYDALANISH BO'YICHA YORDAM\n\n"
+        "Ro'yxatdan o'tishda muammo, savol yoki taklif bo'lsa\n"
+        "admin bilan bog'laning:\n\n"
+        f"📱 {ADMIN_CONTACT_PHONE}\n\n"
+        "Quyidagi 🔑 Login tugmasini bosib, ro'yxatdan o'ting!",
         reply_markup=await menu_for(uid),
     )
 
@@ -1110,7 +1144,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if time.time() - state.get("ts", 0) > LOGIN_TIMEOUT_S:
             await cleanup_login(uid)
             await msg.reply_text(
-                "⏰ Vaqt tugadi (3 daqiqa). Qaytadan 🔑 Login bosing.",
+                "⏰ Vaqt tugadi (2 daqiqa). Eski urinish o'chirildi.\n"
+                "Qaytadan 🔑 Login bosib boshlang.",
                 reply_markup=await menu_for(uid),
             )
             return
@@ -1394,14 +1429,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # ─────────────────────────────────────────────────────────────────────────
 async def _begin_login(update: Update) -> None:
     uid = update.effective_user.id
+    # Eski urinish bo'lsa — to'liq tozalaymiz, yangi urinish toza state'da boshlanadi
+    await cleanup_login(uid)
     user_states[uid] = {"step": "phone", "ts": time.time()}
     await update.message.reply_text(
         "📱 Telefon raqamingizni yuboring:\n\n"
         "Format: +998XXXXXXXXX\n\n"
         "⚠️ Telegram ilovangiz ochiq ekanligini tekshiring!\n"
         "Kod SMS emas, Telegram ilovasidagi \"Telegram\" rasmiy chatiga keladi.\n\n"
-        "💡 Eslatma: kod kelganda uni 1-2-3-4-5 ko'rinishida\n"
-        "(chiziqcha bilan) qo'lda yozasiz — copy-paste qilmang."
+        "💡 Eslatma: kodni 1-2-3-4-5 ko'rinishida (chiziqcha bilan)\n"
+        "qo'lda yozing — copy-paste qilmang.\n\n"
+        f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
     )
 
 
@@ -1440,7 +1478,8 @@ async def _handle_phone(update: Update, text: str) -> None:
             "━━━━━━━━━━━━━━━━━\n"
             "📱 Kod qayerda?\n"
             "Telegram ilovasini oching → \"Telegram\" rasmiy chati → kod o'sha yerda\n\n"
-            "⏰ Sizda 10 daqiqa vaqt bor."
+            "⏰ Sizda 2 daqiqa vaqt bor.\n"
+            f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
         )
     except PhoneNumberInvalidError:
         with contextlib.suppress(Exception):
@@ -1512,12 +1551,25 @@ async def _handle_code(update: Update, text: str) -> None:
             "🔐 2FA parolingizni yuboring.\n\n✅ Parol DISK-ga saqlanmaydi."
         )
     except PhoneCodeInvalidError:
-        # Qaytadan urinish imkonini beramiz, jarayonni buzmaymiz
+        # Noto'g'ri kod — 3 martadan ko'p bo'lmasa qaytadan urinish imkonini beramiz
+        wrong_attempts = ctx.__dict__.get("_wrong_count", 0) + 1
+        ctx.__dict__["_wrong_count"] = wrong_attempts
+        if wrong_attempts >= 3:
+            await cleanup_login(uid)
+            await update.message.reply_text(
+                "❌ 3 marta noto'g'ri kod kiritildi.\n"
+                "Eski urinish o'chirildi.\n\n"
+                "Qaytadan 🔑 Login bosib boshlang.\n"
+                f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}",
+                reply_markup=await menu_for(uid),
+            )
+            return
+        # Eski state'ni saqlamaymiz — yangi kod kutamiz
         user_states[uid] = {"step": "code", "ts": time.time()}
         await update.message.reply_text(
-            "❌ Noto'g'ri kod.\n\n"
+            f"❌ Noto'g'ri kod ({wrong_attempts}/3).\n\n"
             "Telegramdan ENG SO'NGGI kodni 1-2-3-4-5 ko'rinishida yuboring.\n"
-            "Eski kodlar yaroqsiz."
+            "Eski kodlar yaroqsiz — faqat oxirgi kod ishlaydi."
         )
     except PhoneCodeExpiredError:
         # Telegram kodni bekor qildi (ehtimol foydalanuvchi copy-paste qilgan).
@@ -1558,9 +1610,10 @@ async def _handle_code(update: Update, text: str) -> None:
                 "3️⃣ Yangi kodni KO'RING (copy QILMANG!)\n"
                 "4️⃣ Shu botga QO'LDA yozing — har raqam orasiga chiziqcha:\n\n"
                 "   📌 1-2-3-4-5 ko'rinishida\n\n"
-                "⚠️ Agar kodni copy-paste qilsangiz yoki kodli xabarni\n"
-                "shu chatga forward qilsangiz — Telegram darhol bekor qiladi!\n\n"
-                "⏰ Sizda 10 daqiqa vaqt bor."
+                "⚠️ Eski kod endi yaroqsiz — faqat YANGI kodni yuboring!\n"
+                "⚠️ Agar copy-paste qilsangiz — Telegram darhol bekor qiladi.\n\n"
+                "⏰ Sizda 2 daqiqa vaqt bor.\n"
+                f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
             )
         except FloodWaitError as e:
             await cleanup_login(uid)
