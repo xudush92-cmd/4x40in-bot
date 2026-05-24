@@ -117,7 +117,7 @@ MAX_CHATS = 10
 MAX_POSTS = 20
 MIN_INTERVAL_MIN = 4
 MAX_INTERVAL_MIN = 1440          # 24 soat
-LOGIN_TIMEOUT_S = 120            # 2 daqiqa — foydalanuvchi tez kod kiritishi uchun
+LOGIN_TIMEOUT_S = 300            # 5 daqiqa — yangi userlar uchun yetarli vaqt
 SEND_DELAY_S = 5                 # chatlar orasidagi pauza
 INTERVAL_JITTER_S = 30           # interval ±jitter
 DEFAULT_TZ_OFFSET = 5            # UTC+5 (Toshkent)
@@ -584,6 +584,239 @@ async def cleanup_login(uid: int) -> None:
     user_states.pop(uid, None)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# NUMPAD — Kodni xavfsiz kiritish (Telegram anti-fraud bypass)
+#
+# Sabab: agar foydalanuvchi kodni MATN sifatida yozsa (hatto chat'da),
+# Telegram serveri uni "leaked code" deb hisoblab, darhol bekor qiladi.
+# Inline tugma orqali kiritsa — kod hech qaerda matn ko'rinishida
+# ko'rinmaydi va Telegram uni bekor qila olmaydi.
+# ─────────────────────────────────────────────────────────────────────────
+CODE_LENGTH = 5  # Telegram login kodi 5 raqamli (ba'zan 6 — 6 ham qabul qilinadi)
+
+
+def numpad_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(d, callback_data=f"np:{d}") for d in ("1", "2", "3")],
+        [InlineKeyboardButton(d, callback_data=f"np:{d}") for d in ("4", "5", "6")],
+        [InlineKeyboardButton(d, callback_data=f"np:{d}") for d in ("7", "8", "9")],
+        [
+            InlineKeyboardButton("⬅️ O'chir", callback_data="np:back"),
+            InlineKeyboardButton("0", callback_data="np:0"),
+            InlineKeyboardButton("✅ Tasdiq", callback_data="np:ok"),
+        ],
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="np:cancel")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def numpad_display(buffer: str, total: int = CODE_LENGTH) -> str:
+    """Kiritilgan raqamlarni vizual ko'rsatish: '7 3 ▪ ▪ ▪'"""
+    n = max(total, len(buffer))
+    parts = [(buffer[i] if i < len(buffer) else "▪") for i in range(n)]
+    return " ".join(parts)
+
+
+def numpad_message(buffer: str, hint: str = "") -> str:
+    base = (
+        "📩 Telegramdan kelgan kodni quyidagi tugmalar orqali kiriting.\n\n"
+        "👉 Telegram ilovangizni oching → \"Telegram\" rasmiy chati →\n"
+        "    kodni KO'RING va shu yerga tugmalar orqali kiriting.\n\n"
+        f"🔢 Kod:  {numpad_display(buffer)}\n"
+    )
+    if hint:
+        base += f"\n{hint}\n"
+    base += (
+        "\n💡 Sababi: agar matnda yozsangiz, Telegram kodni\n"
+        "    himoya tizimi avtomatik bekor qiladi. Tugma — xavfsiz!"
+    )
+    return base
+
+
+async def _send_numpad(uid: int, buffer: str = "", hint: str = "") -> None:
+    """Foydalanuvchiga numpad xabarini yuboradi va message_id ni saqlaydi."""
+    msg = await application.bot.send_message(
+        uid, numpad_message(buffer, hint), reply_markup=numpad_kb()
+    )
+    state = user_states.get(uid, {})
+    state["numpad_msg_id"] = msg.message_id
+    user_states[uid] = state
+
+
+async def _attempt_signin(uid: int, code: str) -> None:
+    """Kodni Telegram'ga yuboradi va natijaga qarab keyingi qadamni ko'rsatadi."""
+    ctx = login_ctx.get(uid)
+    if not ctx:
+        await cleanup_login(uid)
+        await application.bot.send_message(
+            uid,
+            "❌ Login jarayoni buzildi. Qaytadan 🔑 Login bosing.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    try:
+        # Client'ning ulanishini saqlab turish — uzilib qolmasin
+        if not ctx.client.is_connected():
+            await asyncio.wait_for(ctx.client.connect(), timeout=20)
+        await ctx.client.sign_in(
+            phone=ctx.phone, code=code, phone_code_hash=ctx.phone_code_hash
+        )
+        # Muvaffaqiyat — finalize
+        await _finalize_login_uid(uid)
+        return
+
+    except SessionPasswordNeededError:
+        # 2FA kerak — parol matnli kiritiladi (Telegram parolni tekshirmaydi)
+        user_states[uid] = {"step": "password", "ts": time.time()}
+        await application.bot.send_message(
+            uid,
+            "🔐 Hisobingizda 2FA (ikki bosqichli himoya) yoqilgan.\n\n"
+            "Iltimos, 2FA parolingizni MATN ko'rinishida yuboring.\n\n"
+            "✅ Parol DISK-ga saqlanmaydi.\n"
+            f"❓ Yordam kerak bo'lsa: {ADMIN_CONTACT_PHONE}",
+        )
+
+    except PhoneCodeInvalidError:
+        wrong = ctx.__dict__.get("_wrong_count", 0) + 1
+        ctx.__dict__["_wrong_count"] = wrong
+        if wrong >= 5:
+            await cleanup_login(uid)
+            await application.bot.send_message(
+                uid,
+                "❌ 5 marta noto'g'ri kod kiritildi.\n"
+                "Qaytadan 🔑 Login bosing.\n\n"
+                f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}",
+                reply_markup=await menu_for(uid),
+            )
+            return
+        # Buferni tozalab, yana numpad ko'rsatamiz
+        state = user_states.get(uid, {})
+        state["code_buffer"] = ""
+        state["ts"] = time.time()
+        user_states[uid] = state
+        await _send_numpad(
+            uid, "", hint=f"❌ Noto'g'ri kod ({wrong}/5). Qaytadan kiriting:"
+        )
+
+    except PhoneCodeExpiredError:
+        # Avtomatik yangi kod yuboramiz
+        attempts = ctx.__dict__.get("_resend_count", 0) + 1
+        if attempts > 3:
+            await cleanup_login(uid)
+            await application.bot.send_message(
+                uid,
+                "⏰ 3 marta kod muddati tugadi.\n\n"
+                "Bir necha daqiqa kuting va qaytadan 🔑 Login bosing.\n"
+                f"❓ Muammo: {ADMIN_CONTACT_PHONE}",
+                reply_markup=await menu_for(uid),
+            )
+            return
+        try:
+            result = await asyncio.wait_for(
+                ctx.client.send_code_request(ctx.phone), timeout=20
+            )
+            ctx.phone_code_hash = result.phone_code_hash
+            ctx.__dict__["_resend_count"] = attempts
+            ctx.__dict__["_wrong_count"] = 0  # yangi kod uchun reset
+            state = user_states.get(uid, {})
+            state["code_buffer"] = ""
+            state["ts"] = time.time()
+            user_states[uid] = state
+            await _send_numpad(
+                uid,
+                "",
+                hint=(
+                    f"⏰ Eski kod yaroqsiz — YANGI kod yuborildi! ({attempts}/3)\n"
+                    "Telegram ilovangizdan ENG SO'NGGI kodni qarang."
+                ),
+            )
+        except FloodWaitError as e:
+            await cleanup_login(uid)
+            await application.bot.send_message(
+                uid,
+                f"⏳ Telegram juda ko'p urinishni sezdi.\n"
+                f"{e.seconds} soniya kutib, qaytadan 🔑 Login bosing.",
+                reply_markup=await menu_for(uid),
+            )
+        except Exception as e:
+            log(f"❌ resend code {uid}: {type(e).__name__}: {e}", "error")
+            await cleanup_login(uid)
+            await application.bot.send_message(
+                uid,
+                "❌ Yangi kod yuborib bo'lmadi. Qaytadan 🔑 Login bosing.\n"
+                f"❓ {ADMIN_CONTACT_PHONE}",
+                reply_markup=await menu_for(uid),
+            )
+
+    except FloodWaitError as e:
+        await cleanup_login(uid)
+        await application.bot.send_message(
+            uid,
+            f"⏳ {e.seconds} soniya kuting va qaytadan 🔑 Login bosing.",
+            reply_markup=await menu_for(uid),
+        )
+
+    except Exception as e:
+        log(f"❌ sign_in {uid}: {type(e).__name__}: {e}", "error")
+        await cleanup_login(uid)
+        await application.bot.send_message(
+            uid,
+            f"❌ Xato: {type(e).__name__}\nQaytadan 🔑 Login bosing.\n"
+            f"❓ {ADMIN_CONTACT_PHONE}",
+            reply_markup=await menu_for(uid),
+        )
+
+
+async def _finalize_login_uid(uid: int) -> None:
+    """Sessiya tasdiqlanganda foydalanuvchi statusini yakunlaydi."""
+    ctx = login_ctx.get(uid)
+    if not ctx:
+        return
+    sess_str = ctx.client.session.save()
+    with contextlib.suppress(Exception):
+        await ctx.client.disconnect()
+    login_ctx.pop(uid, None)
+    user_states.pop(uid, None)
+
+    # Foydalanuvchi ma'lumotlarini saqlash
+    try:
+        chat = await application.bot.get_chat(uid)
+        await set_user_info(
+            uid,
+            {
+                "name": (chat.first_name or "") + (
+                    f" {chat.last_name}" if chat.last_name else ""
+                ) or "Noma'lum",
+                "username": chat.username or "",
+            },
+        )
+    except Exception:
+        pass
+
+    if uid == SUPER_ADMIN:
+        await set_session(uid, sess_str)
+        await del_pending(uid)
+        log(f"✅ Super admin login: {uid}")
+        await application.bot.send_message(
+            uid,
+            "✅ Super admin sifatida tizimga kirdingiz!",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    await set_pending(uid, sess_str)
+    log(f"⏳ Tasdiq kutilmoqda: {uid}")
+    await notify_super_for_approval(uid)
+    await application.bot.send_message(
+        uid,
+        "✅ Login muvaffaqiyatli!\n\n"
+        "⏳ Endi admin tasdiqlashini kuting (ON/OFF).\n"
+        "Tasdiqlanganingizdan so'ng menyu ochiladi.",
+        reply_markup=await menu_for(uid),
+    )
+
+
 async def notify_super_for_approval(uid: int) -> None:
     info = await get_user_info(uid)
     name = info.get("name", "Noma'lum")
@@ -900,6 +1133,74 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await q.answer()
     uid = q.from_user.id
     data = q.data or ""
+
+    # ── NUMPAD: kodni xavfsiz kiritish ──────────────────────────────────
+    if data.startswith("np:"):
+        state = user_states.get(uid, {})
+        if state.get("step") != "code":
+            with contextlib.suppress(Exception):
+                await q.edit_message_text("⚠️ Login jarayonida emassiz.")
+            return
+
+        # Timeout
+        if time.time() - state.get("ts", 0) > LOGIN_TIMEOUT_S:
+            await cleanup_login(uid)
+            with contextlib.suppress(Exception):
+                await q.edit_message_text(
+                    f"⏰ Vaqt tugadi ({LOGIN_TIMEOUT_S // 60} daqiqa).\n"
+                    "Qaytadan 🔑 Login bosing."
+                )
+            await application.bot.send_message(
+                uid, "Holat yangilandi.", reply_markup=await menu_for(uid)
+            )
+            return
+
+        action = data.split(":", 1)[1]
+        buffer = state.get("code_buffer", "")
+
+        if action == "cancel":
+            await cleanup_login(uid)
+            with contextlib.suppress(Exception):
+                await q.edit_message_text("❌ Login bekor qilindi.")
+            await application.bot.send_message(
+                uid, "Holat yangilandi.", reply_markup=await menu_for(uid)
+            )
+            return
+
+        if action == "back":
+            buffer = buffer[:-1]
+
+        elif action == "ok":
+            if len(buffer) < CODE_LENGTH:
+                await q.answer(
+                    f"Kamida {CODE_LENGTH} ta raqam kiriting!", show_alert=True
+                )
+                return
+            # Kodni Telegram'ga yuboramiz
+            with contextlib.suppress(Exception):
+                await q.edit_message_text(
+                    f"⏳ Kod tekshirilmoqda...\n\n🔢 {numpad_display(buffer)}"
+                )
+            await _attempt_signin(uid, buffer)
+            return
+
+        else:  # raqamli tugma
+            if not action.isdigit():
+                return
+            if len(buffer) >= 6:  # max 6 raqam
+                await q.answer("Maksimal 6 ta raqam!", show_alert=True)
+                return
+            buffer += action
+
+        # State'ni yangilab, numpadni qayta chizamiz
+        state["code_buffer"] = buffer
+        state["ts"] = time.time()  # har bosishda timeout yangilanadi
+        user_states[uid] = state
+        with contextlib.suppress(Exception):
+            await q.edit_message_text(
+                numpad_message(buffer), reply_markup=numpad_kb()
+            )
+        return
 
     # Yangi foydalanuvchi tasdiqlash: app:on:<id> | app:off:<id>
     if data.startswith("app:on:") or data.startswith("app:off:"):
@@ -1461,25 +1762,20 @@ async def _handle_phone(update: Update, text: str) -> None:
             phone_code_hash=result.phone_code_hash,
             started_at=time.time(),
         )
-        user_states[uid] = {"step": "code", "ts": time.time()}
-        await update.message.reply_text(
-            "📩 Kod yuborildi!\n\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "⚠️ JUDA MUHIM — Telegram xavfsizligi:\n"
-            "━━━━━━━━━━━━━━━━━\n\n"
-            "Telegram kodni shu botga yuborayotganda kodni:\n"
-            "❌ COPY-PASTE QILMANG\n"
-            "❌ Kodli xabarni FORWARD QILMANG\n"
-            "❌ \"12345\" ko'rinishida YOZMANG\n\n"
-            "✅ Kodni QO'LDA, har raqam orasiga chiziqcha qo'yib yuboring:\n\n"
-            "📌 NAMUNA: agar kod 12345 bo'lsa →  1-2-3-4-5\n\n"
-            "Sababi: Telegram kodni xabarda \"toza\" ko'rinishda ko'rsa,\n"
-            "uni darhol bekor qiladi (xavfsizlik chorasi).\n\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "📱 Kod qayerda?\n"
-            "Telegram ilovasini oching → \"Telegram\" rasmiy chati → kod o'sha yerda\n\n"
-            "⏰ Sizda 2 daqiqa vaqt bor.\n"
-            f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
+        # Numpad rejimi: kod buferi user_state'da saqlanadi
+        user_states[uid] = {
+            "step": "code",
+            "ts": time.time(),
+            "code_buffer": "",
+        }
+        await _send_numpad(
+            uid,
+            "",
+            hint=(
+                "📩 Kod yuborildi!\n"
+                "Telegram ilovangizdan kodni KO'RING (lekin kopiyalamasdan!) "
+                "va pastdagi tugmalar orqali kiriting."
+            ),
         )
     except PhoneNumberInvalidError:
         with contextlib.suppress(Exception):
@@ -1516,132 +1812,21 @@ async def _handle_phone(update: Update, text: str) -> None:
 
 
 async def _handle_code(update: Update, text: str) -> None:
+    """Code bosqichida MATN qabul qilinmaydi — foydalanuvchi numpad'dan
+    foydalanishi kerak. Sababi: matn kodni Telegram darhol bekor qiladi.
+    """
     uid = update.effective_user.id
-    code = "".join(c for c in text if c.isdigit())
-    if not code:
-        await update.message.reply_text(
-            "❌ Kod faqat raqamlardan iborat bo'lishi kerak.\n"
-            "Masalan: 1-2-3-4-5"
-        )
-        return
-    if len(code) < 5:
-        await update.message.reply_text(
-            f"❌ Kod juda qisqa ({len(code)} ta raqam). Telegram kodi 5 raqamli.\n"
-            "Qaytadan kiriting (1-2-3-4-5 ko'rinishida):"
-        )
-        return
-    ctx = login_ctx.get(uid)
-    if not ctx:
-        await cleanup_login(uid)
-        await update.message.reply_text(
-            "❌ Jarayon buzildi. Qaytadan 🔑 Login bosing.",
-            reply_markup=await menu_for(uid),
-        )
-        return
-    try:
-        if not ctx.client.is_connected():
-            await asyncio.wait_for(ctx.client.connect(), timeout=20)
-        await ctx.client.sign_in(
-            phone=ctx.phone, code=code, phone_code_hash=ctx.phone_code_hash
-        )
-        await _finalize_login(update, ctx)
-    except SessionPasswordNeededError:
-        user_states[uid] = {"step": "password", "ts": time.time()}
-        await update.message.reply_text(
-            "🔐 2FA parolingizni yuboring.\n\n✅ Parol DISK-ga saqlanmaydi."
-        )
-    except PhoneCodeInvalidError:
-        # Noto'g'ri kod — 3 martadan ko'p bo'lmasa qaytadan urinish imkonini beramiz
-        wrong_attempts = ctx.__dict__.get("_wrong_count", 0) + 1
-        ctx.__dict__["_wrong_count"] = wrong_attempts
-        if wrong_attempts >= 3:
-            await cleanup_login(uid)
-            await update.message.reply_text(
-                "❌ 3 marta noto'g'ri kod kiritildi.\n"
-                "Eski urinish o'chirildi.\n\n"
-                "Qaytadan 🔑 Login bosib boshlang.\n"
-                f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}",
-                reply_markup=await menu_for(uid),
-            )
-            return
-        # Eski state'ni saqlamaymiz — yangi kod kutamiz
-        user_states[uid] = {"step": "code", "ts": time.time()}
-        await update.message.reply_text(
-            f"❌ Noto'g'ri kod ({wrong_attempts}/3).\n\n"
-            "Telegramdan ENG SO'NGGI kodni 1-2-3-4-5 ko'rinishida yuboring.\n"
-            "Eski kodlar yaroqsiz — faqat oxirgi kod ishlaydi."
-        )
-    except PhoneCodeExpiredError:
-        # Telegram kodni bekor qildi (ehtimol foydalanuvchi copy-paste qilgan).
-        # Avtomatik yangi kod yuboramiz va aniq ko'rsatma beramiz.
-        attempts = ctx.__dict__.get("_resend_count", 0) + 1
-        if attempts > 3:
-            await cleanup_login(uid)
-            await update.message.reply_text(
-                "⏰ 3 marta kod muddati tugadi.\n\n"
-                "Iltimos:\n"
-                "1) Bir necha daqiqa kuting\n"
-                "2) Qaytadan 🔑 Login bosing\n"
-                "3) Bu safar kodni 1-2-3-4-5 ko'rinishida QO'LDA yozing\n"
-                "   (copy-paste va forward qilmang!)",
-                reply_markup=await menu_for(uid),
-            )
-            return
-        try:
-            result = await asyncio.wait_for(
-                ctx.client.send_code_request(ctx.phone), timeout=20
-            )
-            new_ctx = LoginCtx(
-                client=ctx.client,
-                phone=ctx.phone,
-                phone_code_hash=result.phone_code_hash,
-                started_at=time.time(),
-            )
-            new_ctx.__dict__["_resend_count"] = attempts
-            login_ctx[uid] = new_ctx
-            user_states[uid] = {"step": "code", "ts": time.time()}
-            await update.message.reply_text(
-                f"⏰ Avvalgi kod yaroqsiz bo'ldi — YANGI KOD yuborildi! ({attempts}/3)\n\n"
-                "━━━━━━━━━━━━━━━━━\n"
-                "❗ Bu safar shunday qiling:\n"
-                "━━━━━━━━━━━━━━━━━\n\n"
-                "1️⃣ Telegram ilovasini oching\n"
-                "2️⃣ \"Telegram\" rasmiy chatini toping\n"
-                "3️⃣ Yangi kodni KO'RING (copy QILMANG!)\n"
-                "4️⃣ Shu botga QO'LDA yozing — har raqam orasiga chiziqcha:\n\n"
-                "   📌 1-2-3-4-5 ko'rinishida\n\n"
-                "⚠️ Eski kod endi yaroqsiz — faqat YANGI kodni yuboring!\n"
-                "⚠️ Agar copy-paste qilsangiz — Telegram darhol bekor qiladi.\n\n"
-                "⏰ Sizda 2 daqiqa vaqt bor.\n"
-                f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
-            )
-        except FloodWaitError as e:
-            await cleanup_login(uid)
-            await update.message.reply_text(
-                f"⏳ Telegram juda ko'p urinishni sezdi.\n"
-                f"{e.seconds} soniya kutib, qaytadan 🔑 Login bosing.",
-                reply_markup=await menu_for(uid),
-            )
-        except Exception as e:
-            await cleanup_login(uid)
-            log(f"❌ resend code {uid}: {type(e).__name__}: {e}", "error")
-            await update.message.reply_text(
-                "⏰ Kod muddati tugadi va yangi kod yuborib bo'lmadi.\n"
-                "Qaytadan 🔑 Login bosing.",
-                reply_markup=await menu_for(uid),
-            )
-    except FloodWaitError as e:
-        await cleanup_login(uid)
-        await update.message.reply_text(
-            f"⏳ {e.seconds} soniya kuting.", reply_markup=await menu_for(uid)
-        )
-    except Exception as e:
-        await cleanup_login(uid)
-        log(f"❌ code {uid}: {type(e).__name__}: {e}", "error")
-        await update.message.reply_text(
-            f"❌ Xatolik: {type(e).__name__}\nQaytadan 🔑 Login bosing.",
-            reply_markup=await menu_for(uid),
-        )
+    # Eski numpad xabarini saqlab, yangi eslatma yuboramiz
+    await update.message.reply_text(
+        "⚠️ Iltimos, kodni MATN sifatida yozmang!\n\n"
+        "Telegram xavfsizlik tizimi matnli kodni darhol bekor qiladi.\n"
+        "Faqat pastdagi RAQAMLI TUGMALAR orqali kiriting:",
+    )
+    state = user_states.get(uid, {})
+    state.setdefault("code_buffer", "")
+    state["ts"] = time.time()
+    user_states[uid] = state
+    await _send_numpad(uid, state["code_buffer"])
 
 
 async def _handle_password(update: Update, text: str) -> None:
