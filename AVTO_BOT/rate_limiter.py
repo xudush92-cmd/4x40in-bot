@@ -131,11 +131,12 @@ class RateLimiter:
         """Eski yozuvlarni tozalash (xotira tejash)."""
         now = time.time()
 
-        # Eski actionlarni tozalash
+        # Eski actionlarni tozalash — list(items()) bilan iteratsiya
+        # vaqtida dict o'zgartirilsa RuntimeError oldini olamiz
         empty_uids = []
-        for uid, actions in self._actions.items():
+        for uid, actions in list(self._actions.items()):
             empty_actions = []
-            for action, timestamps in actions.items():
+            for action, timestamps in list(actions.items()):
                 limit = LIMITS.get(action)
                 if limit:
                     cutoff = now - limit.window_seconds
@@ -143,19 +144,19 @@ class RateLimiter:
                     if not actions[action]:
                         empty_actions.append(action)
             for a in empty_actions:
-                del actions[a]
+                actions.pop(a, None)
             if not actions:
                 empty_uids.append(uid)
         for uid in empty_uids:
-            del self._actions[uid]
+            self._actions.pop(uid, None)
 
         # Eskirgan bloklarni tozalash
         empty_block_uids = []
-        for uid, blocks in self._blocks.items():
-            expired = [a for a, until in blocks.items() if now >= until]
+        for uid, blocks in list(self._blocks.items()):
+            expired = [a for a, until in list(blocks.items()) if now >= until]
             for a in expired:
-                del blocks[a]
+                blocks.pop(a, None)
             if not blocks:
                 empty_block_uids.append(uid)
         for uid in empty_block_uids:
-            del self._blocks[uid]
+            self._blocks.pop(uid, None)

@@ -9,13 +9,14 @@ Afzalliklari:
 - RAM, CPU, uptime statistikasi
 - Worker va client pool holati
 - Admin uchun /status buyruqida to'liq ma'lumot
+- /stats endpoint optional token bilan himoyalangan
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
+import platform
+import resource
 import time
 from aiohttp import web
 
@@ -23,6 +24,11 @@ from aiohttp import web
 # KONFIGURATSIYA
 # ─────────────────────────────────────────────────────────────────────────
 HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8080"))
+HEALTH_HOST = os.getenv("HEALTH_HOST", "0.0.0.0")
+# Agar HEALTH_TOKEN qo'yilgan bo'lsa, /stats endpoint shu token talab qiladi.
+# Bo'sh bo'lsa, faqat localhost'dan kirish ruxsat etiladi (default).
+HEALTH_TOKEN = os.getenv("HEALTH_TOKEN", "").strip()
+
 START_TIME = time.time()
 
 
@@ -50,7 +56,7 @@ class HealthServer:
         """HTTP serverni ishga tushirish."""
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", HEALTH_PORT)
+        site = web.TCPSite(self._runner, HEALTH_HOST, HEALTH_PORT)
         await site.start()
 
     async def stop(self) -> None:
@@ -60,7 +66,7 @@ class HealthServer:
             self._runner = None
 
     async def _handle_health(self, request: web.Request) -> web.Response:
-        """GET /health — oddiy tiriklik tekshiruvi."""
+        """GET /health — oddiy tiriklik tekshiruvi (har kim ko'ra oladi)."""
         uptime = int(time.time() - START_TIME)
         data = {
             "status": "ok",
@@ -70,9 +76,19 @@ class HealthServer:
         return web.json_response(data)
 
     async def _handle_stats(self, request: web.Request) -> web.Response:
-        """GET /stats — to'liq statistika (himoyalangan)."""
-        uptime = int(time.time() - START_TIME)
+        """
+        GET /stats — to'liq statistika.
 
+        Xavfsizlik:
+        - HEALTH_TOKEN qo'yilgan bo'lsa: ?token=... yoki Authorization header
+          orqali tekshiriladi.
+        - Token qo'yilmagan bo'lsa: faqat localhost (127.0.0.1, ::1)
+          dan kirish ruxsat etiladi.
+        """
+        if not _is_authorized(request):
+            return web.json_response({"error": "forbidden"}, status=403)
+
+        uptime = int(time.time() - START_TIME)
         data = {
             "status": "ok",
             "uptime_seconds": uptime,
@@ -81,12 +97,38 @@ class HealthServer:
         }
 
         if self._worker_stats_fn:
-            data["workers"] = self._worker_stats_fn()
+            try:
+                data["workers"] = self._worker_stats_fn()
+            except Exception as e:
+                data["workers_error"] = f"{type(e).__name__}: {e}"
 
         if self._pool_stats_fn:
-            data["client_pool"] = self._pool_stats_fn()
+            try:
+                data["client_pool"] = self._pool_stats_fn()
+            except Exception as e:
+                data["client_pool_error"] = f"{type(e).__name__}: {e}"
 
         return web.json_response(data)
+
+
+def _is_authorized(request: web.Request) -> bool:
+    """Token tekshiruvi yoki localhost-only."""
+    if HEALTH_TOKEN:
+        # Authorization: Bearer <token>
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and auth[len("Bearer "):] == HEALTH_TOKEN:
+            return True
+        # ?token=... query string
+        token = request.query.get("token", "")
+        if token == HEALTH_TOKEN:
+            return True
+        return False
+    # Token yo'q — faqat localhost
+    peer = request.transport.get_extra_info("peername") if request.transport else None
+    if not peer:
+        return False
+    host = peer[0] if isinstance(peer, tuple) else None
+    return host in ("127.0.0.1", "::1", "localhost")
 
 
 def _format_uptime(seconds: int) -> str:
@@ -107,22 +149,19 @@ def _format_uptime(seconds: int) -> str:
 
 def _get_memory_info() -> dict:
     """Joriy jarayon RAM iste'moli (Linux/Mac)."""
+    # Birinchi: resource module (Linux/Mac)
     try:
-        import resource
-        # ru_maxrss: KB (Linux) yoki bytes (Mac)
         usage = resource.getrusage(resource.RUSAGE_SELF)
-        rss_kb = usage.ru_maxrss
-        # Linux'da KB, Mac'da bytes
-        import platform
+        rss = usage.ru_maxrss  # Linux: KB, Mac: bytes
         if platform.system() == "Darwin":
-            rss_mb = rss_kb / (1024 * 1024)
+            rss_mb = rss / (1024 * 1024)
         else:
-            rss_mb = rss_kb / 1024
+            rss_mb = rss / 1024
         return {"rss_mb": round(rss_mb, 1)}
     except Exception:
         pass
 
-    # /proc/self/status dan o'qish (Linux)
+    # Ikkinchi: /proc/self/status (Linux)
     try:
         with open("/proc/self/status", "r") as f:
             for line in f:
