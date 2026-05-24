@@ -11,7 +11,7 @@ Afzalliklari:
 - Max concurrent workers limit (server overload oldini olish)
 - Graceful shutdown (data yo'qolmaydi)
 - Worker lifecycle monitoring (start/stop/crash logging)
-- Auto-restart crashed workers
+- Race-free start/stop (stopping state — yangi worker yaratishni bloklaydi)
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ class WorkerInfo:
     task: asyncio.Task
     stop_event: asyncio.Event
     started_at: float = field(default_factory=time.time)
+    stopping: bool = False  # True bo'lsa, yangi start_worker bloklanadi
 
 
 class WorkerManager:
@@ -55,6 +56,8 @@ class WorkerManager:
         self._workers: dict[int, WorkerInfo] = {}
         self._shutting_down = False
         self._shutdown_event = asyncio.Event()
+        # Worker yaratish/o'chirishda race oldini olish uchun
+        self._lock = asyncio.Lock()
 
     def set_worker_factory(self, factory: Callable[[int, asyncio.Event], Awaitable[None]]) -> None:
         """Worker yaratish funksiyasini sozlash (posting_loop)."""
@@ -62,7 +65,7 @@ class WorkerManager:
 
     @property
     def active_count(self) -> int:
-        """Hozir ishlaydigan workerlar soni."""
+        """Hozir ishlaydigan workerlar soni (stopping ham hisoblanadi)."""
         return len(self._workers)
 
     @property
@@ -70,86 +73,142 @@ class WorkerManager:
         return self._shutting_down
 
     def is_running(self, uid: int) -> bool:
-        """Foydalanuvchining workeri ishlamoqdami?"""
-        return uid in self._workers
+        """
+        Foydalanuvchining workeri faol ishlamoqdami?
+        Stopping yoki done bo'lsa False.
+        """
+        wi = self._workers.get(uid)
+        if wi is None:
+            return False
+        if wi.stopping:
+            return False
+        if wi.task.done():
+            return False
+        return True
 
     async def start_worker(self, uid: int) -> bool:
         """
-        Worker boshlash. 
+        Worker boshlash.
         Returns: True = boshlandi, False = limit yoki allaqachon ishlayapti
         """
-        if self._shutting_down:
-            return False
+        async with self._lock:
+            if self._shutting_down:
+                return False
 
-        if uid in self._workers:
-            return True  # allaqachon ishlayapti
+            existing = self._workers.get(uid)
+            if existing is not None:
+                # Mavjud worker bor — stopping bo'lsa kutib turamiz
+                if existing.stopping:
+                    # Stop tugashini lock tashqarisida kutamiz
+                    pass
+                elif not existing.task.done():
+                    # Hali ishlamoqda — qayta start kerak emas
+                    return True
+                else:
+                    # Done bo'lib qolgan, lekin pop bo'lmagan — tozalaymiz
+                    self._workers.pop(uid, None)
 
-        if len(self._workers) >= self.max_workers:
-            logger.warning(f"⚠️ Worker limit ({self.max_workers}) — {uid} boshlab bo'lmaydi")
-            return False
+            # Stopping holatidagi worker tugashini lock tashqarisida kutamiz
+            if existing is not None and existing.stopping:
+                # Lock-ni vaqtincha bo'shatish — stop_worker tugashi uchun
+                pass
 
-        if self._worker_factory is None:
-            logger.error("❌ Worker factory sozlanmagan!")
-            return False
+        # Stopping worker tugashini kutamiz (lock'siz, deadlockni oldini olish)
+        if uid in self._workers and self._workers[uid].stopping:
+            wi = self._workers[uid]
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(wi.task, timeout=WORKER_STOP_TIMEOUT_S)
 
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            self._run_worker(uid, stop_event),
-            name=f"worker-{uid}",
-        )
-        self._workers[uid] = WorkerInfo(uid=uid, task=task, stop_event=stop_event)
-        logger.info(f"🟢 Worker boshlandi: {uid} (jami: {self.active_count})")
-        return True
+        async with self._lock:
+            if self._shutting_down:
+                return False
+
+            # Stopping yakunlanganidan keyin tozalaymiz
+            existing = self._workers.get(uid)
+            if existing is not None and (existing.stopping or existing.task.done()):
+                self._workers.pop(uid, None)
+            elif existing is not None:
+                # Boshqa thread tomonidan qayta yaratilgan
+                return True
+
+            if len(self._workers) >= self.max_workers:
+                logger.warning(f"⚠️ Worker limit ({self.max_workers}) — {uid} boshlab bo'lmaydi")
+                return False
+
+            if self._worker_factory is None:
+                logger.error("❌ Worker factory sozlanmagan!")
+                return False
+
+            stop_event = asyncio.Event()
+            task = asyncio.create_task(
+                self._run_worker(uid, stop_event),
+                name=f"worker-{uid}",
+            )
+            self._workers[uid] = WorkerInfo(
+                uid=uid, task=task, stop_event=stop_event
+            )
+            logger.info(f"🟢 Worker boshlandi: {uid} (jami: {self.active_count})")
+            return True
 
     async def stop_worker(self, uid: int) -> bool:
         """
-        Worker to'xtatish (graceful).
+        Worker to'xtatish (graceful, race-safe).
         Returns: True = to'xtatildi, False = topilmadi
         """
-        wi = self._workers.pop(uid, None)
-        if wi is None:
-            return False
+        async with self._lock:
+            wi = self._workers.get(uid)
+            if wi is None or wi.stopping:
+                return False
+            wi.stopping = True
+            wi.stop_event.set()
+            task = wi.task
 
-        wi.stop_event.set()
+        # Lock tashqarisida task tugashini kutamiz
         try:
-            await asyncio.wait_for(wi.task, timeout=WORKER_STOP_TIMEOUT_S)
+            await asyncio.wait_for(task, timeout=WORKER_STOP_TIMEOUT_S)
         except asyncio.TimeoutError:
-            wi.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await wi.task
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
             logger.warning(f"⚠️ Worker {uid} force-cancel (timeout)")
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logger.error(f"💥 Worker {uid} stop xato: {type(e).__name__}: {e}")
+
+        # _run_worker finally allaqachon pop qilgan, lekin defensive
+        async with self._lock:
+            self._workers.pop(uid, None)
 
         logger.info(f"🔴 Worker to'xtatildi: {uid} (jami: {self.active_count})")
         return True
 
     async def stop_all(self) -> None:
         """Barcha workerlarni graceful to'xtatish."""
-        self._shutting_down = True
-        uids = list(self._workers.keys())
+        async with self._lock:
+            self._shutting_down = True
+            uids = list(self._workers.keys())
+            tasks: list[asyncio.Task] = []
+            for uid in uids:
+                wi = self._workers.get(uid)
+                if wi and not wi.stopping:
+                    wi.stopping = True
+                    wi.stop_event.set()
+                    tasks.append(wi.task)
 
-        if not uids:
+        if not tasks:
             return
 
-        logger.info(f"🛑 {len(uids)} ta worker to'xtatilmoqda...")
+        logger.info(f"🛑 {len(tasks)} ta worker to'xtatilmoqda...")
 
-        # Barcha stop eventlarni set qilamiz
-        for uid in uids:
-            wi = self._workers.get(uid)
-            if wi:
-                wi.stop_event.set()
+        done, pending = await asyncio.wait(tasks, timeout=WORKER_STOP_TIMEOUT_S)
+        for t in pending:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await t
 
-        # Barcha tasklarning tugashini kutamiz
-        tasks = [self._workers[uid].task for uid in uids if uid in self._workers]
-        if tasks:
-            done, pending = await asyncio.wait(tasks, timeout=WORKER_STOP_TIMEOUT_S)
-            for t in pending:
-                t.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await t
-
-        self._workers.clear()
+        async with self._lock:
+            self._workers.clear()
         logger.info("✅ Barcha workerlar to'xtatildi")
 
     async def shutdown(self) -> None:
@@ -162,8 +221,16 @@ class WorkerManager:
         await self._shutdown_event.wait()
 
     def setup_signals(self) -> None:
-        """SIGTERM/SIGINT uchun graceful shutdown sozlash."""
-        loop = asyncio.get_event_loop()
+        """
+        SIGTERM/SIGINT uchun graceful shutdown sozlash.
+        async kontekstda chaqirilishi kutiladi (main() ichida).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Running loop yo'q (sinov yoki Windows) — signal handler
+            # sozlamasdan tinch chiqamiz
+            return
 
         def _handle_signal(sig):
             logger.info(f"📡 Signal qabul qilindi: {sig.name}")
@@ -173,7 +240,7 @@ class WorkerManager:
             try:
                 loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s))
             except (NotImplementedError, RuntimeError):
-                # Windows'da signal handler ishlamaydi
+                # Windows yoki cheklangan loop — pass
                 pass
 
     def stats(self) -> dict:
@@ -185,6 +252,7 @@ class WorkerManager:
                 "uid": uid,
                 "uptime_s": int(now - wi.started_at),
                 "running": not wi.task.done(),
+                "stopping": wi.stopping,
             })
         return {
             "active": self.active_count,
@@ -204,5 +272,6 @@ class WorkerManager:
         except Exception as e:
             logger.error(f"💥 Worker {uid} crash: {type(e).__name__}: {e}")
         finally:
-            # Worker tugaganda — ro'yxatdan o'chirish
+            # Worker tugaganda — ro'yxatdan o'chirish (lock olishga
+            # ehtiyoj yo'q, dict.pop atomic)
             self._workers.pop(uid, None)

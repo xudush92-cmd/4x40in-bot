@@ -253,6 +253,8 @@ class LoginCtx:
     phone: str
     phone_code_hash: str
     started_at: float
+    wrong_count: int = 0
+    resend_count: int = 0
 
 
 user_states: dict[int, dict] = {}
@@ -307,17 +309,43 @@ async def is_approved(uid: int) -> bool:
     return await db.is_admin(uid)
 
 
+def _user_to_schedule(user: dict | None) -> tuple[dtime, dtime]:
+    """Foydalanuvchi dict'idan schedule kortejini chiqarish."""
+    if not user:
+        return dtime(0, 0), dtime(23, 59)
+    try:
+        sh, sm = map(int, user.get("schedule_start", "00:00").split(":"))
+        eh, em = map(int, user.get("schedule_end", "23:59").split(":"))
+        return dtime(sh, sm), dtime(eh, em)
+    except Exception:
+        return dtime(0, 0), dtime(23, 59)
+
+
 async def menu_for(uid: int) -> ReplyKeyboardMarkup:
-    if not await is_approved(uid):
-        if await db.get_pending(uid):
+    """
+    Foydalanuvchi uchun mos klaviaturani qaytaradi.
+
+    Optimization: ilgari 5 ta DB query qilardi, hozir 1 ta `get_user`
+    chaqiruvi orqali barcha kerakli ma'lumotni oladi.
+    """
+    user = await db.get_user(uid)
+    super_flag = uid == SUPER_ADMIN
+    is_admin_flag = bool(user and user.get("is_admin"))
+    approved = super_flag or is_admin_flag
+    pending = bool(user and user.get("pending_session")) if user else False
+    session = (user.get("session") if user else None)
+
+    if not approved:
+        if pending:
             return kb_pending()
         return kb_login()
-    if not await db.get_session(uid):
+    if not session:
         return kb_login()
-    interval = await db.get_interval(uid)
-    sched = await db.get_schedule(uid)
+
+    interval = int(user.get("interval_min", 4)) if user else 4
+    sched = _user_to_schedule(user)
     running = worker_manager.is_running(uid) if worker_manager else False
-    return kb_main(interval, sched, running, is_super(uid))
+    return kb_main(interval, sched, running, super_flag)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -334,7 +362,8 @@ async def cleanup_login(uid: int) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 # NUMPAD
 # ─────────────────────────────────────────────────────────────────────────
-CODE_LENGTH = 5
+CODE_LENGTH = 5       # Telegram standart kod uzunligi
+MAX_CODE_LENGTH = 6   # Ba'zi hollarda 6 raqam ham bo'ladi
 
 
 def numpad_kb() -> InlineKeyboardMarkup:
@@ -375,11 +404,37 @@ def numpad_message(buffer: str, hint: str = "") -> str:
 
 
 async def _send_numpad(uid: int, buffer: str = "", hint: str = "") -> None:
-    msg = await application.bot.send_message(
-        uid, numpad_message(buffer, hint), reply_markup=numpad_kb()
-    )
+    """
+    Numpad xabarini yangilaydi yoki yangi yuboradi.
+
+    Agar mavjud numpad_msg_id bo'lsa — uni edit qiladi (yangi xabar
+    yuborilmaydi). Bu tufayli foydalanuvchi eski xabarda bosa olmaydi
+    va chat tartibli qoladi.
+    """
+    text = numpad_message(buffer, hint)
     state = user_states.get(uid, {})
+    msg_id = state.get("numpad_msg_id")
+
+    if msg_id:
+        try:
+            await application.bot.edit_message_text(
+                chat_id=uid,
+                message_id=msg_id,
+                text=text,
+                reply_markup=numpad_kb(),
+            )
+            state["ts"] = time.time()
+            user_states[uid] = state
+            return
+        except Exception:
+            # Xabar topilmadi yoki o'zgarmadi — yangi yuboramiz
+            pass
+
+    msg = await application.bot.send_message(
+        uid, text, reply_markup=numpad_kb()
+    )
     state["numpad_msg_id"] = msg.message_id
+    state["ts"] = time.time()
     user_states[uid] = state
 
 
@@ -414,9 +469,8 @@ async def _attempt_signin(uid: int, code: str) -> None:
         )
 
     except PhoneCodeInvalidError:
-        wrong = ctx.__dict__.get("_wrong_count", 0) + 1
-        ctx.__dict__["_wrong_count"] = wrong
-        if wrong >= 5:
+        ctx.wrong_count += 1
+        if ctx.wrong_count >= 5:
             await cleanup_login(uid)
             await application.bot.send_message(
                 uid,
@@ -431,12 +485,12 @@ async def _attempt_signin(uid: int, code: str) -> None:
         state["ts"] = time.time()
         user_states[uid] = state
         await _send_numpad(
-            uid, "", hint=f"❌ Noto'g'ri kod ({wrong}/5). Qaytadan kiriting:"
+            uid, "", hint=f"❌ Noto'g'ri kod ({ctx.wrong_count}/5). Qaytadan kiriting:"
         )
 
     except PhoneCodeExpiredError:
-        attempts = ctx.__dict__.get("_resend_count", 0) + 1
-        if attempts > 3:
+        ctx.resend_count += 1
+        if ctx.resend_count > 3:
             await cleanup_login(uid)
             await application.bot.send_message(
                 uid,
@@ -451,8 +505,7 @@ async def _attempt_signin(uid: int, code: str) -> None:
                 ctx.client.send_code_request(ctx.phone), timeout=20
             )
             ctx.phone_code_hash = result.phone_code_hash
-            ctx.__dict__["_resend_count"] = attempts
-            ctx.__dict__["_wrong_count"] = 0
+            ctx.wrong_count = 0
             state = user_states.get(uid, {})
             state["code_buffer"] = ""
             state["ts"] = time.time()
@@ -461,7 +514,7 @@ async def _attempt_signin(uid: int, code: str) -> None:
                 uid,
                 "",
                 hint=(
-                    f"⏰ Eski kod yaroqsiz — YANGI kod yuborildi! ({attempts}/3)\n"
+                    f"⏰ Eski kod yaroqsiz — YANGI kod yuborildi! ({ctx.resend_count}/3)\n"
                     "Telegram ilovangizdan ENG SO'NGGI kodni qarang."
                 ),
             )
@@ -882,8 +935,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         else:
             if not action.isdigit():
                 return
-            if len(buffer) >= 6:
-                await q.answer("Maksimal 6 ta raqam!", show_alert=True)
+            if len(buffer) >= MAX_CODE_LENGTH:
+                await q.answer(
+                    f"Maksimal {MAX_CODE_LENGTH} ta raqam!", show_alert=True
+                )
                 return
             buffer += action
 
@@ -926,8 +981,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     reply_markup=await menu_for(target),
                 )
         else:
+            # Pending bekor qilinadi. session bu yerda yo'q (faqat pending),
+            # shu sababli del_session chaqirilmaydi.
             await db.del_pending(target)
-            await db.del_session(target)
             log(f"❌ Rad etildi: {target}")
             await q.edit_message_text(f"⛔ Rad etildi: {target}")
             with contextlib.suppress(Exception):
@@ -1090,10 +1146,13 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
 
 async def format_admin_list() -> str:
     admins = await db.get_admins()
-    lines = [f"👥 ADMINLAR ({len(admins)} ta):", "", f"• 👑 Super admin ({SUPER_ADMIN})"]
-    for a in admins:
-        if a == SUPER_ADMIN:
-            continue
+    non_super = [a for a in admins if a != SUPER_ADMIN]
+    lines = [
+        f"👥 ADMINLAR ({len(admins)} ta — 1 super + {len(non_super)} oddiy):",
+        "",
+        f"• 👑 Super admin ({SUPER_ADMIN})",
+    ]
+    for a in non_super:
         info = await db.get_user_info(a)
         name = info.get("name", "Noma'lum")
         username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
@@ -1101,8 +1160,8 @@ async def format_admin_list() -> str:
         ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
         interval = await db.get_interval(a)
         sched = await db.get_schedule(a)
-        chats_n = len(await db.get_chats(a))
-        posts_n = len(await db.get_posts(a))
+        chats_n = await db.count_chats(a)
+        posts_n = await db.count_posts(a)
         lines.append("")
         lines.append(f"👤 {name}")
         lines.append(f"   {username} | {a}")
@@ -1587,20 +1646,27 @@ async def _handle_add_chat(update: Update, text: str) -> None:
     if not chat:
         await update.message.reply_text("❌ Bo'sh.", reply_markup=await menu_for(uid))
         return
-    chats = await db.get_chats(uid)
-    if len(chats) >= MAX_CHATS:
-        await update.message.reply_text(
-            f"❌ Maksimal {MAX_CHATS} ta.", reply_markup=await menu_for(uid)
-        )
+
+    # Atomic check + insert (race-safe)
+    ok, reason = await db.add_chat(uid, chat, max_chats=MAX_CHATS)
+    if not ok:
+        if reason == "limit":
+            await update.message.reply_text(
+                f"❌ Maksimal {MAX_CHATS} ta chat. Avval birini o'chiring.",
+                reply_markup=await menu_for(uid),
+            )
+        elif reason == "duplicate":
+            await update.message.reply_text(
+                "⚠️ Allaqachon mavjud.", reply_markup=await menu_for(uid)
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Qo'shib bo'lmadi.", reply_markup=await menu_for(uid)
+            )
         return
-    added = await db.add_chat(uid, chat)
-    if not added:
-        await update.message.reply_text(
-            "⚠️ Allaqachon mavjud.", reply_markup=await menu_for(uid)
-        )
-        return
+
     log(f"💬 Chat qo'shildi: {uid} → {chat}")
-    new_count = len(await db.get_chats(uid))
+    new_count = await db.count_chats(uid)
     await update.message.reply_text(
         f"✅ Qo'shildi: {chat}\n💬 Jami: {new_count}/{MAX_CHATS}",
         reply_markup=await menu_for(uid),
@@ -1614,6 +1680,15 @@ async def _handle_add_post(update: Update) -> None:
 
     text = msg.text or msg.caption or ""
     entities_src = list(msg.entities or []) + list(msg.caption_entities or [])
+
+    # Limitni rasm yuklashdan oldin tekshiramiz (rasm yuklab keyin
+    # tashlab yuborish — vaqt va trafik isrofi)
+    pre_count = await db.count_posts(uid)
+    if pre_count >= MAX_POSTS:
+        await msg.reply_text(
+            f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
+        )
+        return
 
     photo_path: str | None = None
     if msg.photo:
@@ -1638,17 +1713,24 @@ async def _handle_add_post(update: Update) -> None:
         )
         return
 
-    posts = await db.get_posts(uid)
-    if len(posts) >= MAX_POSTS:
+    entities_dict = [entity_to_dict(e) for e in entities_src]
+    # Atomic check + insert (race-safe)
+    ok, reason, _ = await db.add_post(
+        uid, text, entities_dict, photo_path, max_posts=MAX_POSTS
+    )
+    if not ok:
         _safe_unlink(photo_path)
-        await msg.reply_text(
-            f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
-        )
+        if reason == "limit":
+            await msg.reply_text(
+                f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
+            )
+        else:
+            await msg.reply_text(
+                "❌ Saqlab bo'lmadi.", reply_markup=await menu_for(uid)
+            )
         return
 
-    entities_dict = [entity_to_dict(e) for e in entities_src]
-    await db.add_post(uid, text, entities_dict, photo_path)
-    new_count = len(await db.get_posts(uid))
+    new_count = await db.count_posts(uid)
     log(f"📝 Post qo'shildi: {uid} (#{new_count}) {'+rasm' if photo_path else ''}")
     preview = (text or "(faqat rasm)")[:100]
     kind = "🖼 Rasm + matn" if photo_path else "📝 Matn"
@@ -1696,6 +1778,14 @@ async def _handle_set_schedule(update: Update, text: str) -> None:
             "❌ Format noto'g'ri. Masalan: 09:00-22:00"
         )
         return
+
+    if start == end:
+        await update.message.reply_text(
+            "❌ Boshlanish va tugash vaqti bir xil bo'lmasligi kerak.\n"
+            "Butun kun uchun: 00:00-23:59"
+        )
+        return
+
     user_states.pop(uid, None)
     await db.set_schedule(uid, start, end)
     log(f"🕒 Schedule: {uid} → {start.strftime('%H:%M')}–{end.strftime('%H:%M')}")
@@ -1737,10 +1827,14 @@ async def main() -> None:
     # 1. Bazani sozlash
     await db.init_db()
 
-    # 2. JSON'dan migratsiya (eski versiyadan)
+    # 2. JSON'dan migratsiya (eski versiyadan, idempotent)
     migrated = await db.migrate_from_json()
-    if migrated:
-        log(f"📦 JSON dan {migrated} ta foydalanuvchi import qilindi")
+    if migrated.get("files"):
+        log(
+            f"📦 JSON dan import: {migrated['users']} user, "
+            f"{migrated['chats']} chat, {migrated['posts']} post "
+            f"({len(migrated['files'])} fayl: {', '.join(migrated['files'])})"
+        )
 
     # 3. Super admin bazada borligini ta'minlash
     await db.upsert_user(SUPER_ADMIN, is_admin=1)
@@ -1762,7 +1856,8 @@ async def main() -> None:
     )
     try:
         await health_server.start()
-        log("🌐 Health server: http://0.0.0.0:8080/health")
+        from health import HEALTH_HOST, HEALTH_PORT
+        log(f"🌐 Health server: http://{HEALTH_HOST}:{HEALTH_PORT}/health")
     except Exception as e:
         log(f"⚠️ Health server xato: {e}", "warning")
 
