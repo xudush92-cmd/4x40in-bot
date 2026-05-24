@@ -1,8 +1,3 @@
-yfinance
-ta
-pandas
-numpy
 python-telegram-bot>=20.0
-flask
 telethon>=1.36
 python-dotenv
