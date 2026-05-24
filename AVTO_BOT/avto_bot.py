@@ -1,17 +1,22 @@
 """
-AVTO BOT — Telegram avto-poster bot.
+AVTO BOT — Telegram avto-poster bot (yangi arxitektura).
 
-Foydalanuvchilar o'z Telegram hisoblari orqali tanlangan chatlarga
-belgilangan vaqt oraliqlarida avtomatik reklama joylashtiradi.
+Modullar:
+- database.py    — SQLite storage (JSON o'rniga)
+- client_pool.py — Telethon client pool (RAM tejash)
+- worker_manager.py — Worker limit va graceful shutdown
+- health.py      — HTTP /health endpoint
+- rate_limiter.py — Anti-spam himoya
 
 XAVFSIZLIK:
-- Kod va parol DISK-ga saqlanmaydi (faqat StringSession saqlanadi).
-- JSON yozish atomik (os.replace) va asyncio.Lock bilan.
-- FloodWait, AuthKeyUnregistered, ChatWriteForbidden xatolari to'g'ri ishlanadi.
-- Super admin har bir yangi foydalanuvchi uchun ON/OFF tasdiq beradi.
+- Kod va parol DISK-ga saqlanmaydi (faqat StringSession)
+- SQLite WAL mode — concurrent access xavfsiz
+- Kod kiritish: inline numpad (Telegram anti-fraud bypass)
+- Rate limiting (login, command, modify)
+- Graceful shutdown (SIGTERM/SIGINT)
 
 ISHLATISH:
-    pip install python-telegram-bot telethon python-dotenv
+    pip install -r requirements.txt
     cp .env.example .env  # va to'ldiring
     python avto_bot.py
 """
@@ -20,18 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import random
 import shutil
-import tempfile
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -90,6 +92,13 @@ from telegram.ext import (
     filters,
 )
 
+# Ichki modullar
+import database as db
+from client_pool import ClientPool
+from worker_manager import WorkerManager
+from health import HealthServer, format_status_message, START_TIME, _get_memory_info
+from rate_limiter import RateLimiter
+
 # ─────────────────────────────────────────────────────────────────────────
 # ENV
 # ─────────────────────────────────────────────────────────────────────────
@@ -116,33 +125,19 @@ SUPER_ADMIN = int(_require_env("ADMIN_ID"))
 MAX_CHATS = 10
 MAX_POSTS = 20
 MIN_INTERVAL_MIN = 4
-MAX_INTERVAL_MIN = 1440          # 24 soat
-LOGIN_TIMEOUT_S = 300            # 5 daqiqa — yangi userlar uchun yetarli vaqt
-SEND_DELAY_S = 5                 # chatlar orasidagi pauza
-INTERVAL_JITTER_S = 30           # interval ±jitter
-DEFAULT_TZ_OFFSET = 5            # UTC+5 (Toshkent)
+MAX_INTERVAL_MIN = 1440
+LOGIN_TIMEOUT_S = 300
+SEND_DELAY_S = 5
+INTERVAL_JITTER_S = 30
+DEFAULT_TZ_OFFSET = 5
 
-# Aloqa uchun admin telefon raqami (foydalanuvchilarga ko'rsatiladi)
 ADMIN_CONTACT_PHONE = "+998938670592"
-
-# Bot reklamasi — har bir yuborilgan post oxiriga avtomatik qo'shiladi
 BOT_USERNAME = "@avtoelon_el_uzbot"
 BOT_AD_FOOTER = f"\n\n🤖 AVTO_BOT — {BOT_USERNAME}"
 
-DATA_DIR = "data"
 MEDIA_DIR = "media"
-os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-CHATS_FILE = os.path.join(DATA_DIR, "chats.json")
-ADMINS_FILE = os.path.join(DATA_DIR, "admins.json")
-POSTS_FILE = os.path.join(DATA_DIR, "posts.json")
-SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
-PENDING_FILE = os.path.join(DATA_DIR, "pending.json")
-INTERVALS_FILE = os.path.join(DATA_DIR, "intervals.json")
-SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
-RUNNING_FILE = os.path.join(DATA_DIR, "running.json")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
 LOG_FILE = "avto_bot.log"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -163,260 +158,6 @@ def log(msg: str, level: str = "info") -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# ATOMIK + LOCK-LI JSON SAQLASH
-# ─────────────────────────────────────────────────────────────────────────
-_locks: dict[str, asyncio.Lock] = {}
-
-
-def _lock(path: str) -> asyncio.Lock:
-    if path not in _locks:
-        _locks[path] = asyncio.Lock()
-    return _locks[path]
-
-
-async def jload(path: str, default: Any) -> Any:
-    async with _lock(path):
-        try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception as e:
-            log(f"JSON o'qish xatosi ({path}): {e}", "error")
-        return default
-
-
-async def jsave(path: str, data: Any) -> None:
-    async with _lock(path):
-        d = os.path.dirname(path) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, path)
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                os.remove(tmp)
-            log(f"JSON saqlash xatosi ({path}): {e}", "error")
-
-
-async def jpatch(path: str, key: str, value: Any) -> None:
-    """Bitta dict-fayl ichida key/value yangilash (atomik read-modify-write)."""
-    async with _lock(path):
-        data: dict = {}
-        try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-        except Exception as e:
-            log(f"JSON o'qish xatosi ({path}): {e}", "error")
-        if not isinstance(data, dict):
-            data = {}
-        data[key] = value
-        d = os.path.dirname(path) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, path)
-        except Exception as e:
-            with contextlib.suppress(Exception):
-                os.remove(tmp)
-            log(f"JSON saqlash xatosi ({path}): {e}", "error")
-
-
-async def jdrop(path: str, key: str) -> None:
-    async with _lock(path):
-        try:
-            if not os.path.exists(path):
-                return
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict) or key not in data:
-                return
-            data.pop(key, None)
-            d = os.path.dirname(path) or "."
-            fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, path)
-        except Exception as e:
-            log(f"JSON o'chirish xatosi ({path}): {e}", "error")
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# STORAGE — yuqori darajadagi yordamchilar
-# ─────────────────────────────────────────────────────────────────────────
-async def get_session(uid: int) -> str | None:
-    return (await jload(SESSIONS_FILE, {})).get(str(uid))
-
-
-async def set_session(uid: int, sess: str) -> None:
-    await jpatch(SESSIONS_FILE, str(uid), sess)
-
-
-async def del_session(uid: int) -> None:
-    await jdrop(SESSIONS_FILE, str(uid))
-
-
-async def get_pending(uid: int) -> str | None:
-    return (await jload(PENDING_FILE, {})).get(str(uid))
-
-
-async def set_pending(uid: int, sess: str) -> None:
-    await jpatch(PENDING_FILE, str(uid), sess)
-
-
-async def del_pending(uid: int) -> None:
-    await jdrop(PENDING_FILE, str(uid))
-
-
-async def get_admins() -> list[int]:
-    raw = await jload(ADMINS_FILE, [])
-    if not isinstance(raw, list):
-        return []
-    return [int(x) for x in raw if isinstance(x, (int, str)) and str(x).lstrip("-").isdigit()]
-
-
-async def add_admin(uid: int) -> None:
-    async with _lock(ADMINS_FILE):
-        admins = []
-        if os.path.exists(ADMINS_FILE):
-            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-                try:
-                    admins = json.load(f)
-                except Exception:
-                    admins = []
-        if not isinstance(admins, list):
-            admins = []
-        if uid not in admins and uid != SUPER_ADMIN:
-            admins.append(uid)
-        d = os.path.dirname(ADMINS_FILE) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(admins, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, ADMINS_FILE)
-
-
-async def remove_admin(uid: int) -> None:
-    async with _lock(ADMINS_FILE):
-        admins = []
-        if os.path.exists(ADMINS_FILE):
-            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-                try:
-                    admins = json.load(f)
-                except Exception:
-                    admins = []
-        if not isinstance(admins, list):
-            admins = []
-        admins = [a for a in admins if a != uid]
-        d = os.path.dirname(ADMINS_FILE) or "."
-        fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=d)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(admins, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, ADMINS_FILE)
-
-
-async def is_approved(uid: int) -> bool:
-    if uid == SUPER_ADMIN:
-        return True
-    return uid in await get_admins()
-
-
-def is_super(uid: int) -> bool:
-    return uid == SUPER_ADMIN
-
-
-async def get_user_info(uid: int) -> dict:
-    return (await jload(USERS_FILE, {})).get(str(uid), {})
-
-
-async def set_user_info(uid: int, info: dict) -> None:
-    await jpatch(USERS_FILE, str(uid), info)
-
-
-async def del_user_info(uid: int) -> None:
-    await jdrop(USERS_FILE, str(uid))
-
-
-async def get_chats(uid: int) -> list[str]:
-    return (await jload(CHATS_FILE, {})).get(str(uid), [])
-
-
-async def set_chats(uid: int, chats: list[str]) -> None:
-    await jpatch(CHATS_FILE, str(uid), chats)
-
-
-async def del_chats(uid: int) -> None:
-    await jdrop(CHATS_FILE, str(uid))
-
-
-async def get_posts(uid: int) -> list[dict]:
-    return (await jload(POSTS_FILE, {})).get(str(uid), [])
-
-
-async def set_posts(uid: int, posts: list[dict]) -> None:
-    await jpatch(POSTS_FILE, str(uid), posts)
-
-
-async def del_posts(uid: int) -> None:
-    await jdrop(POSTS_FILE, str(uid))
-
-
-async def get_interval(uid: int) -> int:
-    raw = (await jload(INTERVALS_FILE, {})).get(str(uid), MIN_INTERVAL_MIN)
-    try:
-        m = int(raw)
-    except Exception:
-        m = MIN_INTERVAL_MIN
-    return max(MIN_INTERVAL_MIN, min(MAX_INTERVAL_MIN, m))
-
-
-async def set_interval(uid: int, minutes: int) -> None:
-    minutes = max(MIN_INTERVAL_MIN, min(MAX_INTERVAL_MIN, minutes))
-    await jpatch(INTERVALS_FILE, str(uid), minutes)
-
-
-async def del_interval(uid: int) -> None:
-    await jdrop(INTERVALS_FILE, str(uid))
-
-
-async def get_schedule(uid: int) -> tuple[dtime, dtime]:
-    raw = (await jload(SCHEDULE_FILE, {})).get(str(uid))
-    if not raw:
-        return dtime(0, 0), dtime(23, 59)
-    try:
-        sh, sm = map(int, raw["start"].split(":"))
-        eh, em = map(int, raw["end"].split(":"))
-        return dtime(sh, sm), dtime(eh, em)
-    except Exception:
-        return dtime(0, 0), dtime(23, 59)
-
-
-async def set_schedule(uid: int, start: dtime, end: dtime) -> None:
-    await jpatch(
-        SCHEDULE_FILE,
-        str(uid),
-        {"start": start.strftime("%H:%M"), "end": end.strftime("%H:%M")},
-    )
-
-
-async def del_schedule(uid: int) -> None:
-    await jdrop(SCHEDULE_FILE, str(uid))
-
-
-async def get_running(uid: int) -> bool:
-    return bool((await jload(RUNNING_FILE, {})).get(str(uid), False))
-
-
-async def set_running(uid: int, value: bool) -> None:
-    await jpatch(RUNNING_FILE, str(uid), bool(value))
-
-
-async def del_running(uid: int) -> None:
-    await jdrop(RUNNING_FILE, str(uid))
-
-
-# ─────────────────────────────────────────────────────────────────────────
 # VAQT YORDAMCHILARI
 # ─────────────────────────────────────────────────────────────────────────
 def now_local() -> datetime:
@@ -427,12 +168,10 @@ def in_window(now: datetime, start: dtime, end: dtime) -> bool:
     cur = now.time()
     if start <= end:
         return start <= cur <= end
-    # tunda o'tuvchi oyna (masalan 22:00 - 06:00)
     return cur >= start or cur <= end
 
 
 def seconds_to_window_open(now: datetime, start: dtime, end: dtime) -> int:
-    """Oyna ochilguncha qancha soniya kutish kerak. Ichida bo'lsa 0."""
     if in_window(now, start, end):
         return 0
     today = now.date()
@@ -446,7 +185,7 @@ def seconds_to_window_open(now: datetime, start: dtime, end: dtime) -> int:
 # ENTITY KONVERTOR (PTB → Telethon)
 # ─────────────────────────────────────────────────────────────────────────
 def entity_to_dict(e: MessageEntity) -> dict:
-    d: dict[str, Any] = {"type": e.type, "offset": e.offset, "length": e.length}
+    d = {"type": e.type, "offset": e.offset, "length": e.length}
     if e.url:
         d["url"] = e.url
     if e.language:
@@ -516,17 +255,19 @@ class LoginCtx:
     started_at: float
 
 
-@dataclass
-class Worker:
-    uid: int
-    task: asyncio.Task
-    stop_event: asyncio.Event
+user_states: dict[int, dict] = {}
+login_ctx: dict[int, LoginCtx] = {}
 
-
-user_states: dict[int, dict] = {}     # FSM (login, post qo'shish va h.k.)
-login_ctx: dict[int, LoginCtx] = {}   # Login jarayonidagi temp clientlar
-workers: dict[int, Worker] = {}       # Faol posting tasklar
+# Global komponentlar (main() da ishga tushiriladi)
 application: Application | None = None
+client_pool: ClientPool | None = None
+worker_manager: WorkerManager | None = None
+health_server: HealthServer | None = None
+rate_limiter: RateLimiter = RateLimiter()
+
+
+def is_super(uid: int) -> bool:
+    return uid == SUPER_ADMIN
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -556,20 +297,26 @@ def kb_main(interval: int, sched: tuple[dtime, dtime], running: bool, super_admi
         [KeyboardButton("🚪 Logout")],
     ]
     if super_admin:
-        rows.append([KeyboardButton("👥 Adminlar")])
+        rows.append([KeyboardButton("👥 Adminlar"), KeyboardButton("🖥 Tizim")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+async def is_approved(uid: int) -> bool:
+    if uid == SUPER_ADMIN:
+        return True
+    return await db.is_admin(uid)
 
 
 async def menu_for(uid: int) -> ReplyKeyboardMarkup:
     if not await is_approved(uid):
-        if await get_pending(uid):
+        if await db.get_pending(uid):
             return kb_pending()
         return kb_login()
-    if not await get_session(uid):
+    if not await db.get_session(uid):
         return kb_login()
-    interval = await get_interval(uid)
-    sched = await get_schedule(uid)
-    running = uid in workers
+    interval = await db.get_interval(uid)
+    sched = await db.get_schedule(uid)
+    running = worker_manager.is_running(uid) if worker_manager else False
     return kb_main(interval, sched, running, is_super(uid))
 
 
@@ -585,14 +332,9 @@ async def cleanup_login(uid: int) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# NUMPAD — Kodni xavfsiz kiritish (Telegram anti-fraud bypass)
-#
-# Sabab: agar foydalanuvchi kodni MATN sifatida yozsa (hatto chat'da),
-# Telegram serveri uni "leaked code" deb hisoblab, darhol bekor qiladi.
-# Inline tugma orqali kiritsa — kod hech qaerda matn ko'rinishida
-# ko'rinmaydi va Telegram uni bekor qila olmaydi.
+# NUMPAD
 # ─────────────────────────────────────────────────────────────────────────
-CODE_LENGTH = 5  # Telegram login kodi 5 raqamli (ba'zan 6 — 6 ham qabul qilinadi)
+CODE_LENGTH = 5
 
 
 def numpad_kb() -> InlineKeyboardMarkup:
@@ -611,7 +353,6 @@ def numpad_kb() -> InlineKeyboardMarkup:
 
 
 def numpad_display(buffer: str, total: int = CODE_LENGTH) -> str:
-    """Kiritilgan raqamlarni vizual ko'rsatish: '7 3 ▪ ▪ ▪'"""
     n = max(total, len(buffer))
     parts = [(buffer[i] if i < len(buffer) else "▪") for i in range(n)]
     return " ".join(parts)
@@ -634,7 +375,6 @@ def numpad_message(buffer: str, hint: str = "") -> str:
 
 
 async def _send_numpad(uid: int, buffer: str = "", hint: str = "") -> None:
-    """Foydalanuvchiga numpad xabarini yuboradi va message_id ni saqlaydi."""
     msg = await application.bot.send_message(
         uid, numpad_message(buffer, hint), reply_markup=numpad_kb()
     )
@@ -644,7 +384,6 @@ async def _send_numpad(uid: int, buffer: str = "", hint: str = "") -> None:
 
 
 async def _attempt_signin(uid: int, code: str) -> None:
-    """Kodni Telegram'ga yuboradi va natijaga qarab keyingi qadamni ko'rsatadi."""
     ctx = login_ctx.get(uid)
     if not ctx:
         await cleanup_login(uid)
@@ -656,18 +395,15 @@ async def _attempt_signin(uid: int, code: str) -> None:
         return
 
     try:
-        # Client'ning ulanishini saqlab turish — uzilib qolmasin
         if not ctx.client.is_connected():
             await asyncio.wait_for(ctx.client.connect(), timeout=20)
         await ctx.client.sign_in(
             phone=ctx.phone, code=code, phone_code_hash=ctx.phone_code_hash
         )
-        # Muvaffaqiyat — finalize
         await _finalize_login_uid(uid)
         return
 
     except SessionPasswordNeededError:
-        # 2FA kerak — parol matnli kiritiladi (Telegram parolni tekshirmaydi)
         user_states[uid] = {"step": "password", "ts": time.time()}
         await application.bot.send_message(
             uid,
@@ -690,7 +426,6 @@ async def _attempt_signin(uid: int, code: str) -> None:
                 reply_markup=await menu_for(uid),
             )
             return
-        # Buferni tozalab, yana numpad ko'rsatamiz
         state = user_states.get(uid, {})
         state["code_buffer"] = ""
         state["ts"] = time.time()
@@ -700,7 +435,6 @@ async def _attempt_signin(uid: int, code: str) -> None:
         )
 
     except PhoneCodeExpiredError:
-        # Avtomatik yangi kod yuboramiz
         attempts = ctx.__dict__.get("_resend_count", 0) + 1
         if attempts > 3:
             await cleanup_login(uid)
@@ -718,7 +452,7 @@ async def _attempt_signin(uid: int, code: str) -> None:
             )
             ctx.phone_code_hash = result.phone_code_hash
             ctx.__dict__["_resend_count"] = attempts
-            ctx.__dict__["_wrong_count"] = 0  # yangi kod uchun reset
+            ctx.__dict__["_wrong_count"] = 0
             state = user_states.get(uid, {})
             state["code_buffer"] = ""
             state["ts"] = time.time()
@@ -769,7 +503,6 @@ async def _attempt_signin(uid: int, code: str) -> None:
 
 
 async def _finalize_login_uid(uid: int) -> None:
-    """Sessiya tasdiqlanganda foydalanuvchi statusini yakunlaydi."""
     ctx = login_ctx.get(uid)
     if not ctx:
         return
@@ -779,24 +512,20 @@ async def _finalize_login_uid(uid: int) -> None:
     login_ctx.pop(uid, None)
     user_states.pop(uid, None)
 
-    # Foydalanuvchi ma'lumotlarini saqlash
     try:
         chat = await application.bot.get_chat(uid)
-        await set_user_info(
-            uid,
-            {
-                "name": (chat.first_name or "") + (
-                    f" {chat.last_name}" if chat.last_name else ""
-                ) or "Noma'lum",
-                "username": chat.username or "",
-            },
-        )
+        name = (chat.first_name or "") + (
+            f" {chat.last_name}" if chat.last_name else ""
+        ) or "Noma'lum"
+        username = chat.username or ""
+        await db.set_user_info(uid, name, username)
     except Exception:
         pass
 
     if uid == SUPER_ADMIN:
-        await set_session(uid, sess_str)
-        await del_pending(uid)
+        await db.set_session(uid, sess_str)
+        await db.del_pending(uid)
+        await db.add_admin(uid)
         log(f"✅ Super admin login: {uid}")
         await application.bot.send_message(
             uid,
@@ -805,7 +534,7 @@ async def _finalize_login_uid(uid: int) -> None:
         )
         return
 
-    await set_pending(uid, sess_str)
+    await db.set_pending(uid, sess_str)
     log(f"⏳ Tasdiq kutilmoqda: {uid}")
     await notify_super_for_approval(uid)
     await application.bot.send_message(
@@ -818,7 +547,7 @@ async def _finalize_login_uid(uid: int) -> None:
 
 
 async def notify_super_for_approval(uid: int) -> None:
-    info = await get_user_info(uid)
+    info = await db.get_user_info(uid)
     name = info.get("name", "Noma'lum")
     username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
     kb = InlineKeyboardMarkup(
@@ -842,10 +571,9 @@ async def notify_super_for_approval(uid: int) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# POSTING WORKER (har foydalanuvchi uchun)
+# POSTING WORKER
 # ─────────────────────────────────────────────────────────────────────────
 async def _resolve_chat(client: TelegramClient, chat: str):
-    """Username yoki id (string) ni Telethon entity-ga aylantiradi."""
     s = chat.strip()
     if s.startswith("@"):
         return await client.get_entity(s)
@@ -861,13 +589,10 @@ async def _send_post(client: TelegramClient, chat: str, post: dict) -> None:
     entities = dicts_to_telethon_entities(post.get("entities", []))
     target = await _resolve_chat(client, chat)
 
-    # Har bir post oxiriga bot reklamasi qo'shiladi (mavjud entitylar buzilmaydi —
-    # ular matn boshiga nisbatan offset/length, biz faqat oxiriga qo'shyapmiz)
     final_text = (text + BOT_AD_FOOTER) if text else BOT_AD_FOOTER.lstrip("\n")
 
     photo_path = post.get("photo")
     if photo_path and os.path.exists(photo_path):
-        # Rasm + caption + formatlash
         await client.send_file(
             entity=target,
             file=photo_path,
@@ -904,45 +629,33 @@ def _wipe_user_media(uid: int) -> None:
             shutil.rmtree(p, ignore_errors=True)
 
 
-async def _stop_worker(uid: int, *, persist: bool = True) -> None:
-    w = workers.pop(uid, None)
-    if w:
-        w.stop_event.set()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await asyncio.wait_for(w.task, timeout=10)
-    if persist:
-        await set_running(uid, False)
-
-
-async def _start_worker(uid: int) -> None:
-    if uid in workers:
-        return
-    stop_event = asyncio.Event()
-    task = asyncio.create_task(posting_loop(uid, stop_event), name=f"poster-{uid}")
-    workers[uid] = Worker(uid=uid, task=task, stop_event=stop_event)
-    await set_running(uid, True)
+async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=seconds)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 async def posting_loop(uid: int, stop: asyncio.Event) -> None:
+    """Asosiy posting siklini ishlatadi (ClientPool orqali)."""
     log(f"🟢 Worker:{uid} ishga tushdi")
-    client: TelegramClient | None = None
     try:
         while not stop.is_set():
-            sess = await get_session(uid)
+            sess = await db.get_session(uid)
             if not sess:
                 log(f"❌ Worker:{uid} sessiya yo'q — to'xtaydi", "warning")
                 break
 
-            chats = await get_chats(uid)
-            posts = await get_posts(uid)
-            interval = await get_interval(uid)
-            sched = await get_schedule(uid)
+            chats = await db.get_chats(uid)
+            posts = await db.get_posts(uid)
+            interval = await db.get_interval(uid)
+            sched = await db.get_schedule(uid)
 
             if not chats or not posts:
                 await _sleep_or_stop(stop, 30)
                 continue
 
-            # Vaqt oynasi tashqarisida bo'lsak — kutamiz
             now = now_local()
             wait_open = seconds_to_window_open(now, sched[0], sched[1])
             if wait_open > 0:
@@ -951,17 +664,11 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                     break
                 continue
 
-            # Telethon klientni faol ushlab turamiz
-            try:
-                if client is None:
-                    client = TelegramClient(StringSession(sess), API_ID, API_HASH)
-                if not client.is_connected():
-                    await asyncio.wait_for(client.connect(), timeout=20)
-                if not await client.is_user_authorized():
-                    raise AuthKeyUnregisteredError(request=None)
-            except AuthKeyUnregisteredError:
-                log(f"🚫 Worker:{uid} — sessiya bekor qilingan", "error")
-                await del_session(uid)
+            client = await client_pool.acquire(uid, sess)
+            if client is None:
+                log(f"🚫 Worker:{uid} — sessiya yaroqsiz yoki pool to'la", "warning")
+                await db.del_session(uid)
+                await db.set_running(uid, False)
                 with contextlib.suppress(Exception):
                     await application.bot.send_message(
                         uid,
@@ -969,63 +676,64 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                         "Qaytadan 🔑 Login qiling.",
                     )
                 break
-            except (UserDeactivatedBanError,):
-                log(f"🚫 Worker:{uid} — hisob bloklangan", "error")
-                await del_session(uid)
-                with contextlib.suppress(Exception):
-                    await application.bot.send_message(
-                        uid, "🚫 Hisobingiz Telegram tomonidan bloklangan."
-                    )
-                break
-            except (asyncio.TimeoutError, OSError) as e:
-                log(f"⚠️ Worker:{uid} ulanish xatosi: {e} — 30s kutadi", "warning")
-                if await _sleep_or_stop(stop, 30):
-                    break
-                continue
 
-            # Bitta tasodifiy postni barcha chatlarga yuboramiz
-            post = random.choice(posts)
-            ok, fail = 0, 0
-            for chat in chats:
-                if stop.is_set():
-                    break
-                try:
-                    await asyncio.wait_for(_send_post(client, chat, post), timeout=20)
-                    ok += 1
-                    log(f"✅ {uid} → {chat}")
-                except FloodWaitError as e:
-                    wait_s = int(getattr(e, "seconds", 30)) + 5
-                    log(f"⏳ {uid} → {chat} FloodWait {wait_s}s", "warning")
-                    if await _sleep_or_stop(stop, wait_s):
+            try:
+                post = random.choice(posts)
+                ok, fail = 0, 0
+                for chat in chats:
+                    if stop.is_set():
                         break
-                except (
-                    ChatWriteForbiddenError,
-                    ChannelPrivateError,
-                    PeerIdInvalidError,
-                    UsernameNotOccupiedError,
-                    UsernameInvalidError,
-                    ValueError,
-                ) as e:
-                    fail += 1
-                    log(f"❌ {uid} → {chat}: {type(e).__name__}", "warning")
-                except asyncio.TimeoutError:
-                    fail += 1
-                    log(f"⏱ {uid} → {chat} timeout", "warning")
-                except Exception as e:
-                    fail += 1
-                    log(f"❌ {uid} → {chat}: {type(e).__name__}: {e}", "error")
-                # Anti-spam: chatlar orasidagi pauza
-                if not stop.is_set():
-                    await _sleep_or_stop(stop, SEND_DELAY_S)
+                    try:
+                        await asyncio.wait_for(
+                            _send_post(client, chat, post), timeout=20
+                        )
+                        ok += 1
+                        log(f"✅ {uid} → {chat}")
+                    except FloodWaitError as e:
+                        wait_s = int(getattr(e, "seconds", 30)) + 5
+                        log(f"⏳ {uid} → {chat} FloodWait {wait_s}s", "warning")
+                        if await _sleep_or_stop(stop, wait_s):
+                            break
+                    except (
+                        ChatWriteForbiddenError,
+                        ChannelPrivateError,
+                        PeerIdInvalidError,
+                        UsernameNotOccupiedError,
+                        UsernameInvalidError,
+                        ValueError,
+                    ) as e:
+                        fail += 1
+                        log(f"❌ {uid} → {chat}: {type(e).__name__}", "warning")
+                    except asyncio.TimeoutError:
+                        fail += 1
+                        log(f"⏱ {uid} → {chat} timeout", "warning")
+                    except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
+                        log(f"🚫 {uid} sessiya yaroqsiz: {type(e).__name__}", "error")
+                        await db.del_session(uid)
+                        await db.set_running(uid, False)
+                        await client_pool.remove(uid)
+                        with contextlib.suppress(Exception):
+                            await application.bot.send_message(
+                                uid,
+                                "🚫 Sessiyangiz bekor qilindi. Qaytadan 🔑 Login qiling.",
+                            )
+                        return
+                    except Exception as e:
+                        fail += 1
+                        log(f"❌ {uid} → {chat}: {type(e).__name__}: {e}", "error")
+                    if not stop.is_set():
+                        await _sleep_or_stop(stop, SEND_DELAY_S)
 
-            log(f"📊 {uid} ✅{ok} ❌{fail} / {len(chats)}")
+                log(f"📊 {uid} ✅{ok} ❌{fail} / {len(chats)}")
+            finally:
+                await client_pool.release(uid)
 
-            # Keyingi turgacha kutish (jitter bilan)
             delay = interval * 60 + random.randint(-INTERVAL_JITTER_S, INTERVAL_JITTER_S)
             delay = max(MIN_INTERVAL_MIN * 60, delay)
             log(f"⏳ {uid} keyingi tur {delay}s ({interval} daq)")
             if await _sleep_or_stop(stop, delay):
                 break
+
     except asyncio.CancelledError:
         pass
     except Exception as e:
@@ -1035,20 +743,8 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                 SUPER_ADMIN, f"⚠️ Worker xato\nUID: {uid}\n{type(e).__name__}: {e}"
             )
     finally:
-        if client is not None:
-            with contextlib.suppress(Exception):
-                await client.disconnect()
+        await client_pool.release(uid)
         log(f"🔴 Worker:{uid} to'xtadi")
-
-
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
-    """seconds davomida kutadi yoki stop signaliga javob beradi.
-    True qaytarsa — to'xtatish kerak."""
-    try:
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
-        return True
-    except asyncio.TimeoutError:
-        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1057,14 +753,19 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
 
-    if await get_pending(uid) and not await is_approved(uid):
+    if not rate_limiter.is_allowed(uid, "command"):
+        wait = rate_limiter.get_wait_time(uid, "command")
+        await update.message.reply_text(f"⏳ Juda ko'p so'rov. {wait} soniya kuting.")
+        return
+
+    if await db.get_pending(uid) and not await is_approved(uid):
         await update.message.reply_text(
             "⏳ Sizning so'rovingiz ko'rib chiqilmoqda.\nAdmin tasdiqlashini kuting.",
             reply_markup=await menu_for(uid),
         )
         return
 
-    if await is_approved(uid) and await get_session(uid):
+    if await is_approved(uid) and await db.get_session(uid):
         await update.message.reply_text(
             "🤖 AVTO BOT\n\nSiz tizimga kirgansiz!",
             reply_markup=await menu_for(uid),
@@ -1082,31 +783,28 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "👥 KIMLAR UCHUN?\n\n"
         "✅ Reklama agentliklari va SMM mutaxassislari\n"
         "✅ O'z biznesini reklama qiluvchi tadbirkorlar\n"
-        "✅ Onlayn-do'kon egalari (uy jihozlari, kiyim, kosmetika va h.k.)\n"
-        "✅ Xizmat ko'rsatuvchilar (taksi, dasturchilar, repetitorlar)\n"
-        "✅ Telegram-kanal va guruh egalari\n"
-        "✅ Bir vaqtda ko'p chatlarga reklama yubormoqchi bo'lganlar\n\n"
+        "✅ Onlayn-do'kon egalari\n"
+        "✅ Xizmat ko'rsatuvchilar\n"
+        "✅ Telegram-kanal va guruh egalari\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "💼 NIMALAR UCHUN?\n\n"
         "📢 Tovar va xizmatlaringizni reklama qilish\n"
         "📢 Aksiya va chegirmalarni e'lon qilish\n"
         "📢 Yangi mahsulot/yangiliklar haqida xabar berish\n"
-        "📢 Auditoriyani kengaytirish (10 ta chatgacha)\n"
-        "📢 Doimiy reklama postlarini avtomatlashtirish (20 ta postgacha)\n\n"
+        "📢 Auditoriyani kengaytirish\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "⚙️ IMKONIYATLAR\n\n"
         f"• Maksimal {MAX_CHATS} ta chat (guruh/kanal)\n"
         f"• Maksimal {MAX_POSTS} ta post (matn yoki rasm + matn)\n"
         f"• Interval: {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daqiqa\n"
-        "• Yuborish vaqt oynasi (HH:MM–HH:MM) — siz belgilaysiz\n"
+        "• Yuborish vaqt oynasi (HH:MM–HH:MM)\n"
         "• Bold, italic, link va barcha formatlash saqlanadi\n"
         "• 24/7 ishlaydi, restart-dan keyin avtomatik tiklanadi\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "📋 BOSHLASH\n\n"
         "1️⃣ '🔑 Login' tugmasini bosing\n"
         "2️⃣ Telefon raqamingizni kiriting (+998XXXXXXXXX)\n"
-        "3️⃣ Telegramdan kelgan kodni 1-2-3-4-5 ko'rinishida yuboring\n"
-        "    (chiziqcha bilan! copy-paste qilmang!)\n"
+        "3️⃣ Telegramdan kelgan kodni RAQAMLI TUGMALAR orqali kiriting\n"
         "4️⃣ 2FA bo'lsa — parolni kiriting\n"
         "5️⃣ Admin tasdiqlashini kuting (ON/OFF)\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
@@ -1117,8 +815,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "✅ Istalgan vaqt '🚪 Logout' orqali chiqishingiz mumkin\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "📞 FOYDALANISH BO'YICHA YORDAM\n\n"
-        "Ro'yxatdan o'tishda muammo, savol yoki taklif bo'lsa\n"
-        "admin bilan bog'laning:\n\n"
+        "Ro'yxatdan o'tishda muammo, savol yoki taklif bo'lsa:\n\n"
         f"📱 {ADMIN_CONTACT_PHONE}\n\n"
         "Quyidagi 🔑 Login tugmasini bosib, ro'yxatdan o'ting!",
         reply_markup=await menu_for(uid),
@@ -1134,7 +831,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     uid = q.from_user.id
     data = q.data or ""
 
-    # ── NUMPAD: kodni xavfsiz kiritish ──────────────────────────────────
+    # NUMPAD
     if data.startswith("np:"):
         state = user_states.get(uid, {})
         if state.get("step") != "code":
@@ -1142,7 +839,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await q.edit_message_text("⚠️ Login jarayonida emassiz.")
             return
 
-        # Timeout
         if time.time() - state.get("ts", 0) > LOGIN_TIMEOUT_S:
             await cleanup_login(uid)
             with contextlib.suppress(Exception):
@@ -1176,7 +872,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     f"Kamida {CODE_LENGTH} ta raqam kiriting!", show_alert=True
                 )
                 return
-            # Kodni Telegram'ga yuboramiz
             with contextlib.suppress(Exception):
                 await q.edit_message_text(
                     f"⏳ Kod tekshirilmoqda...\n\n🔢 {numpad_display(buffer)}"
@@ -1184,17 +879,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _attempt_signin(uid, buffer)
             return
 
-        else:  # raqamli tugma
+        else:
             if not action.isdigit():
                 return
-            if len(buffer) >= 6:  # max 6 raqam
+            if len(buffer) >= 6:
                 await q.answer("Maksimal 6 ta raqam!", show_alert=True)
                 return
             buffer += action
 
-        # State'ni yangilab, numpadni qayta chizamiz
         state["code_buffer"] = buffer
-        state["ts"] = time.time()  # har bosishda timeout yangilanadi
+        state["ts"] = time.time()
         user_states[uid] = state
         with contextlib.suppress(Exception):
             await q.edit_message_text(
@@ -1202,24 +896,24 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
 
-    # Yangi foydalanuvchi tasdiqlash: app:on:<id> | app:off:<id>
+    # Yangi user tasdiqlash
     if data.startswith("app:on:") or data.startswith("app:off:"):
         if not is_super(uid):
             return
         action = "on" if ":on:" in data else "off"
         target = int(data.split(":")[2])
-        sess = await get_pending(target)
+        sess = await db.get_pending(target)
         if action == "on":
             if not sess:
                 await q.edit_message_text(f"⚠️ {target} pending sessiyasi topilmadi.")
                 return
-            await set_session(target, sess)
-            await del_pending(target)
-            await add_admin(target)
+            await db.set_session(target, sess)
+            await db.del_pending(target)
+            await db.add_admin(target)
             log(f"✅ Tasdiqlandi: {target}")
             await q.edit_message_text(f"✅ Tasdiqlandi: {target}")
             with contextlib.suppress(Exception):
-                info = await get_user_info(target)
+                info = await db.get_user_info(target)
                 name = info.get("name", "Foydalanuvchi")
                 await application.bot.send_message(
                     target,
@@ -1231,9 +925,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     "4️⃣ ▶️ Start bosing",
                     reply_markup=await menu_for(target),
                 )
-        else:  # off
-            await del_pending(target)
-            await del_session(target)
+        else:
+            await db.del_pending(target)
+            await db.del_session(target)
             log(f"❌ Rad etildi: {target}")
             await q.edit_message_text(f"⛔ Rad etildi: {target}")
             with contextlib.suppress(Exception):
@@ -1244,21 +938,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
         return
 
-    # Admin o'chirish (super admin)
     if data.startswith("rmadm:"):
         if not is_super(uid):
             return
         target = int(data.split(":")[1])
-        await _stop_worker(target, persist=True)
-        await remove_admin(target)
-        await del_session(target)
-        await del_pending(target)
-        await del_chats(target)
-        await del_posts(target)
-        await del_interval(target)
-        await del_schedule(target)
-        await del_user_info(target)
-        await del_running(target)
+        if worker_manager:
+            await worker_manager.stop_worker(target)
+        await client_pool.remove(target)
+        await db.delete_user(target)
         _wipe_user_media(target)
         log(f"🗑 Admin o'chirildi: {target}")
         await q.edit_message_text(f"🗑 O'chirildi: {target}")
@@ -1273,9 +960,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
-    # Stop tasdiq
     if data == "stop:yes":
-        await _stop_worker(uid, persist=True)
+        if worker_manager:
+            await worker_manager.stop_worker(uid)
+        await db.set_running(uid, False)
         await q.edit_message_text("⛔ Posting to'xtatildi.")
         with contextlib.suppress(Exception):
             await application.bot.send_message(
@@ -1286,12 +974,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("✅ Posting davom etmoqda.")
         return
 
-    # Postlar tozalash
     if data == "clr:yes":
-        old = await get_posts(uid)
+        old = await db.clear_posts(uid)
         for p in old:
             _safe_unlink(p.get("photo"))
-        await set_posts(uid, [])
         log(f"🧹 Postlar tozalandi: {uid}")
         await q.edit_message_text("🧹 Barcha postlar tozalandi.")
         with contextlib.suppress(Exception):
@@ -1303,10 +989,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
-    # Logout tasdiq
     if data == "out:yes":
-        await _stop_worker(uid, persist=True)
-        await del_session(uid)
+        if worker_manager:
+            await worker_manager.stop_worker(uid)
+        await client_pool.remove(uid)
+        await db.del_session(uid)
+        await db.set_running(uid, False)
         user_states.pop(uid, None)
         log(f"🚪 Logout: {uid}")
         await q.edit_message_text("🚪 Tizimdan chiqdingiz.")
@@ -1321,16 +1009,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
-    # Bitta postni o'chirish
     if data.startswith("delp:"):
         try:
             i = int(data.split(":")[1])
         except Exception:
             return
-        posts = await get_posts(uid)
-        if 0 <= i < len(posts):
-            removed = posts.pop(i)
-            await set_posts(uid, posts)
+        removed = await db.remove_post(uid, i)
+        if removed:
             _safe_unlink(removed.get("photo"))
             preview = (removed.get("text") or "(faqat rasm)")[:80]
             log(f"🗑 Post {i+1} o'chirildi: {uid}")
@@ -1346,16 +1031,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
-    # Bitta chatni o'chirish
     if data.startswith("delc:"):
         try:
             i = int(data.split(":")[1])
         except Exception:
             return
-        chats = await get_chats(uid)
-        if 0 <= i < len(chats):
-            removed = chats.pop(i)
-            await set_chats(uid, chats)
+        removed = await db.remove_chat(uid, i)
+        if removed:
             log(f"🗑 Chat {removed} o'chirildi: {uid}")
             await q.edit_message_text(f"🗑 O'chirildi: {removed}")
             with contextlib.suppress(Exception):
@@ -1369,7 +1051,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
-    # Adminlar paneli
     if data == "adm:list":
         if not is_super(uid):
             return
@@ -1379,13 +1060,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "adm:remove":
         if not is_super(uid):
             return
-        admins = await get_admins()
+        admins = await db.get_admins()
+        admins = [a for a in admins if a != SUPER_ADMIN]
         if not admins:
             await q.edit_message_text("❌ O'chirish uchun admin yo'q.")
             return
         rows = []
         for a in admins:
-            info = await get_user_info(a)
+            info = await db.get_user_info(a)
             name = info.get("name", str(a))
             rows.append([InlineKeyboardButton(f"🗑 {name} ({a})", callback_data=f"rmadm:{a}")])
         rows.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="rmadm:cancel")])
@@ -1407,18 +1089,20 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
 
 
 async def format_admin_list() -> str:
-    admins = await get_admins()
+    admins = await db.get_admins()
     lines = [f"👥 ADMINLAR ({len(admins)} ta):", "", f"• 👑 Super admin ({SUPER_ADMIN})"]
     for a in admins:
-        info = await get_user_info(a)
+        if a == SUPER_ADMIN:
+            continue
+        info = await db.get_user_info(a)
         name = info.get("name", "Noma'lum")
         username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
-        s = "✅" if await get_session(a) else "❌"
-        ac = "🟢" if a in workers else "🔴"
-        interval = await get_interval(a)
-        sched = await get_schedule(a)
-        chats_n = len(await get_chats(a))
-        posts_n = len(await get_posts(a))
+        s = "✅" if await db.get_session(a) else "❌"
+        ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
+        interval = await db.get_interval(a)
+        sched = await db.get_schedule(a)
+        chats_n = len(await db.get_chats(a))
+        posts_n = len(await db.get_posts(a))
         lines.append("")
         lines.append(f"👤 {name}")
         lines.append(f"   {username} | {a}")
@@ -1440,12 +1124,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     state = user_states.get(uid, {})
     step = state.get("step")
 
-    # ── LOGIN BOSQICHLARI ────────────────────────────────────────────────
+    if not rate_limiter.is_allowed(uid, "message"):
+        wait = rate_limiter.get_wait_time(uid, "message")
+        await msg.reply_text(f"⏳ Juda ko'p xabar. {wait} soniya kuting.")
+        return
+
+    # LOGIN BOSQICHLARI
     if step in ("phone", "code", "password"):
         if time.time() - state.get("ts", 0) > LOGIN_TIMEOUT_S:
             await cleanup_login(uid)
             await msg.reply_text(
-                "⏰ Vaqt tugadi (2 daqiqa). Eski urinish o'chirildi.\n"
+                f"⏰ Vaqt tugadi ({LOGIN_TIMEOUT_S // 60} daqiqa). Eski urinish o'chirildi.\n"
                 "Qaytadan 🔑 Login bosib boshlang.",
                 reply_markup=await menu_for(uid),
             )
@@ -1461,16 +1150,19 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await _handle_password(update, text)
             return
 
-    # ── PENDING ──────────────────────────────────────────────────────────
+    # PENDING
     if not await is_approved(uid):
-        if await get_pending(uid):
+        if await db.get_pending(uid):
             await msg.reply_text(
                 "⏳ So'rovingiz ko'rib chiqilmoqda. Admin tasdiqlashini kuting.",
                 reply_markup=kb_pending(),
             )
             return
-        # Tasdiqlanmagan, login boshlash
         if text == "🔑 Login":
+            if not rate_limiter.is_allowed(uid, "login"):
+                wait = rate_limiter.get_wait_time(uid, "login")
+                await msg.reply_text(f"⏳ Juda ko'p login urinishi. {wait} soniya kuting.")
+                return
             await _begin_login(update)
             return
         await msg.reply_text(
@@ -1479,12 +1171,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # ── FSM: input qabul qilish ─────────────────────────────────────────
+    # FSM
     if step == "add_chat":
         await _handle_add_chat(update, text)
-        return
-    if step == "remove_chat_text":
-        await _handle_remove_chat_text(update, text)
         return
     if step == "add_post":
         await _handle_add_post(update)
@@ -1496,15 +1185,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _handle_set_schedule(update, text)
         return
 
-    # ── MENYU TUGMALARI ──────────────────────────────────────────────────
-    sess = await get_session(uid)
+    # MENYU
+    sess = await db.get_session(uid)
     if not sess:
         if text == "🔑 Login":
+            if not rate_limiter.is_allowed(uid, "login"):
+                wait = rate_limiter.get_wait_time(uid, "login")
+                await msg.reply_text(f"⏳ Juda ko'p login urinishi. {wait} soniya kuting.")
+                return
             await _begin_login(update)
             return
-        await msg.reply_text(
-            "⚠️ Avval 🔑 Login qiling.", reply_markup=kb_login()
-        )
+        await msg.reply_text("⚠️ Avval 🔑 Login qiling.", reply_markup=kb_login())
         return
 
     if text == "🔑 Login":
@@ -1527,20 +1218,27 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "▶️ Start":
-        if uid in workers:
+        if worker_manager and worker_manager.is_running(uid):
             await msg.reply_text("⚠️ Allaqachon ishlamoqda.", reply_markup=await menu_for(uid))
             return
-        chats = await get_chats(uid)
-        posts = await get_posts(uid)
+        chats = await db.get_chats(uid)
+        posts = await db.get_posts(uid)
         if not chats:
             await msg.reply_text("❌ Avval ➕ Chat qo'shing.", reply_markup=await menu_for(uid))
             return
         if not posts:
             await msg.reply_text("❌ Avval 📝 Post qo'shing.", reply_markup=await menu_for(uid))
             return
-        await _start_worker(uid)
-        interval = await get_interval(uid)
-        sched = await get_schedule(uid)
+        started = await worker_manager.start_worker(uid)
+        if not started:
+            await msg.reply_text(
+                "⚠️ Hozir tizim band. Bir oz kuting va qaytadan urinib ko'ring.",
+                reply_markup=await menu_for(uid),
+            )
+            return
+        await db.set_running(uid, True)
+        interval = await db.get_interval(uid)
+        sched = await db.get_schedule(uid)
         await msg.reply_text(
             f"✅ Posting boshlandi!\n"
             f"💬 {len(chats)} ta chat\n"
@@ -1552,7 +1250,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "⛔ Stop":
-        if uid not in workers:
+        if not (worker_manager and worker_manager.is_running(uid)):
             await msg.reply_text("⚠️ Hozir ishlamayapti.", reply_markup=await menu_for(uid))
             return
         kb = InlineKeyboardMarkup(
@@ -1567,11 +1265,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text.startswith("📊 Status"):
-        chats = await get_chats(uid)
-        posts = await get_posts(uid)
-        interval = await get_interval(uid)
-        sched = await get_schedule(uid)
-        active = uid in workers
+        chats = await db.get_chats(uid)
+        posts = await db.get_posts(uid)
+        interval = await db.get_interval(uid)
+        sched = await db.get_schedule(uid)
+        active = worker_manager.is_running(uid) if worker_manager else False
         now = now_local()
         in_w = in_window(now, sched[0], sched[1])
         status = "🟢 ON" if active else "🔴 OFF"
@@ -1590,7 +1288,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "💬 Chatlar":
-        chats = await get_chats(uid)
+        chats = await db.get_chats(uid)
         if not chats:
             await msg.reply_text("❌ Chatlar yo'q.", reply_markup=await menu_for(uid))
             return
@@ -1600,7 +1298,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "➕ Chat qo'sh":
-        chats = await get_chats(uid)
+        if not rate_limiter.is_allowed(uid, "modify"):
+            wait = rate_limiter.get_wait_time(uid, "modify")
+            await msg.reply_text(f"⏳ {wait} soniya kuting.")
+            return
+        chats = await db.get_chats(uid)
         if len(chats) >= MAX_CHATS:
             await msg.reply_text(
                 f"❌ Maksimal {MAX_CHATS} ta chat. Avval birini o'chiring.",
@@ -1615,7 +1317,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "➖ Chat o'chir":
-        chats = await get_chats(uid)
+        chats = await db.get_chats(uid)
         if not chats:
             await msg.reply_text("❌ Chatlar yo'q.", reply_markup=await menu_for(uid))
             return
@@ -1631,7 +1333,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "📝 Post qo'sh":
-        posts = await get_posts(uid)
+        if not rate_limiter.is_allowed(uid, "modify"):
+            wait = rate_limiter.get_wait_time(uid, "modify")
+            await msg.reply_text(f"⏳ {wait} soniya kuting.")
+            return
+        posts = await db.get_posts(uid)
         if len(posts) >= MAX_POSTS:
             await msg.reply_text(
                 f"❌ Maksimal {MAX_POSTS} ta post.", reply_markup=await menu_for(uid)
@@ -1649,7 +1355,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "🗑 Post o'chir":
-        posts = await get_posts(uid)
+        posts = await db.get_posts(uid)
         if not posts:
             await msg.reply_text("❌ Postlar yo'q.", reply_markup=await menu_for(uid))
             return
@@ -1666,7 +1372,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "📋 Postlar":
-        posts = await get_posts(uid)
+        posts = await db.get_posts(uid)
         if not posts:
             await msg.reply_text("❌ Postlar yo'q.", reply_markup=await menu_for(uid))
             return
@@ -1679,7 +1385,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "🧹 Tozalash":
-        posts = await get_posts(uid)
+        posts = await db.get_posts(uid)
         if not posts:
             await msg.reply_text("❌ Postlar yo'q.", reply_markup=await menu_for(uid))
             return
@@ -1695,7 +1401,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text.startswith("⏱ Interval"):
-        interval = await get_interval(uid)
+        interval = await db.get_interval(uid)
         user_states[uid] = {"step": "set_interval", "ts": time.time()}
         await msg.reply_text(
             f"⏱ INTERVAL\n\n"
@@ -1705,14 +1411,14 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text.startswith("🕒 Vaqt"):
-        sched = await get_schedule(uid)
+        sched = await db.get_schedule(uid)
         user_states[uid] = {"step": "set_schedule", "ts": time.time()}
         await msg.reply_text(
             f"🕒 VAQT OYNASI\n\n"
             f"Hozir: {sched[0].strftime('%H:%M')}–{sched[1].strftime('%H:%M')}\n\n"
-            "Yangi oynani kiriting (HH:MM-HH:MM ko'rinishida).\n"
+            "Yangi oynani kiriting (HH:MM-HH:MM):\n"
             "Masalan: 09:00-22:00\n"
-            "Tunda o'tuvchi oyna ham mumkin: 22:00-06:00\n"
+            "Tunda o'tuvchi: 22:00-06:00\n"
             "Butun kun: 00:00-23:59"
         )
         return
@@ -1721,16 +1427,33 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text(await format_admin_list(), reply_markup=admin_panel_kb())
         return
 
-    # Bilinmagan tugma
-    await msg.reply_text("⚠️ Iltimos, menyudagi tugmalardan foydalaning.", reply_markup=await menu_for(uid))
+    if text == "🖥 Tizim" and is_super(uid):
+        uptime = int(time.time() - START_TIME)
+        worker_stats = worker_manager.stats() if worker_manager else None
+        pool_stats = client_pool.stats() if client_pool else None
+        memory = _get_memory_info()
+        rl_stats = rate_limiter.stats()
+
+        lines = [
+            format_status_message(uptime, worker_stats, pool_stats, memory),
+            "",
+            f"🛡 Rate limiter: {rl_stats['tracked_users']} kuzatilmoqda, "
+            f"{rl_stats['currently_blocked']} bloklangan",
+        ]
+        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
+        return
+
+    await msg.reply_text(
+        "⚠️ Iltimos, menyudagi tugmalardan foydalaning.",
+        reply_markup=await menu_for(uid),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# LOGIN BOSQICHLARI
+# LOGIN HANDLERS
 # ─────────────────────────────────────────────────────────────────────────
 async def _begin_login(update: Update) -> None:
     uid = update.effective_user.id
-    # Eski urinish bo'lsa — to'liq tozalaymiz, yangi urinish toza state'da boshlanadi
     await cleanup_login(uid)
     user_states[uid] = {"step": "phone", "ts": time.time()}
     await update.message.reply_text(
@@ -1738,8 +1461,6 @@ async def _begin_login(update: Update) -> None:
         "Format: +998XXXXXXXXX\n\n"
         "⚠️ Telegram ilovangiz ochiq ekanligini tekshiring!\n"
         "Kod SMS emas, Telegram ilovasidagi \"Telegram\" rasmiy chatiga keladi.\n\n"
-        "💡 Eslatma: kodni 1-2-3-4-5 ko'rinishida (chiziqcha bilan)\n"
-        "qo'lda yozing — copy-paste qilmang.\n\n"
         f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
     )
 
@@ -1762,7 +1483,6 @@ async def _handle_phone(update: Update, text: str) -> None:
             phone_code_hash=result.phone_code_hash,
             started_at=time.time(),
         )
-        # Numpad rejimi: kod buferi user_state'da saqlanadi
         user_states[uid] = {
             "step": "code",
             "ts": time.time(),
@@ -1812,11 +1532,8 @@ async def _handle_phone(update: Update, text: str) -> None:
 
 
 async def _handle_code(update: Update, text: str) -> None:
-    """Code bosqichida MATN qabul qilinmaydi — foydalanuvchi numpad'dan
-    foydalanishi kerak. Sababi: matn kodni Telegram darhol bekor qiladi.
-    """
+    """Code bosqichida MATN qabul qilinmaydi — numpad'ga yo'naltiramiz."""
     uid = update.effective_user.id
-    # Eski numpad xabarini saqlab, yangi eslatma yuboramiz
     await update.message.reply_text(
         "⚠️ Iltimos, kodni MATN sifatida yozmang!\n\n"
         "Telegram xavfsizlik tizimi matnli kodni darhol bekor qiladi.\n"
@@ -1843,7 +1560,7 @@ async def _handle_password(update: Update, text: str) -> None:
         if not ctx.client.is_connected():
             await asyncio.wait_for(ctx.client.connect(), timeout=20)
         await ctx.client.sign_in(password=text)
-        await _finalize_login(update, ctx)
+        await _finalize_login_uid(uid)
     except PasswordHashInvalidError:
         await update.message.reply_text("❌ Noto'g'ri parol. Qaytadan kiriting:")
     except FloodWaitError as e:
@@ -1860,44 +1577,6 @@ async def _handle_password(update: Update, text: str) -> None:
         )
 
 
-async def _finalize_login(update: Update, ctx: LoginCtx) -> None:
-    uid = update.effective_user.id
-    sess_str = ctx.client.session.save()
-    with contextlib.suppress(Exception):
-        await ctx.client.disconnect()
-    login_ctx.pop(uid, None)
-    user_states.pop(uid, None)
-
-    user = update.effective_user
-    await set_user_info(
-        uid,
-        {
-            "name": user.full_name or "Noma'lum",
-            "username": user.username or "",
-        },
-    )
-
-    # Super admin avtomatik tasdiqlanadi
-    if uid == SUPER_ADMIN:
-        await set_session(uid, sess_str)
-        await del_pending(uid)
-        log(f"✅ Super admin login: {uid}")
-        await update.message.reply_text(
-            "✅ Super admin sifatida tizimga kirdingiz!", reply_markup=await menu_for(uid)
-        )
-        return
-
-    await set_pending(uid, sess_str)
-    log(f"⏳ Tasdiq kutilmoqda: {uid}")
-    await notify_super_for_approval(uid)
-    await update.message.reply_text(
-        "✅ Login qabul qilindi!\n\n"
-        "⏳ Admin tasdiqlashini kuting (ON/OFF).\n"
-        "Tasdiqlanganingizdan so'ng menyu ochiladi.",
-        reply_markup=await menu_for(uid),
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────
 # CHAT / POST / INTERVAL / SCHEDULE INPUT
 # ─────────────────────────────────────────────────────────────────────────
@@ -1908,37 +1587,24 @@ async def _handle_add_chat(update: Update, text: str) -> None:
     if not chat:
         await update.message.reply_text("❌ Bo'sh.", reply_markup=await menu_for(uid))
         return
-    chats = await get_chats(uid)
+    chats = await db.get_chats(uid)
     if len(chats) >= MAX_CHATS:
         await update.message.reply_text(
             f"❌ Maksimal {MAX_CHATS} ta.", reply_markup=await menu_for(uid)
         )
         return
-    if chat in chats:
+    added = await db.add_chat(uid, chat)
+    if not added:
         await update.message.reply_text(
             "⚠️ Allaqachon mavjud.", reply_markup=await menu_for(uid)
         )
         return
-    chats.append(chat)
-    await set_chats(uid, chats)
     log(f"💬 Chat qo'shildi: {uid} → {chat}")
+    new_count = len(await db.get_chats(uid))
     await update.message.reply_text(
-        f"✅ Qo'shildi: {chat}\n💬 Jami: {len(chats)}/{MAX_CHATS}",
+        f"✅ Qo'shildi: {chat}\n💬 Jami: {new_count}/{MAX_CHATS}",
         reply_markup=await menu_for(uid),
     )
-
-
-async def _handle_remove_chat_text(update: Update, text: str) -> None:
-    # Ehtiyot uchun qoldirilgan, lekin endi tugma orqali o'chiriladi
-    uid = update.effective_user.id
-    user_states.pop(uid, None)
-    chats = await get_chats(uid)
-    if text in chats:
-        chats.remove(text)
-        await set_chats(uid, chats)
-        await update.message.reply_text(f"🗑 O'chirildi: {text}", reply_markup=await menu_for(uid))
-    else:
-        await update.message.reply_text("❌ Topilmadi.", reply_markup=await menu_for(uid))
 
 
 async def _handle_add_post(update: Update) -> None:
@@ -1946,58 +1612,48 @@ async def _handle_add_post(update: Update) -> None:
     user_states.pop(uid, None)
     msg = update.message
 
-    # Matn yoki caption
     text = msg.text or msg.caption or ""
     entities_src = list(msg.entities or []) + list(msg.caption_entities or [])
 
-    # Rasm bo'lsa — eng katta o'lchamdagisini yuklab olamiz
     photo_path: str | None = None
     if msg.photo:
         try:
-            photo = msg.photo[-1]  # eng katta o'lcham
+            photo = msg.photo[-1]
             tg_file = await photo.get_file()
-            ext = ".jpg"
             user_dir = _user_media_dir(uid)
-            photo_path = os.path.join(user_dir, f"{uuid.uuid4().hex}{ext}")
+            photo_path = os.path.join(user_dir, f"{uuid.uuid4().hex}.jpg")
             await tg_file.download_to_drive(custom_path=photo_path)
         except Exception as e:
             log(f"❌ Rasm yuklashda xato {uid}: {type(e).__name__}: {e}", "error")
-            await update.message.reply_text(
+            await msg.reply_text(
                 "❌ Rasmni saqlab bo'lmadi. Qaytadan urinib ko'ring.",
                 reply_markup=await menu_for(uid),
             )
             return
 
     if not text.strip() and not photo_path:
-        await update.message.reply_text(
+        await msg.reply_text(
             "❌ Bo'sh post qabul qilinmaydi.\nMatn yoki rasm yuboring.",
             reply_markup=await menu_for(uid),
         )
         return
 
-    posts = await get_posts(uid)
+    posts = await db.get_posts(uid)
     if len(posts) >= MAX_POSTS:
         _safe_unlink(photo_path)
-        await update.message.reply_text(
+        await msg.reply_text(
             f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
         )
         return
 
-    post = {
-        "text": text,
-        "entities": [entity_to_dict(e) for e in entities_src],
-        "link_preview": True,
-    }
-    if photo_path:
-        post["photo"] = photo_path
-
-    posts.append(post)
-    await set_posts(uid, posts)
-    log(f"📝 Post qo'shildi: {uid} (#{len(posts)}) {'+rasm' if photo_path else ''}")
+    entities_dict = [entity_to_dict(e) for e in entities_src]
+    await db.add_post(uid, text, entities_dict, photo_path)
+    new_count = len(await db.get_posts(uid))
+    log(f"📝 Post qo'shildi: {uid} (#{new_count}) {'+rasm' if photo_path else ''}")
     preview = (text or "(faqat rasm)")[:100]
     kind = "🖼 Rasm + matn" if photo_path else "📝 Matn"
-    await update.message.reply_text(
-        f"✅ Saqlandi (#{len(posts)})\n{kind}\n\n{preview}",
+    await msg.reply_text(
+        f"✅ Saqlandi (#{new_count})\n{kind}\n\n{preview}",
         reply_markup=await menu_for(uid),
     )
 
@@ -2013,11 +1669,11 @@ async def _handle_set_interval(update: Update, text: str) -> None:
         return
     if m < MIN_INTERVAL_MIN or m > MAX_INTERVAL_MIN:
         await update.message.reply_text(
-            f"❌ {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} oralig'ida bo'lishi kerak. Qaytadan:"
+            f"❌ {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} oralig'ida bo'lishi kerak."
         )
         return
     user_states.pop(uid, None)
-    await set_interval(uid, m)
+    await db.set_interval(uid, m)
     log(f"⏱ Interval: {uid} → {m}")
     await update.message.reply_text(
         f"✅ Interval: {m} daqiqa", reply_markup=await menu_for(uid)
@@ -2037,11 +1693,11 @@ async def _handle_set_schedule(update: Update, text: str) -> None:
         end = dtime(eh, em)
     except Exception:
         await update.message.reply_text(
-            "❌ Format noto'g'ri. Masalan: 09:00-22:00\nQaytadan kiriting:"
+            "❌ Format noto'g'ri. Masalan: 09:00-22:00"
         )
         return
     user_states.pop(uid, None)
-    await set_schedule(uid, start, end)
+    await db.set_schedule(uid, start, end)
     log(f"🕒 Schedule: {uid} → {start.strftime('%H:%M')}–{end.strftime('%H:%M')}")
     await update.message.reply_text(
         f"✅ Vaqt oynasi: {start.strftime('%H:%M')}–{end.strftime('%H:%M')}",
@@ -2053,28 +1709,18 @@ async def _handle_set_schedule(update: Update, text: str) -> None:
 # RESTART-DAN KEYIN AVTO-TIKLASH
 # ─────────────────────────────────────────────────────────────────────────
 async def restore_running_workers() -> None:
-    running = await jload(RUNNING_FILE, {})
-    if not isinstance(running, dict):
-        return
-    for uid_str, val in running.items():
-        if not val:
-            continue
-        try:
-            uid = int(uid_str)
-        except Exception:
-            continue
-        if not await is_approved(uid):
-            await del_running(uid)
-            continue
-        if not await get_session(uid):
-            await del_running(uid)
-            continue
-        chats = await get_chats(uid)
-        posts = await get_posts(uid)
+    running_uids = await db.get_all_running()
+    restored = 0
+    for uid in running_uids:
+        chats = await db.get_chats(uid)
+        posts = await db.get_posts(uid)
         if not chats or not posts:
+            await db.set_running(uid, False)
             continue
-        await _start_worker(uid)
-        log(f"🔁 Tiklandi: {uid}")
+        if await worker_manager.start_worker(uid):
+            restored += 1
+            log(f"🔁 Tiklandi: {uid}")
+    log(f"✅ {restored} ta worker tiklandi")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2085,16 +1731,47 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def main() -> None:
-    global application
+    global application, client_pool, worker_manager, health_server
     log("🚀 AVTO BOT ishga tushmoqda")
 
+    # 1. Bazani sozlash
+    await db.init_db()
+
+    # 2. JSON'dan migratsiya (eski versiyadan)
+    migrated = await db.migrate_from_json()
+    if migrated:
+        log(f"📦 JSON dan {migrated} ta foydalanuvchi import qilindi")
+
+    # 3. Super admin bazada borligini ta'minlash
+    await db.upsert_user(SUPER_ADMIN, is_admin=1)
+
+    # 4. Client pool
+    client_pool = ClientPool(API_ID, API_HASH)
+    await client_pool.start()
+
+    # 5. Worker manager
+    worker_manager = WorkerManager()
+    worker_manager.set_worker_factory(posting_loop)
+    worker_manager.setup_signals()
+
+    # 6. Health server
+    health_server = HealthServer()
+    health_server.set_stats_providers(
+        worker_stats_fn=lambda: worker_manager.stats(),
+        pool_stats_fn=lambda: client_pool.stats(),
+    )
+    try:
+        await health_server.start()
+        log("🌐 Health server: http://0.0.0.0:8080/health")
+    except Exception as e:
+        log(f"⚠️ Health server xato: {e}", "warning")
+
+    # 7. Telegram bot
     app = Application.builder().token(BOT_TOKEN).build()
     application = app
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(on_callback))
-    # Foto/video bilan keluvchi caption-li xabarlar ham post sifatida saqlanishi uchun
-    # filters.TEXT bilan birga caption-li xabarlarni ham tutamiz.
     app.add_handler(
         MessageHandler(
             (filters.TEXT | filters.PHOTO) & ~filters.COMMAND, on_message
@@ -2107,21 +1784,26 @@ async def main() -> None:
     await app.updater.start_polling(drop_pending_updates=True)
     log("✅ Polling boshlandi")
 
+    # 8. Avval ishlagan workerlarni tiklash
     await restore_running_workers()
 
+    # 9. Cheksiz turish (yoki shutdown signali)
     try:
-        # Cheksiz turish
-        while True:
-            await asyncio.sleep(3600)
+        await worker_manager.wait_shutdown()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
         log("🛑 To'xtatilmoqda...")
-        for uid in list(workers.keys()):
-            await _stop_worker(uid, persist=True)
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+        with contextlib.suppress(Exception):
+            await worker_manager.stop_all()
+        with contextlib.suppress(Exception):
+            await client_pool.stop()
+        with contextlib.suppress(Exception):
+            await health_server.stop()
+        with contextlib.suppress(Exception):
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
         log("👋 To'xtatildi")
 
 
