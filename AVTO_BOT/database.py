@@ -12,6 +12,7 @@ Afzalliklari:
 """
 
 import aiosqlite
+import contextlib
 import json
 import os
 from datetime import time as dtime
@@ -287,7 +288,7 @@ async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tupl
                     row = await cur.fetchone()
                     cnt = int(row[0]) if row else 0
                 if cnt >= max_chats:
-                    await db.execute("ROLLBACK")
+                    await db.rollback()
                     return False, "limit"
 
             try:
@@ -298,13 +299,11 @@ async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tupl
                 await db.commit()
                 return True, "ok"
             except aiosqlite.IntegrityError:
-                await db.execute("ROLLBACK")
+                await db.rollback()
                 return False, "duplicate"
         except Exception:
-            try:
-                await db.execute("ROLLBACK")
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                await db.rollback()
             raise
 
 
@@ -384,7 +383,7 @@ async def add_post(
                     row = await cur.fetchone()
                     cnt = int(row[0]) if row else 0
                 if cnt >= max_posts:
-                    await db.execute("ROLLBACK")
+                    await db.rollback()
                     return False, "limit", None
 
             cur = await db.execute(
@@ -395,10 +394,8 @@ async def add_post(
             await db.commit()
             return True, "ok", post_id
         except Exception:
-            try:
-                await db.execute("ROLLBACK")
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                await db.rollback()
             raise
 
 

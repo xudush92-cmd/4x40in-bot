@@ -1796,6 +1796,74 @@ async def _handle_set_schedule(update: Update, text: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# STALE LOGIN JANITOR — tashlangan login_ctx va user_states tozalovchi
+# ─────────────────────────────────────────────────────────────────────────
+JANITOR_INTERVAL_S = 60  # har daqiqada tekshiramiz
+
+
+async def _expire_stale_logins() -> int:
+    """
+    LOGIN_TIMEOUT_S muddati o'tgan login_ctx va user_states entrylarini
+    tozalaydi. Telethon clientlar disconnect qilinadi.
+
+    Returns: tozalangan entry soni
+    """
+    now = time.time()
+    expired_uids: set[int] = set()
+
+    # 1) login_ctx — phone yuborilgan, lekin code hech tasdiqlanmagan
+    for uid, ctx in list(login_ctx.items()):
+        if now - ctx.started_at > LOGIN_TIMEOUT_S:
+            expired_uids.add(uid)
+
+    # 2) user_states — login bosqichida turib qolganlar (phone/code/password)
+    for uid, state in list(user_states.items()):
+        step = state.get("step")
+        if step in ("phone", "code", "password"):
+            ts = state.get("ts", 0)
+            if now - ts > LOGIN_TIMEOUT_S:
+                expired_uids.add(uid)
+
+    if not expired_uids:
+        return 0
+
+    for uid in expired_uids:
+        with contextlib.suppress(Exception):
+            await cleanup_login(uid)
+        # Foydalanuvchini xabardor qilamiz (eng kichik harakat)
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                uid,
+                f"⏰ Login muddati tugadi ({LOGIN_TIMEOUT_S // 60} daqiqa).\n"
+                "Qaytadan 🔑 Login bosing.",
+                reply_markup=await menu_for(uid),
+            )
+
+    log(f"🧹 Stale login janitor: {len(expired_uids)} ta tozalandi")
+    return len(expired_uids)
+
+
+async def login_janitor_loop(stop: asyncio.Event) -> None:
+    """
+    Davriy janitor — har JANITOR_INTERVAL_S soniyada ishlaydi.
+    Shutdown signali kelguncha aylanadi.
+    """
+    log(f"🧹 Login janitor boshlandi (har {JANITOR_INTERVAL_S}s)")
+    try:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=JANITOR_INTERVAL_S)
+                break  # stop set bo'ldi
+            except asyncio.TimeoutError:
+                pass
+            with contextlib.suppress(Exception):
+                await _expire_stale_logins()
+    except asyncio.CancelledError:
+        pass
+    log("🧹 Login janitor to'xtadi")
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # RESTART-DAN KEYIN AVTO-TIKLASH
 # ─────────────────────────────────────────────────────────────────────────
 async def restore_running_workers() -> None:
@@ -1882,6 +1950,12 @@ async def main() -> None:
     # 8. Avval ishlagan workerlarni tiklash
     await restore_running_workers()
 
+    # 8b. Stale login janitor — har daqiqada tashlangan loginlarni tozalaydi
+    janitor_stop = asyncio.Event()
+    janitor_task = asyncio.create_task(
+        login_janitor_loop(janitor_stop), name="login-janitor"
+    )
+
     # 9. Cheksiz turish (yoki shutdown signali)
     try:
         await worker_manager.wait_shutdown()
@@ -1889,6 +1963,10 @@ async def main() -> None:
         pass
     finally:
         log("🛑 To'xtatilmoqda...")
+        # Janitorni avval to'xtatamiz — keyingi tasklar bilan to'qnashmasin
+        janitor_stop.set()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(janitor_task, timeout=5)
         with contextlib.suppress(Exception):
             await worker_manager.stop_all()
         with contextlib.suppress(Exception):
