@@ -7,23 +7,28 @@ Afzalliklari:
 - Corruption riski deyarli yo'q
 - 1000+ foydalanuvchi uchun tez ishlaydi
 - Backup = bitta fayl nusxalash
+- INSERT ON CONFLICT — atomic upsert (race-free)
+- Idempotent migration — JSON fayllar .migrated suffix bilan belgilanadi
 """
 
 import aiosqlite
 import json
 import os
 from datetime import time as dtime
-from typing import Any
 
 DB_PATH = os.path.join("data", "avto_bot.db")
 os.makedirs("data", exist_ok=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# INIT
+# ─────────────────────────────────────────────────────────────────────────
 async def init_db() -> None:
     """Bazani yaratish va jadvallarni sozlash."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA foreign_keys=ON")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -70,12 +75,30 @@ async def init_db() -> None:
             )
         """)
 
+        # Indekslar — tezroq query
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_chats_uid ON chats(uid)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_posts_uid ON posts(uid)")
+
         await db.commit()
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # USERS
 # ─────────────────────────────────────────────────────────────────────────
+# Default qiymatlar — birinchi marta yaratilganda ishlatiladi
+_USER_DEFAULTS = {
+    "name": "",
+    "username": "",
+    "session": None,
+    "pending_session": None,
+    "is_admin": 0,
+    "interval_min": 4,
+    "schedule_start": "00:00",
+    "schedule_end": "23:59",
+    "running": 0,
+}
+
+
 async def get_user(uid: int) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -85,31 +108,42 @@ async def get_user(uid: int) -> dict | None:
 
 
 async def upsert_user(uid: int, **kwargs) -> None:
-    """Foydalanuvchini yaratish yoki yangilash."""
+    """
+    Foydalanuvchini yaratish yoki yangilash — atomic, race-free.
+
+    INSERT OR IGNORE bilan satr borligini ta'minlaymiz, keyin UPDATE
+    qilamiz. Hammasi bitta connection ichida.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
-        existing = await get_user(uid)
-        if existing is None:
-            cols = ["uid"] + list(kwargs.keys())
-            vals = [uid] + list(kwargs.values())
-            placeholders = ",".join(["?"] * len(vals))
-            col_names = ",".join(cols)
-            await db.execute(f"INSERT INTO users ({col_names}) VALUES ({placeholders})", vals)
-        else:
-            if kwargs:
-                sets = ",".join(f"{k}=?" for k in kwargs)
-                vals = list(kwargs.values()) + [uid]
-                await db.execute(f"UPDATE users SET {sets} WHERE uid=?", vals)
+        await db.execute("PRAGMA busy_timeout=5000")
+
+        # 1) Satr yo'q bo'lsa yaratamiz (default qiymatlar bilan)
+        await db.execute(
+            "INSERT OR IGNORE INTO users (uid) VALUES (?)", (uid,)
+        )
+
+        # 2) Yangilanadigan field bo'lsa — UPDATE
+        if kwargs:
+            sets = ", ".join(f"{k}=?" for k in kwargs.keys())
+            vals = list(kwargs.values()) + [uid]
+            await db.execute(f"UPDATE users SET {sets} WHERE uid=?", vals)
+
         await db.commit()
 
 
 async def delete_user(uid: int) -> None:
+    """Foydalanuvchini va u bilan bog'liq barcha ma'lumotni o'chirish."""
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM users WHERE uid=?", (uid,))
+        await db.execute("PRAGMA busy_timeout=5000")
         await db.execute("DELETE FROM chats WHERE uid=?", (uid,))
         await db.execute("DELETE FROM posts WHERE uid=?", (uid,))
+        await db.execute("DELETE FROM users WHERE uid=?", (uid,))
         await db.commit()
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Sessions / pending
+# ─────────────────────────────────────────────────────────────────────────
 async def get_session(uid: int) -> str | None:
     user = await get_user(uid)
     return user["session"] if user else None
@@ -136,6 +170,9 @@ async def del_pending(uid: int) -> None:
     await upsert_user(uid, pending_session=None)
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Adminlar
+# ─────────────────────────────────────────────────────────────────────────
 async def get_admins() -> list[int]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT uid FROM users WHERE is_admin=1") as cur:
@@ -168,11 +205,11 @@ async def set_user_info(uid: int, name: str, username: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# INTERVAL & SCHEDULE
+# Interval va schedule
 # ─────────────────────────────────────────────────────────────────────────
 async def get_interval(uid: int) -> int:
     user = await get_user(uid)
-    return user["interval_min"] if user else 4
+    return user["interval_min"] if user else _USER_DEFAULTS["interval_min"]
 
 
 async def set_interval(uid: int, minutes: int) -> None:
@@ -209,7 +246,7 @@ async def set_running(uid: int, value: bool) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# CHATS
+# CHATS — atomic count + insert (race-safe)
 # ─────────────────────────────────────────────────────────────────────────
 async def get_chats(uid: int) -> list[str]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -220,17 +257,55 @@ async def get_chats(uid: int) -> list[str]:
             return [r[0] for r in rows]
 
 
-async def add_chat(uid: int, chat_id: str) -> bool:
-    """Chat qo'shadi. Agar allaqachon bo'lsa False qaytaradi."""
+async def count_chats(uid: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM chats WHERE uid=?", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tuple[bool, str]:
+    """
+    Chat qo'shadi (atomic).
+
+    Returns:
+        (True, "ok") — qo'shildi
+        (False, "duplicate") — allaqachon mavjud
+        (False, "limit") — max_chats limitidan oshib ketdi
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
+        # Transaction ichida count + insert — atomic
+        await db.execute("BEGIN IMMEDIATE")
         try:
-            await db.execute(
-                "INSERT INTO chats (uid, chat_id) VALUES (?, ?)", (uid, chat_id)
-            )
-            await db.commit()
-            return True
-        except aiosqlite.IntegrityError:
-            return False
+            if max_chats is not None:
+                async with db.execute(
+                    "SELECT COUNT(*) FROM chats WHERE uid=?", (uid,)
+                ) as cur:
+                    row = await cur.fetchone()
+                    cnt = int(row[0]) if row else 0
+                if cnt >= max_chats:
+                    await db.execute("ROLLBACK")
+                    return False, "limit"
+
+            try:
+                await db.execute(
+                    "INSERT INTO chats (uid, chat_id) VALUES (?, ?)",
+                    (uid, chat_id),
+                )
+                await db.commit()
+                return True, "ok"
+            except aiosqlite.IntegrityError:
+                await db.execute("ROLLBACK")
+                return False, "duplicate"
+        except Exception:
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
 
 async def remove_chat(uid: int, index: int) -> str | None:
@@ -254,7 +329,7 @@ async def clear_chats(uid: int) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# POSTS
+# POSTS — atomic count + insert (race-safe)
 # ─────────────────────────────────────────────────────────────────────────
 async def get_posts(uid: int) -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -275,15 +350,56 @@ async def get_posts(uid: int) -> list[dict]:
             ]
 
 
-async def add_post(uid: int, text: str, entities: list, photo_path: str | None) -> int:
-    """Post qo'shadi. Post ID qaytaradi."""
+async def count_posts(uid: int) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "INSERT INTO posts (uid, text_content, entities, photo_path) VALUES (?, ?, ?, ?)",
-            (uid, text, json.dumps(entities, ensure_ascii=False), photo_path),
-        )
-        await db.commit()
-        return cur.lastrowid
+        async with db.execute(
+            "SELECT COUNT(*) FROM posts WHERE uid=?", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def add_post(
+    uid: int,
+    text: str,
+    entities: list,
+    photo_path: str | None,
+    max_posts: int | None = None,
+) -> tuple[bool, str, int | None]:
+    """
+    Post qo'shadi (atomic).
+
+    Returns:
+        (True, "ok", post_id) — qo'shildi
+        (False, "limit", None) — max_posts limitidan oshib ketdi
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            if max_posts is not None:
+                async with db.execute(
+                    "SELECT COUNT(*) FROM posts WHERE uid=?", (uid,)
+                ) as cur:
+                    row = await cur.fetchone()
+                    cnt = int(row[0]) if row else 0
+                if cnt >= max_posts:
+                    await db.execute("ROLLBACK")
+                    return False, "limit", None
+
+            cur = await db.execute(
+                "INSERT INTO posts (uid, text_content, entities, photo_path) VALUES (?, ?, ?, ?)",
+                (uid, text, json.dumps(entities, ensure_ascii=False), photo_path),
+            )
+            post_id = cur.lastrowid
+            await db.commit()
+            return True, "ok", post_id
+        except Exception:
+            try:
+                await db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
 
 async def remove_post(uid: int, index: int) -> dict | None:
@@ -320,43 +436,66 @@ async def get_all_running() -> list[int]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# MIGRATION — JSON'dan SQLite'ga ko'chirish (bir martalik)
+# MIGRATION — JSON'dan SQLite'ga ko'chirish (idempotent)
+#
+# Har bir muvaffaqiyatli o'qilgan JSON fayl ".migrated" suffix bilan
+# rename qilinadi. Shu sababli keyingi restartlarda qayta o'qilmaydi
+# va post/chat dublikatlari yaratilmaydi.
 # ─────────────────────────────────────────────────────────────────────────
-async def migrate_from_json() -> int:
-    """Agar eski JSON fayllar mavjud bo'lsa — ularni SQLite'ga import qiladi.
-    Import qilingan foydalanuvchilar sonini qaytaradi."""
-    import_count = 0
+async def migrate_from_json() -> dict:
+    """
+    Eski JSON fayllarini SQLite'ga ko'chiradi.
+
+    Returns:
+        Statistika dict: {"users": N, "chats": N, "posts": N, "files": [...]}
+    """
+    stats = {"users": 0, "chats": 0, "posts": 0, "files": []}
     json_dir = "data"
 
-    # Sessions
-    sessions_path = os.path.join(json_dir, "sessions.json")
-    if os.path.exists(sessions_path):
+    def _path(name: str) -> str:
+        return os.path.join(json_dir, name)
+
+    def _is_pending(name: str) -> bool:
+        """Fayl bor va hali migratsiya qilinmagan."""
+        p = _path(name)
+        return os.path.exists(p) and not os.path.exists(p + ".migrated")
+
+    def _mark_migrated(name: str) -> None:
+        """Faylga .migrated qo'shamiz (qayta o'qilmasligi uchun)."""
+        p = _path(name)
         try:
-            with open(sessions_path, "r") as f:
+            os.rename(p, p + ".migrated")
+            stats["files"].append(name)
+        except OSError:
+            pass
+
+    # Sessions
+    if _is_pending("sessions.json"):
+        try:
+            with open(_path("sessions.json"), "r", encoding="utf-8") as f:
                 sessions = json.load(f)
             for uid_str, sess in sessions.items():
-                uid = int(uid_str)
-                await upsert_user(uid, session=sess, is_admin=1)
-                import_count += 1
+                await upsert_user(int(uid_str), session=sess, is_admin=1)
+                stats["users"] += 1
+            _mark_migrated("sessions.json")
         except Exception:
             pass
 
     # Pending
-    pending_path = os.path.join(json_dir, "pending.json")
-    if os.path.exists(pending_path):
+    if _is_pending("pending.json"):
         try:
-            with open(pending_path, "r") as f:
+            with open(_path("pending.json"), "r", encoding="utf-8") as f:
                 pending = json.load(f)
             for uid_str, sess in pending.items():
                 await upsert_user(int(uid_str), pending_session=sess)
+            _mark_migrated("pending.json")
         except Exception:
             pass
 
     # Users info
-    users_path = os.path.join(json_dir, "users.json")
-    if os.path.exists(users_path):
+    if _is_pending("users.json"):
         try:
-            with open(users_path, "r") as f:
+            with open(_path("users.json"), "r", encoding="utf-8") as f:
                 users = json.load(f)
             for uid_str, info in users.items():
                 await upsert_user(
@@ -364,25 +503,25 @@ async def migrate_from_json() -> int:
                     name=info.get("name", ""),
                     username=info.get("username", ""),
                 )
+            _mark_migrated("users.json")
         except Exception:
             pass
 
     # Intervals
-    intervals_path = os.path.join(json_dir, "intervals.json")
-    if os.path.exists(intervals_path):
+    if _is_pending("intervals.json"):
         try:
-            with open(intervals_path, "r") as f:
+            with open(_path("intervals.json"), "r", encoding="utf-8") as f:
                 intervals = json.load(f)
             for uid_str, val in intervals.items():
                 await upsert_user(int(uid_str), interval_min=int(val))
+            _mark_migrated("intervals.json")
         except Exception:
             pass
 
     # Schedule
-    schedule_path = os.path.join(json_dir, "schedule.json")
-    if os.path.exists(schedule_path):
+    if _is_pending("schedule.json"):
         try:
-            with open(schedule_path, "r") as f:
+            with open(_path("schedule.json"), "r", encoding="utf-8") as f:
                 schedules = json.load(f)
             for uid_str, sched in schedules.items():
                 await upsert_user(
@@ -390,50 +529,56 @@ async def migrate_from_json() -> int:
                     schedule_start=sched.get("start", "00:00"),
                     schedule_end=sched.get("end", "23:59"),
                 )
+            _mark_migrated("schedule.json")
         except Exception:
             pass
 
-    # Chats
-    chats_path = os.path.join(json_dir, "chats.json")
-    if os.path.exists(chats_path):
+    # Chats — UNIQUE(uid, chat_id) tufayli dubl bo'lmaydi
+    if _is_pending("chats.json"):
         try:
-            with open(chats_path, "r") as f:
+            with open(_path("chats.json"), "r", encoding="utf-8") as f:
                 all_chats = json.load(f)
             for uid_str, chat_list in all_chats.items():
                 uid = int(uid_str)
                 for chat_id in chat_list:
-                    await add_chat(uid, chat_id)
+                    ok, _ = await add_chat(uid, chat_id)
+                    if ok:
+                        stats["chats"] += 1
+            _mark_migrated("chats.json")
         except Exception:
             pass
 
-    # Posts
-    posts_path = os.path.join(json_dir, "posts.json")
-    if os.path.exists(posts_path):
+    # Posts — UNIQUE constraint yo'q, lekin .migrated suffix tufayli
+    # qayta import bo'lmaydi
+    if _is_pending("posts.json"):
         try:
-            with open(posts_path, "r") as f:
+            with open(_path("posts.json"), "r", encoding="utf-8") as f:
                 all_posts = json.load(f)
             for uid_str, post_list in all_posts.items():
                 uid = int(uid_str)
                 for post in post_list:
-                    await add_post(
+                    ok, _, _ = await add_post(
                         uid,
                         post.get("text", ""),
                         post.get("entities", []),
                         post.get("photo"),
                     )
+                    if ok:
+                        stats["posts"] += 1
+            _mark_migrated("posts.json")
         except Exception:
             pass
 
     # Running
-    running_path = os.path.join(json_dir, "running.json")
-    if os.path.exists(running_path):
+    if _is_pending("running.json"):
         try:
-            with open(running_path, "r") as f:
+            with open(_path("running.json"), "r", encoding="utf-8") as f:
                 running = json.load(f)
             for uid_str, val in running.items():
                 if val:
                     await upsert_user(int(uid_str), running=1)
+            _mark_migrated("running.json")
         except Exception:
             pass
 
-    return import_count
+    return stats
