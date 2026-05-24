@@ -595,7 +595,7 @@ async def cleanup_login(uid: int) -> None:
 CODE_LENGTH = 5  # Telegram login kodi 5 raqamli (ba'zan 6 — 6 ham qabul qilinadi)
 
 
-def numpad_kb() -> InlineKeyboardMarkup:
+def numpad_kb(allow_sms: bool = True) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(d, callback_data=f"np:{d}") for d in ("1", "2", "3")],
         [InlineKeyboardButton(d, callback_data=f"np:{d}") for d in ("4", "5", "6")],
@@ -605,8 +605,14 @@ def numpad_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("0", callback_data="np:0"),
             InlineKeyboardButton("✅ Tasdiq", callback_data="np:ok"),
         ],
-        [InlineKeyboardButton("❌ Bekor qilish", callback_data="np:cancel")],
     ]
+    if allow_sms:
+        rows.append(
+            [InlineKeyboardButton("📲 SMS orqali yuborish", callback_data="np:sms")]
+        )
+    rows.append(
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="np:cancel")]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -633,13 +639,14 @@ def numpad_message(buffer: str, hint: str = "") -> str:
     return base
 
 
-async def _send_numpad(uid: int, buffer: str = "", hint: str = "") -> None:
+async def _send_numpad(uid: int, buffer: str = "", hint: str = "", allow_sms: bool = True) -> None:
     """Foydalanuvchiga numpad xabarini yuboradi va message_id ni saqlaydi."""
     msg = await application.bot.send_message(
-        uid, numpad_message(buffer, hint), reply_markup=numpad_kb()
+        uid, numpad_message(buffer, hint), reply_markup=numpad_kb(allow_sms=allow_sms)
     )
     state = user_states.get(uid, {})
     state["numpad_msg_id"] = msg.message_id
+    state["sms_allowed"] = allow_sms
     user_states[uid] = state
 
 
@@ -1167,6 +1174,54 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
 
+        if action == "sms":
+            # Kodni SMS orqali qayta yuborish
+            ctx = login_ctx.get(uid)
+            if not ctx:
+                await q.answer("Login jarayoni buzildi.", show_alert=True)
+                await cleanup_login(uid)
+                with contextlib.suppress(Exception):
+                    await q.edit_message_text("❌ Login jarayoni buzildi. Qaytadan 🔑 Login bosing.")
+                return
+            # Telegram qoidasi: SMS faqat App-code yuborilganidan keyingina mumkin.
+            # Bir martagina ruxsat beriladi.
+            if not state.get("sms_allowed", True):
+                await q.answer("SMS allaqachon so'ralgan!", show_alert=True)
+                return
+            try:
+                if not ctx.client.is_connected():
+                    await asyncio.wait_for(ctx.client.connect(), timeout=20)
+                result = await asyncio.wait_for(
+                    ctx.client.send_code_request(ctx.phone, force_sms=True),
+                    timeout=20,
+                )
+                ctx.phone_code_hash = result.phone_code_hash
+                ctx.__dict__["_wrong_count"] = 0
+                state["code_buffer"] = ""
+                state["ts"] = time.time()
+                state["sms_allowed"] = False  # ikkinchi marta yuborib bo'lmaydi
+                user_states[uid] = state
+                with contextlib.suppress(Exception):
+                    await q.edit_message_text(
+                        numpad_message(
+                            "",
+                            hint=(
+                                "📲 SMS yuborildi!\n"
+                                "Telefon raqamingizga keladi (1-2 daqiqa kutib turing).\n"
+                                "Kelgan kodni tugmalar orqali kiriting."
+                            ),
+                        ),
+                        reply_markup=numpad_kb(allow_sms=False),
+                    )
+            except FloodWaitError as e:
+                await q.answer(f"{e.seconds} soniya kuting!", show_alert=True)
+            except Exception as e:
+                log(f"❌ force_sms {uid}: {type(e).__name__}: {e}", "error")
+                await q.answer(
+                    f"SMS yuborib bo'lmadi: {type(e).__name__}", show_alert=True
+                )
+            return
+
         if action == "back":
             buffer = buffer[:-1]
 
@@ -1198,7 +1253,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_states[uid] = state
         with contextlib.suppress(Exception):
             await q.edit_message_text(
-                numpad_message(buffer), reply_markup=numpad_kb()
+                numpad_message(buffer),
+                reply_markup=numpad_kb(allow_sms=state.get("sms_allowed", True)),
             )
         return
 
@@ -1736,10 +1792,12 @@ async def _begin_login(update: Update) -> None:
     await update.message.reply_text(
         "📱 Telefon raqamingizni yuboring:\n\n"
         "Format: +998XXXXXXXXX\n\n"
-        "⚠️ Telegram ilovangiz ochiq ekanligini tekshiring!\n"
-        "Kod SMS emas, Telegram ilovasidagi \"Telegram\" rasmiy chatiga keladi.\n\n"
-        "💡 Eslatma: kodni 1-2-3-4-5 ko'rinishida (chiziqcha bilan)\n"
-        "qo'lda yozing — copy-paste qilmang.\n\n"
+        "ℹ️ Telegram avval kodni Telegram ILOVASIGA yuboradi (SMS emas).\n"
+        "    👉 Telegram'ni oching → \"Telegram\" rasmiy chati → kodni qarang.\n\n"
+        "    Agar kodni topa olmasangiz, keyingi qadamda \"📲 SMS orqali\n"
+        "    yuborish\" tugmasini bosib, kodni SMS qilib qayta so'rashingiz mumkin.\n\n"
+        "💡 Eslatma: kodni qo'lda raqam-raqam tugmalar orqali kiriting,\n"
+        "    copy-paste qilmang — Telegram avtomatik bekor qiladi.\n\n"
         f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
     )
 
@@ -1762,21 +1820,35 @@ async def _handle_phone(update: Update, text: str) -> None:
             phone_code_hash=result.phone_code_hash,
             started_at=time.time(),
         )
+        # Kod qaerga yuborilganini aniqlaymiz
+        type_name = type(result.type).__name__ if getattr(result, "type", None) else ""
+        if "App" in type_name:
+            kod_joyi = (
+                "📩 Kod Telegram ilovangizga yuborildi!\n"
+                "👉 Telegram'ni oching → \"Telegram\" rasmiy chati → kodni KO'RING.\n\n"
+                "❗️ SMS kelmaydi (Telegram qoidasi).\n"
+                "Agar kodni topa olmasangiz — pastdagi \"📲 SMS orqali yuborish\" tugmasini bosing."
+            )
+        elif "Sms" in type_name:
+            kod_joyi = (
+                "📲 Kod SMS orqali telefoningizga yuborildi!\n"
+                "1-2 daqiqa kuting va kelgan kodni tugmalar orqali kiriting."
+            )
+        else:
+            kod_joyi = (
+                "📩 Kod yuborildi!\n"
+                "Telegram ilovangizdan yoki SMS dan kodni KO'RING (kopiyalamasdan!) "
+                "va pastdagi tugmalar orqali kiriting."
+            )
         # Numpad rejimi: kod buferi user_state'da saqlanadi
         user_states[uid] = {
             "step": "code",
             "ts": time.time(),
             "code_buffer": "",
         }
-        await _send_numpad(
-            uid,
-            "",
-            hint=(
-                "📩 Kod yuborildi!\n"
-                "Telegram ilovangizdan kodni KO'RING (lekin kopiyalamasdan!) "
-                "va pastdagi tugmalar orqali kiriting."
-            ),
-        )
+        # SMS tugmasi faqat App-code uchun ma'noli — boshqa hollarda ham
+        # ko'rsatib qo'yamiz (xavfsiz, Telegram o'zi qaror qiladi)
+        await _send_numpad(uid, "", hint=kod_joyi, allow_sms=("App" in type_name))
     except PhoneNumberInvalidError:
         with contextlib.suppress(Exception):
             await client.disconnect()
