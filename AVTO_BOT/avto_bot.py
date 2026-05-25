@@ -502,7 +502,7 @@ async def _attempt_signin(uid: int, code: str) -> None:
             return
         try:
             result = await asyncio.wait_for(
-                ctx.client.send_code_request(ctx.phone, force_sms=True), timeout=20
+                ctx.client.send_code_request(ctx.phone), timeout=20
             )
             ctx.phone_code_hash = result.phone_code_hash
             ctx.wrong_count = 0
@@ -1535,7 +1535,7 @@ async def _handle_phone(update: Update, text: str) -> None:
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
-        result = await client.send_code_request(phone, force_sms=True)
+        result = await client.send_code_request(phone)
         login_ctx[uid] = LoginCtx(
             client=client,
             phone=phone,
