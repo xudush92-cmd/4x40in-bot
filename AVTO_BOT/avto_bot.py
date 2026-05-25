@@ -285,17 +285,15 @@ def kb_pending() -> ReplyKeyboardMarkup:
     )
 
 
-def kb_main(interval: int, sched: tuple[dtime, dtime], running: bool, super_admin: bool) -> ReplyKeyboardMarkup:
+def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMarkup:
     on = "🟢 ON" if running else "🔴 OFF"
-    s = sched[0].strftime("%H:%M")
-    e = sched[1].strftime("%H:%M")
     rows = [
         [KeyboardButton("▶️ Start"), KeyboardButton("⛔ Stop")],
         [KeyboardButton(f"📊 Status ({on})"), KeyboardButton("💬 Chatlar")],
         [KeyboardButton("➕ Chat qo'sh"), KeyboardButton("➖ Chat o'chir")],
         [KeyboardButton("📝 Post qo'sh"), KeyboardButton("🗑 Post o'chir")],
         [KeyboardButton("📋 Postlar"), KeyboardButton("🧹 Tozalash")],
-        [KeyboardButton(f"⏱ Interval: {interval} daq"), KeyboardButton(f"🕒 Vaqt: {s}–{e}")],
+        [KeyboardButton(f"⏱ Interval: {interval} daq")],
         [KeyboardButton("🚪 Logout")],
     ]
     if super_admin:
@@ -343,9 +341,8 @@ async def menu_for(uid: int) -> ReplyKeyboardMarkup:
         return kb_login()
 
     interval = int(user.get("interval_min", 4)) if user else 4
-    sched = _user_to_schedule(user)
     running = worker_manager.is_running(uid) if worker_manager else False
-    return kb_main(interval, sched, running, super_flag)
+    return kb_main(interval, running, super_flag)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -703,18 +700,9 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
             chats = await db.get_chats(uid)
             posts = await db.get_posts(uid)
             interval = await db.get_interval(uid)
-            sched = await db.get_schedule(uid)
 
             if not chats or not posts:
                 await _sleep_or_stop(stop, 30)
-                continue
-
-            now = now_local()
-            wait_open = seconds_to_window_open(now, sched[0], sched[1])
-            if wait_open > 0:
-                log(f"⏳ Worker:{uid} oyna ochilguncha {wait_open}s kutadi")
-                if await _sleep_or_stop(stop, wait_open):
-                    break
                 continue
 
             client = await client_pool.acquire(uid, sess)
@@ -850,7 +838,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Maksimal {MAX_CHATS} ta chat (guruh/kanal)\n"
         f"• Maksimal {MAX_POSTS} ta post (matn yoki rasm + matn)\n"
         f"• Interval: {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daqiqa\n"
-        "• Yuborish vaqt oynasi (HH:MM–HH:MM)\n"
         "• Bold, italic, link va barcha formatlash saqlanadi\n"
         "• 24/7 ishlaydi, restart-dan keyin avtomatik tiklanadi\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
@@ -976,7 +963,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     "Endi:\n"
                     f"1️⃣ ➕ Chat qo'shing (max {MAX_CHATS})\n"
                     f"2️⃣ 📝 Post qo'shing (max {MAX_POSTS})\n"
-                    "3️⃣ ⏱ Interval va 🕒 vaqt oynasini sozlang\n"
+                    "3️⃣ ⏱ Interval sozlang\n"
                     "4️⃣ ▶️ Start bosing",
                     reply_markup=await menu_for(target),
                 )
@@ -1159,7 +1146,6 @@ async def format_admin_list() -> str:
         s = "✅" if await db.get_session(a) else "❌"
         ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
         interval = await db.get_interval(a)
-        sched = await db.get_schedule(a)
         chats_n = await db.count_chats(a)
         posts_n = await db.count_posts(a)
         lines.append("")
@@ -1167,8 +1153,7 @@ async def format_admin_list() -> str:
         lines.append(f"   {username} | {a}")
         lines.append(f"   Sessiya: {s} | Holat: {ac}")
         lines.append(
-            f"   💬 {chats_n} | 📝 {posts_n} | ⏱ {interval} daq | "
-            f"🕒 {sched[0].strftime('%H:%M')}–{sched[1].strftime('%H:%M')}"
+            f"   💬 {chats_n} | 📝 {posts_n} | ⏱ {interval} daq"
         )
     return "\n".join(lines)
 
@@ -1240,9 +1225,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if step == "set_interval":
         await _handle_set_interval(update, text)
         return
-    if step == "set_schedule":
-        await _handle_set_schedule(update, text)
-        return
 
     # MENYU
     sess = await db.get_session(uid)
@@ -1297,13 +1279,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         await db.set_running(uid, True)
         interval = await db.get_interval(uid)
-        sched = await db.get_schedule(uid)
         await msg.reply_text(
             f"✅ Posting boshlandi!\n"
             f"💬 {len(chats)} ta chat\n"
             f"📝 {len(posts)} ta post\n"
-            f"⏱ Har {interval} daqiqada\n"
-            f"🕒 Vaqt: {sched[0].strftime('%H:%M')}–{sched[1].strftime('%H:%M')}",
+            f"⏱ Har {interval} daqiqada",
             reply_markup=await menu_for(uid),
         )
         return
@@ -1327,21 +1307,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         chats = await db.get_chats(uid)
         posts = await db.get_posts(uid)
         interval = await db.get_interval(uid)
-        sched = await db.get_schedule(uid)
         active = worker_manager.is_running(uid) if worker_manager else False
-        now = now_local()
-        in_w = in_window(now, sched[0], sched[1])
         status = "🟢 ON" if active else "🔴 OFF"
-        win = "🟢 oynada" if in_w else "🟡 oyna tashqarisida"
         await msg.reply_text(
             "📊 STATUS\n\n"
             f"Holat: {status}\n"
             f"Sessiya: ✅\n"
             f"Chatlar: {len(chats)}/{MAX_CHATS}\n"
             f"Postlar: {len(posts)}/{MAX_POSTS}\n"
-            f"Interval: {interval} daqiqa\n"
-            f"Vaqt: {sched[0].strftime('%H:%M')}–{sched[1].strftime('%H:%M')} ({win})\n"
-            f"Hozir: {now.strftime('%H:%M')}",
+            f"Interval: {interval} daqiqa",
             reply_markup=await menu_for(uid),
         )
         return
@@ -1466,19 +1440,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"⏱ INTERVAL\n\n"
             f"Hozir: {interval} daqiqa\n"
             f"Yangi qiymatni kiriting ({MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daq):"
-        )
-        return
-
-    if text.startswith("🕒 Vaqt"):
-        sched = await db.get_schedule(uid)
-        user_states[uid] = {"step": "set_schedule", "ts": time.time()}
-        await msg.reply_text(
-            f"🕒 VAQT OYNASI\n\n"
-            f"Hozir: {sched[0].strftime('%H:%M')}–{sched[1].strftime('%H:%M')}\n\n"
-            "Yangi oynani kiriting (HH:MM-HH:MM):\n"
-            "Masalan: 09:00-22:00\n"
-            "Tunda o'tuvchi: 22:00-06:00\n"
-            "Butun kun: 00:00-23:59"
         )
         return
 
@@ -1759,39 +1720,6 @@ async def _handle_set_interval(update: Update, text: str) -> None:
     log(f"⏱ Interval: {uid} → {m}")
     await update.message.reply_text(
         f"✅ Interval: {m} daqiqa", reply_markup=await menu_for(uid)
-    )
-
-
-async def _handle_set_schedule(update: Update, text: str) -> None:
-    uid = update.effective_user.id
-    s = text.strip().replace(" ", "")
-    try:
-        a, b = s.split("-")
-        sh, sm = map(int, a.split(":"))
-        eh, em = map(int, b.split(":"))
-        if not (0 <= sh < 24 and 0 <= eh < 24 and 0 <= sm < 60 and 0 <= em < 60):
-            raise ValueError
-        start = dtime(sh, sm)
-        end = dtime(eh, em)
-    except Exception:
-        await update.message.reply_text(
-            "❌ Format noto'g'ri. Masalan: 09:00-22:00"
-        )
-        return
-
-    if start == end:
-        await update.message.reply_text(
-            "❌ Boshlanish va tugash vaqti bir xil bo'lmasligi kerak.\n"
-            "Butun kun uchun: 00:00-23:59"
-        )
-        return
-
-    user_states.pop(uid, None)
-    await db.set_schedule(uid, start, end)
-    log(f"🕒 Schedule: {uid} → {start.strftime('%H:%M')}–{end.strftime('%H:%M')}")
-    await update.message.reply_text(
-        f"✅ Vaqt oynasi: {start.strftime('%H:%M')}–{end.strftime('%H:%M')}",
-        reply_markup=await menu_for(uid),
     )
 
 
