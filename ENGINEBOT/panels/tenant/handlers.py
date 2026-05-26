@@ -1,48 +1,34 @@
 """
-panels/tenant/handlers.py — guruh egasi (tenant) paneli.
+panels/tenant/handlers.py — guruh egasi (tenant) paneli (V1).
 
-ASOSIY FUNKSIYALAR:
-───────────────────
-- Kanal ulash va boshqaruv
-- Foydalanuvchilarni tasdiqlash/bloklash
-- E'lonlarni nazorat qilish
-- Aylanish (rotation) sozlamalari (ON/OFF, interval, schedule)
-- Bot/E'lon qabuli ON/OFF
-- Statistika
-- Audit log (o'z guruhi)
-
-XAVFSIZLIK:
-───────────
-Har handler boshida tenant ekanligi tekshiriladi.
-Cross-tenant amallar PermissionDenied bilan bloklanadi
-(assert_same_tenant orqali).
+V1 yangiliklar:
+- Tenant rotation_active toggle YO'Q (rotation per-poster bo'ldi)
+- Tenant faqat MIN INTERVAL cheklovini belgilaydi (default 10 daq)
+- Auto-approval toggle qo'shildi
+- Bot ON/OFF, Post intake ON/OFF saqlangan
+- Foydalanuvchilar tasdiqlash/bloklash/ogohlantirish
+- Kanal ulash, statistika, audit log
 """
 
 from __future__ import annotations
 
+import contextlib
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
-from config import Role, Rotation, UserStatus
+from config import Limits, Role, Rotation, UserStatus, get_tariff_limit
 from core import audit_log, database as db, notifier
 from core.permissions import (
-    Action,
     PermissionDenied,
     RoleContext,
-    assert_can,
-    assert_same_tenant,
-    can,
     resolve_role,
 )
 from keyboards import tenant_kb
 from keyboards.common_kb import Btn, inline_grid
 from utils import formatters as fmt
 from utils import logger as log_mod
-from utils.confirmation import (
-    build_confirmation,
-    confirm_block_user,
-    confirm_rotation_toggle,
-)
+from utils.confirmation import build_confirmation
 from utils.session_state import session
 from utils.validators import validate_channel, validate_interval, validate_reason
 
@@ -73,7 +59,6 @@ async def i_am_tenant(message: Message) -> None:
     name = message.from_user.full_name or ""
     username = message.from_user.username or ""
 
-    # Mavjud tenant?
     existing = await db.get_tenant(uid)
     if existing:
         ctx = await resolve_role(uid)
@@ -88,24 +73,22 @@ async def i_am_tenant(message: Message) -> None:
     tenant = await register_tenant(uid, name=name, username=username, auto_trial=True)
 
     # Super adminga xabar
-    from keyboards.super_admin_kb import approve_tenant_inline
     from config import SUPER_ADMIN_ID
-
-    try:
-        from main import bot  # global bot instance
+    from keyboards.super_admin_kb import approve_tenant_inline
+    with contextlib.suppress(Exception):
+        from main import bot
+        username_str = ('@' + fmt.esc(username)) if username else 'username yoʻq'
         await bot.send_message(
             SUPER_ADMIN_ID,
             text=(
                 f"🔔 <b>Yangi tenant arizasi</b>\n\n"
                 f"👤 <b>{fmt.esc(name)}</b>\n"
                 f"🆔 <code>#{uid}</code>\n"
-                f"📎 {('@' + fmt.esc(username)) if username else 'username yoʻq'}\n\n"
+                f"📎 {username_str}\n\n"
                 f"📦 Auto-trial bilan aktivlashtirildi: {tenant.get('paid_until', '')[:10]}"
             ),
             reply_markup=approve_tenant_inline(uid),
         )
-    except Exception as e:
-        logger.warning(f"super adminga xabar yuborib boʻlmadi: {e}")
 
     await message.answer(
         f"✅ <b>Tabriklayman, {fmt.esc(name)}!</b>\n\n"
@@ -116,34 +99,32 @@ async def i_am_tenant(message: Message) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 🔄 Aylanish sozlamalari
+# ⚙️ Sozlamalar paneli
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text == Btn.ROTATION_SETTINGS)
-async def show_rotation(message: Message) -> None:
+@router.message(F.text == Btn.BOT_SETTINGS)
+async def show_settings(message: Message) -> None:
     if message.from_user is None:
         return
     ctx = await _ensure_tenant(message.from_user.id)
 
     settings = await db.get_settings(ctx.user_id)
-
     text = (
-        f"🔄 <b>Aylanish va boshqaruv</b>\n"
+        f"⚙️ <b>Sozlamalar</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"🤖 Bot: <b>{'🟢 ON' if settings['bot_active'] else '🔴 OFF'}</b>\n"
-        f"📥 E'lon qabuli: <b>{'🟢 ON' if settings['post_intake_active'] else '🔴 OFF'}</b>\n"
-        f"🔄 Aylanish: <b>{'🟢 ON' if settings['rotation_active'] else '🔴 OFF'}</b>\n\n"
-        f"⏱ Interval: <b>{settings['rotation_interval_min']} daq</b>\n"
-        f"⏰ Vaqt: {settings['active_from']} — {settings['active_to']}\n"
-        f"⏳ Eʼlon yashash: {settings['post_lifetime_hours']} soat\n\n"
-        f"<i>Eslatma:</i> Aylanish min {Rotation.MIN_INTERVAL_MIN} daqiqa "
-        f"boʻlishi shart."
+        f"📥 Eʼlon qabuli: <b>{'🟢 ON' if settings['post_intake_active'] else '🔴 OFF'}</b>\n"
+        f"✅ Avto-tasdiq: <b>"
+        f"{'🟢 ON' if not settings.get('require_approval', True) else '🔴 OFF'}</b>\n"
+        f"⏱ Min interval: <b>{settings['rotation_interval_min']} daq</b>\n\n"
+        f"<i>Eslatma:</i> Min interval — har poster uchun rotation min cheklovi.\n"
+        f"Posterlar oʻz intervalini shu qiymatdan past qila olmaydi.\n"
+        f"Tizim qoidasi: hech qachon {Rotation.MIN_INTERVAL_MIN} daqdan kam emas."
     )
-
-    kb = tenant_kb.rotation_panel(
-        rotation_active=bool(settings["rotation_active"]),
-        interval_min=int(settings["rotation_interval_min"]),
+    kb = tenant_kb.settings_panel(
         bot_active=bool(settings["bot_active"]),
         post_intake_active=bool(settings["post_intake_active"]),
+        require_approval=bool(settings.get("require_approval", True)),
+        min_interval_min=int(settings["rotation_interval_min"]),
     )
     await message.answer(text, reply_markup=kb)
 
@@ -155,157 +136,66 @@ async def toggle_setting(query: CallbackQuery) -> None:
         return
     ctx = await _ensure_tenant(query.from_user.id)
 
-    field = query.data.rsplit(":", 1)[1]  # bot / post_intake / rotation
-    db_field = {
-        "bot": "bot_active",
-        "post_intake": "post_intake_active",
-        "rotation": "rotation_active",
-    }.get(field)
-    if not db_field:
-        await query.answer("Noma'lum amal.", show_alert=True)
-        return
-
+    field = query.data.rsplit(":", 1)[1]  # bot / post_intake / auto_approve
     settings = await db.get_settings(ctx.user_id)
-    current = bool(settings[db_field])
-    new_value = not current
 
-    # Aylanishni yoqishda — interval tekshirish
-    if field == "rotation" and new_value:
-        if int(settings["rotation_interval_min"]) < Rotation.MIN_INTERVAL_MIN:
-            await query.answer(
-                f"⛔ Avval intervalni min {Rotation.MIN_INTERVAL_MIN} daqiqaga sozlang.",
-                show_alert=True,
-            )
-            return
-
-    # Tasdiqlash so'raymiz (oddiy toggle uchun ham)
-    if field == "rotation":
-        text, kb = confirm_rotation_toggle(
-            new_value, int(settings["rotation_interval_min"])
-        )
+    if field == "bot":
+        new_val = not bool(settings["bot_active"])
+        await db.update_settings(ctx.user_id, bot_active=new_val)
+        action_log = "bot_toggled"
+    elif field == "post_intake":
+        new_val = not bool(settings["post_intake_active"])
+        await db.update_settings(ctx.user_id, post_intake_active=new_val)
+        action_log = "post_intake_toggled"
+    elif field == "auto_approve":
+        # auto_approve YOQ holati = require_approval=False
+        new_require = not bool(settings.get("require_approval", True))
+        await db.update_settings(ctx.user_id, require_approval=new_require)
+        new_val = not new_require  # auto_approve = NOT require
+        action_log = "auto_approve_toggled"
     else:
-        labels = {"bot": "Botni", "post_intake": "E'lon qabulini"}
-        action_word = "yoqish" if new_value else "to'xtatish"
-        text, kb = build_confirmation(
-            action_id=f"tenant:apply_toggle:{field}:{1 if new_value else 0}",
-            title=f"{labels[field]} {action_word}",
-            question=f"Rostan ham {labels[field].lower()} {action_word}ni xohlaysizmi?",
-            details=(
-                ["📌 Yangi e'lonlar qabul qilinadi", "📌 Aylanish davom etadi"]
-                if new_value
-                else ["📌 Mavjud e'lonlar saqlanadi", f"📌 Faqat {labels[field].lower()} to'xtaydi"]
-            ),
-        )
-        if query.message:
-            await query.message.answer(text, reply_markup=kb)
-        await query.answer()
-        return
+        return await query.answer("Nomaʼlum amal.", show_alert=True)
 
-    if query.message:
-        await query.message.answer(text, reply_markup=kb)
-    # Action_id'ni callback'da qoldiramiz
-    await query.answer()
-
-
-@router.callback_query(F.data.regexp(r"^confirm:yes:tenant:apply_toggle:"))
-async def apply_toggle_yes(query: CallbackQuery) -> None:
-    if query.from_user is None or not query.data:
-        return
-    ctx = await _ensure_tenant(query.from_user.id)
-    # confirm:yes:tenant:apply_toggle:bot:1
-    parts = query.data.split(":")
-    field = parts[4]
-    new_val = bool(int(parts[5]))
-
-    db_field = {
-        "bot": "bot_active",
-        "post_intake": "post_intake_active",
-        "rotation": "rotation_active",
-    }.get(field)
-    if not db_field:
-        return
-
-    await db.update_settings(ctx.user_id, **{db_field: new_val})
     await audit_log.log_tenant_event(
-        ctx,
-        action=f"{db_field}_toggled",
-        tenant_id=ctx.user_id,
-        new_value=new_val,
+        ctx, action=action_log, tenant_id=ctx.user_id, new_value=new_val
     )
-
-    if query.message:
-        emoji = "🟢" if new_val else "🔴"
-        await query.message.answer(
-            f"✅ {emoji} {field} → {'ON' if new_val else 'OFF'}"
-        )
-    await query.answer()
+    await query.answer(f"✅ {'🟢 ON' if new_val else '🔴 OFF'}", show_alert=True)
 
 
-# Rotation ON/OFF tasdiqlash
-@router.callback_query(F.data.startswith("confirm:yes:rotation_toggle:"))
-async def apply_rotation_toggle(query: CallbackQuery) -> None:
-    if query.from_user is None or not query.data:
-        return
-    ctx = await _ensure_tenant(query.from_user.id)
-    new_val = bool(int(query.data.rsplit(":", 1)[1]))
-
-    await db.update_settings(ctx.user_id, rotation_active=new_val)
-    await audit_log.log_tenant_event(
-        ctx, action="rotation_toggled", tenant_id=ctx.user_id, new_value=new_val
-    )
-    if query.message:
-        await query.message.answer(
-            f"✅ Aylanish: {'🟢 ON' if new_val else '🔴 OFF'}"
-        )
-    await query.answer()
-
-
-# Interval o'zgartirish
-@router.callback_query(F.data == "tenant:rotation:set_interval")
-async def show_interval_picker(query: CallbackQuery) -> None:
+@router.callback_query(F.data == "tenant:set_min_interval")
+async def show_min_interval_picker(query: CallbackQuery) -> None:
     if query.from_user is None:
         return
     if query.message:
         await query.message.answer(
-            f"⏱ <b>Aylanish intervali</b>\n\n"
-            f"Min: {Rotation.MIN_INTERVAL_MIN} daq | Max: {Rotation.MAX_INTERVAL_MIN // 60} soat\n\n"
-            "Quyidagidan tanlang yoki o'zingiz kiriting:",
-            reply_markup=tenant_kb.interval_quick_picker(),
+            f"⏱ <b>Min interval (posterlar uchun cheklov)</b>\n\n"
+            f"Min: {Rotation.MIN_INTERVAL_MIN} daq (qoida)\n\n"
+            f"Tanlang:",
+            reply_markup=tenant_kb.min_interval_picker(),
         )
     await query.answer()
 
 
-@router.callback_query(F.data.startswith("tenant:interval:set:"))
-async def set_interval(query: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("tenant:min_interval:set:"))
+async def set_min_interval(query: CallbackQuery) -> None:
     if query.from_user is None or not query.data:
         return
     ctx = await _ensure_tenant(query.from_user.id)
+
     try:
         n = int(query.data.rsplit(":", 1)[1])
     except ValueError:
         return
     if n < Rotation.MIN_INTERVAL_MIN:
-        await query.answer(f"Min {Rotation.MIN_INTERVAL_MIN} daqiqa.", show_alert=True)
-        return
+        return await query.answer(
+            f"⛔ Min {Rotation.MIN_INTERVAL_MIN} daq.", show_alert=True
+        )
 
     await db.update_settings(ctx.user_id, rotation_interval_min=n)
     await audit_log.log_tenant_event(
-        ctx, action="interval_changed", tenant_id=ctx.user_id, interval_min=n
+        ctx, action="min_interval_changed", tenant_id=ctx.user_id, min_interval_min=n
     )
-    await query.answer(f"✅ Interval: {n} daqiqa", show_alert=True)
-
-
-@router.callback_query(F.data == "tenant:interval:custom")
-async def ask_custom_interval(query: CallbackQuery) -> None:
-    if query.from_user is None:
-        return
-    await session.update(query.from_user.id, step="tenant:awaiting_interval")
-    if query.message:
-        await query.message.answer(
-            f"⏱ <b>Maxsus interval</b>\n\n"
-            f"Daqiqalarda kiriting (min {Rotation.MIN_INTERVAL_MIN}):"
-        )
-    await query.answer()
+    await query.answer(f"✅ Min interval: {n} daq", show_alert=True)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -321,16 +211,17 @@ async def show_channels(message: Message) -> None:
     if not channels:
         await message.answer(
             "📭 Hali kanal ulanmagan.\n\n"
-            "Yangi kanal qo'shish uchun /start menyusidan '➕ Kanal ulash' bosing."
+            "Yangi kanal qo'shish uchun '➕ Kanal ulash' bosing."
         )
         return
 
     lines = [f"📺 <b>Kanallaringiz ({len(channels)} ta)</b>", ""]
     for i, ch in enumerate(channels, 1):
         emoji = "🟢" if ch["is_active"] else "🔴"
+        title = ch.get('title') or ch.get('channel_username') or '?'
         lines.append(
-            f"{i}. {emoji} <b>{fmt.esc(ch.get('title') or ch.get('channel_username') or '')}</b>\n"
-            f"   <code>{ch['channel_id']}</code> | {ch.get('category', 'general')}"
+            f"{i}. {emoji} <b>{fmt.esc(title)}</b>\n"
+            f"   <code>{ch['channel_id']}</code>"
         )
     await message.answer("\n".join(lines))
 
@@ -341,13 +232,25 @@ async def start_add_channel(message: Message) -> None:
         return
     ctx = await _ensure_tenant(message.from_user.id)
 
+    # Tarif limit tekshirish
+    tenant = await db.get_tenant(ctx.user_id)
+    tariff = (tenant or {}).get("tariff", "trial")
+    max_channels = int(get_tariff_limit(tariff, "max_channels", 1) or 1)
+    current = len(await db.list_channels(ctx.user_id, only_active=False))
+    if current >= max_channels:
+        await message.answer(
+            f"⛔ Tarifingiz ({tariff.upper()}) max {max_channels} kanal ruxsat beradi.\n"
+            f"Tarif yangilash uchun bot egasi bilan bogʻlaning."
+        )
+        return
+
     await session.update(message.from_user.id, step="tenant:awaiting_channel")
     await message.answer(
         "➕ <b>Kanal ulash</b>\n\n"
         "1️⃣ Avval botni o'z kanalingizga <b>admin</b> qilib qo'shing\n"
         "2️⃣ Keyin kanal ID yoki @username ni shu yerga yuboring\n\n"
         "Misol:\n"
-        "<code>@toshkent_taxi</code>\n"
+        "<code>@toshkent_xizmatlar</code>\n"
         "yoki\n"
         "<code>-1001234567890</code>"
     )
@@ -369,6 +272,7 @@ async def show_users(message: Message) -> None:
         await message.answer("📭 Hali foydalanuvchilar yo'q.")
         return
 
+    from core.categories import get_category_label
     lines = [
         f"👥 <b>Foydalanuvchilar ({len(users)} ta)</b>",
         f"🟡 Tasdiq kutmoqda: {pending_count}",
@@ -378,15 +282,51 @@ async def show_users(message: Message) -> None:
         emoji = {"active": "🟢", "pending": "🟡", "blocked": "🔴"}.get(
             u.get("status", ""), "❓"
         )
+        role = u.get("user_role", "")
+        role_emoji = {"poster": "📝", "customer": "🔍", "both": "🔄"}.get(role, "")
+        cat = u.get("category_code", "")
+        cat_str = get_category_label(cat) if cat else ""
         lines.append(
-            f"{i}. {emoji} {fmt.esc(u.get('full_name') or '?')} "
-            f"<code>#{u.get('user_id')}</code>"
+            f"{i}. {emoji}{role_emoji} {fmt.esc(u.get('full_name') or '?')} "
+            f"<code>#{u.get('user_id')}</code> {cat_str}"
         )
 
-    await message.answer(
-        "\n".join(lines),
-        reply_markup=tenant_kb.users_filter(),
+    items = [
+        (
+            f"#{u['user_id']} {(u.get('full_name') or '?')[:20]}",
+            f"tenant:user:show:{u['user_id']}",
+        )
+        for u in users[:10]
+    ]
+    kb = inline_grid(
+        items, columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:users:back")]],
     )
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("tenant:user:show:"))
+async def show_user_detail(query: CallbackQuery) -> None:
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    target_uid = int(query.data.rsplit(":", 1)[1])
+
+    user = await db.get_user(ctx.user_id, target_uid)
+    if not user:
+        return await query.answer("Topilmadi.", show_alert=True)
+
+    text = fmt.format_user_card(user)
+    if user.get("category_code"):
+        from core.categories import get_category_label
+        text += f"\n🎯 Soha: {get_category_label(user['category_code'])}"
+    if user.get("region"):
+        text += f"\n🌍 Viloyat: {fmt.esc(user['region'])}"
+
+    kb = tenant_kb.user_actions(target_uid, status=user.get("status", "active"))
+    if query.message:
+        await query.message.answer(text, reply_markup=kb)
+    await query.answer()
 
 
 @router.callback_query(F.data.startswith("tenant:user:approve:"))
@@ -408,28 +348,35 @@ async def approve_user_cb(query: CallbackQuery) -> None:
     await query.answer("✅ Tasdiqlandi", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("tenant:user:block:"))
-async def start_block_user_cb(query: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("tenant:user:reject:"))
+async def reject_user_cb(query: CallbackQuery) -> None:
     if query.from_user is None or not query.data:
         return
     ctx = await _ensure_tenant(query.from_user.id)
     target_uid = int(query.data.rsplit(":", 1)[1])
 
-    user = await db.get_user(ctx.user_id, target_uid)
-    if not user:
-        await query.answer("Topilmadi.", show_alert=True)
-        return
+    await db.set_user_status(ctx.user_id, target_uid, UserStatus.BLOCKED)
+    await notifier.notify_user_blocked(
+        user_id=target_uid, tenant_id=ctx.user_id, reason="Arizangiz rad etildi"
+    )
+    await audit_log.log_user_event(
+        ctx, action="user_rejected", target_user_id=target_uid
+    )
+    await query.answer("❌ Rad etildi", show_alert=True)
 
+
+@router.callback_query(F.data.startswith("tenant:user:block:"))
+async def start_block_user_cb(query: CallbackQuery) -> None:
+    if query.from_user is None or not query.data:
+        return
+    target_uid = int(query.data.rsplit(":", 1)[1])
     await session.update(
         query.from_user.id,
         step="tenant:awaiting_block_reason",
         data={"target_user_id": target_uid},
     )
     if query.message:
-        await query.message.answer(
-            f"⛔ <b>{fmt.esc(user.get('full_name', ''))} ni bloklash</b>\n\n"
-            "Iltimos, sababni yozing (min 3 belgi):"
-        )
+        await query.message.answer("⛔ Bloklash sababini yozing (min 3 belgi):")
     await query.answer()
 
 
@@ -444,10 +391,22 @@ async def start_warn_user_cb(query: CallbackQuery) -> None:
         data={"target_user_id": target_uid},
     )
     if query.message:
-        await query.message.answer(
-            "⚠️ Ogohlantirish sababini yozing (min 3 belgi):"
-        )
+        await query.message.answer("⚠️ Ogohlantirish sababini yozing (min 3 belgi):")
     await query.answer()
+
+
+@router.callback_query(F.data.startswith("tenant:user:unblock:"))
+async def unblock_user_cb(query: CallbackQuery) -> None:
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    target_uid = int(query.data.rsplit(":", 1)[1])
+
+    await db.set_user_status(ctx.user_id, target_uid, UserStatus.ACTIVE)
+    await audit_log.log_user_event(
+        ctx, action="user_unblocked", target_user_id=target_uid
+    )
+    await query.answer("✅ Tiklandi", show_alert=True)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -486,7 +445,7 @@ async def show_audit(message: Message) -> None:
         await message.answer("📭 Audit log boʻsh.")
         return
 
-    lines = ["📜 <b>Mening guruhim — Tarix (oxirgi 15 ta)</b>", ""]
+    lines = ["📜 <b>Tarix (oxirgi 15 ta)</b>", ""]
     for entry in logs:
         ts = (entry.get("ts") or "")[:19]
         lines.append(
@@ -507,7 +466,6 @@ async def tenant_text_router(message: Message) -> None:
     state = await session.get(message.from_user.id)
     text = (message.text or "").strip()
 
-    # Faqat tenant'lar uchun
     ctx = await resolve_role(message.from_user.id)
     if ctx.role != Role.TENANT:
         return
@@ -518,9 +476,6 @@ async def tenant_text_router(message: Message) -> None:
         if not ok:
             await message.answer(err)
             return
-        # MVP: -100... formatida bo'lsa int qilamiz, @username bo'lsa
-        # Telegram orqali aniqlash kerak (services'da bo'ladi).
-        # Hozircha sodda yozib qo'yamiz:
         try:
             channel_id = int(normalized) if normalized.lstrip("-").isdigit() else 0
         except ValueError:
@@ -528,8 +483,8 @@ async def tenant_text_router(message: Message) -> None:
 
         if not channel_id:
             await message.answer(
-                f"⚠️ Hozircha faqat numeric Channel ID qabul qilinadi (-1001234567890).\n"
-                f"Telethon integratsiyasi tayyor bo'lganda @username ham ishlaydi."
+                "⚠️ Hozircha faqat numeric Channel ID qabul qilinadi (-1001234567890).\n"
+                "@username uchun kelajakda qoʻshamiz."
             )
             return
 
@@ -549,30 +504,12 @@ async def tenant_text_router(message: Message) -> None:
             )
             await message.answer(
                 f"✅ Kanal ulandi!\n\n"
-                f"📺 <code>{channel_id}</code>\n"
-                f"📎 {fmt.esc(normalized)}"
+                f"📺 <code>{channel_id}</code>"
             )
         await session.reset(message.from_user.id)
         return
 
-    # 2) Custom interval
-    if state.step == "tenant:awaiting_interval":
-        ok, normalized, err = validate_interval(
-            text, min_min=Rotation.MIN_INTERVAL_MIN, max_min=Rotation.MAX_INTERVAL_MIN
-        )
-        if not ok:
-            await message.answer(err)
-            return
-        n = int(normalized)
-        await db.update_settings(ctx.user_id, rotation_interval_min=n)
-        await audit_log.log_tenant_event(
-            ctx, action="interval_changed", tenant_id=ctx.user_id, interval_min=n
-        )
-        await session.reset(message.from_user.id)
-        await message.answer(f"✅ Interval: {n} daqiqaga o'rnatildi.")
-        return
-
-    # 3) Block sababi
+    # 2) Block sababi
     if state.step == "tenant:awaiting_block_reason":
         ok, reason, err = validate_reason(text)
         if not ok:
@@ -593,7 +530,7 @@ async def tenant_text_router(message: Message) -> None:
         await message.answer(f"⛔ Foydalanuvchi #{target_uid} bloklandi.")
         return
 
-    # 4) Warn sababi
+    # 3) Warn sababi
     if state.step == "tenant:awaiting_warn_reason":
         ok, reason, err = validate_reason(text)
         if not ok:
@@ -604,45 +541,36 @@ async def tenant_text_router(message: Message) -> None:
             return
 
         wid = await db.add_warning(
-            tenant_id=ctx.user_id,
-            user_id=target_uid,
-            issued_by=ctx.user_id,
-            reason=reason,
+            tenant_id=ctx.user_id, user_id=target_uid,
+            issued_by=ctx.user_id, reason=reason,
         )
-        # Ogohlantirishlar sonini olish
         user = await db.get_user(ctx.user_id, target_uid)
         warns = (user or {}).get("warnings_count", 1)
-        from config import Limits
         await notifier.notify_user_warned(
-            user_id=target_uid,
-            tenant_id=ctx.user_id,
-            reason=reason,
-            warnings_count=warns,
+            user_id=target_uid, tenant_id=ctx.user_id,
+            reason=reason, warnings_count=warns,
             max_warnings=Limits.MAX_WARNINGS_BEFORE_BLOCK,
         )
         await audit_log.log_user_event(
-            ctx,
-            action="user_warned",
-            target_user_id=target_uid,
-            reason=reason,
-            warning_id=wid,
+            ctx, action="user_warned", target_user_id=target_uid,
+            reason=reason, warning_id=wid,
         )
 
-        # Limit yaqinlashganmi?
+        # Limitga yetdi → avtomatik bloklash
         if warns >= Limits.MAX_WARNINGS_BEFORE_BLOCK:
-            # Avtomatik bloklash
             await db.set_user_status(ctx.user_id, target_uid, UserStatus.BLOCKED)
             await notifier.notify_user_blocked(
-                user_id=target_uid,
-                tenant_id=ctx.user_id,
+                user_id=target_uid, tenant_id=ctx.user_id,
                 reason=f"{warns} ogohlantirish — avtomatik blok",
             )
             await audit_log.log_user_event(
-                ctx, action="user_auto_blocked", target_user_id=target_uid, warnings=warns
+                ctx, action="user_auto_blocked",
+                target_user_id=target_uid, warnings=warns,
             )
 
         await session.reset(message.from_user.id)
         await message.answer(
-            f"⚠️ Ogohlantirish berildi.\nUser #{target_uid} | {warns}/{Limits.MAX_WARNINGS_BEFORE_BLOCK}"
+            f"⚠️ Ogohlantirish berildi.\n"
+            f"User #{target_uid} | {warns}/{Limits.MAX_WARNINGS_BEFORE_BLOCK}"
         )
         return

@@ -162,9 +162,18 @@ async def init_db() -> None:
         """)
 
         # ─── users ───────────────────────────────────────────────────
-        # Foydalanuvchilar (taksist, sotuvchi va h.k.).
+        # Foydalanuvchilar (taksist, sotuvchi, mijoz va h.k.).
         # MUHIM: bitta Telegram user bir nechta tenantda alohida user'dir!
-        # Shuning uchun PRIMARY KEY = (tenant_id, user_id).
+        # Shuning uchun UNIQUE = (tenant_id, user_id).
+        #
+        # V1 yangiliklar:
+        #   user_role           — "poster" | "customer" | "both"
+        #   category_code       — "taxi", "plumber", ... (faqat poster uchun)
+        #   region              — viloyat (mijoz uchun ham, poster uchun ham)
+        #   rotation_interval_min — per-poster aylanish intervali (min 10)
+        #   rotation_active     — poster auto-post ON/OFF
+        #   current_post_index  — siklda hozir qaysi e'lon (0-based)
+        #   last_rotated_at     — oxirgi rotation vaqti
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,12 +182,19 @@ async def init_db() -> None:
                 full_name       TEXT DEFAULT '',
                 username        TEXT DEFAULT '',
                 phone           TEXT DEFAULT '',
+                user_role       TEXT DEFAULT 'customer',
+                category_code   TEXT DEFAULT '',
+                region          TEXT DEFAULT '',
                 profile_data    TEXT DEFAULT '{}',
                 status          TEXT DEFAULT 'pending',
                 approved_by     INTEGER,
                 approved_at     TEXT,
                 rating          REAL DEFAULT 5.0,
                 warnings_count  INTEGER DEFAULT 0,
+                rotation_interval_min INTEGER DEFAULT 10,
+                rotation_active INTEGER DEFAULT 0,
+                current_post_index INTEGER DEFAULT 0,
+                last_rotated_at TEXT,
                 created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_active_at  TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tenant_id, user_id),
@@ -187,19 +203,22 @@ async def init_db() -> None:
         """)
 
         # ─── announcements ───────────────────────────────────────────
-        # Eʼlonlar. content_data = JSON (plugin'ga bogʻliq strukturada).
+        # Eʼlonlar. V1 — erkin matn (raw_text) + ixtiyoriy rasmlar (photos JSON).
         # message_id — kanaldagi post ID (yangilash/oʻchirish uchun).
+        # category_code — kategoriya yorlig'i (qidiruvda foydalaniladi).
         await db.execute("""
             CREATE TABLE IF NOT EXISTS announcements (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 tenant_id       INTEGER NOT NULL,
                 user_id         INTEGER NOT NULL,
                 channel_id      INTEGER NOT NULL,
-                plugin          TEXT DEFAULT 'taxi',
-                content_data    TEXT DEFAULT '{}',
+                category_code   TEXT DEFAULT '',
+                raw_text        TEXT DEFAULT '',
+                photos          TEXT DEFAULT '[]',
                 rendered_text   TEXT DEFAULT '',
                 message_id      INTEGER,
                 status          TEXT DEFAULT 'draft',
+                queue_order     INTEGER DEFAULT 0,
                 views_count     INTEGER DEFAULT 0,
                 contacts_count  INTEGER DEFAULT 0,
                 rotation_count  INTEGER DEFAULT 0,
@@ -300,10 +319,15 @@ async def init_db() -> None:
         for stmt in [
             "CREATE INDEX IF NOT EXISTS idx_users_tenant       ON users(tenant_id)",
             "CREATE INDEX IF NOT EXISTS idx_users_status       ON users(tenant_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_users_rotation     ON users(rotation_active, status)",
+            "CREATE INDEX IF NOT EXISTS idx_users_role         ON users(tenant_id, user_role)",
+            "CREATE INDEX IF NOT EXISTS idx_users_category     ON users(tenant_id, category_code)",
             "CREATE INDEX IF NOT EXISTS idx_channels_tenant    ON channels(tenant_id)",
             "CREATE INDEX IF NOT EXISTS idx_ann_tenant_status  ON announcements(tenant_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_ann_user           ON announcements(tenant_id, user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ann_user_status    ON announcements(tenant_id, user_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_ann_expires        ON announcements(status, expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ann_category       ON announcements(tenant_id, category_code, status)",
             "CREATE INDEX IF NOT EXISTS idx_audit_ts           ON audit_log(ts DESC)",
             "CREATE INDEX IF NOT EXISTS idx_audit_tenant       ON audit_log(tenant_id, ts DESC)",
             "CREATE INDEX IF NOT EXISTS idx_audit_actor        ON audit_log(actor_id, ts DESC)",
@@ -314,8 +338,52 @@ async def init_db() -> None:
         ]:
             await db.execute(stmt)
 
+        # ─── MIGRATION (idempotent) ──────────────────────────────────
+        # Eski DB bo'lsa — yangi ustunlarni qo'shamiz. ALTER TABLE
+        # ustun mavjud bo'lsa "duplicate column" xatosi beradi —
+        # try/except orqali jim o'tamiz.
+        await _ensure_columns(db, "users", [
+            ("user_role", "TEXT DEFAULT 'customer'"),
+            ("category_code", "TEXT DEFAULT ''"),
+            ("region", "TEXT DEFAULT ''"),
+            ("rotation_interval_min", "INTEGER DEFAULT 10"),
+            ("rotation_active", "INTEGER DEFAULT 0"),
+            ("current_post_index", "INTEGER DEFAULT 0"),
+            ("last_rotated_at", "TEXT"),
+        ])
+        await _ensure_columns(db, "announcements", [
+            ("category_code", "TEXT DEFAULT ''"),
+            ("raw_text", "TEXT DEFAULT ''"),
+            ("photos", "TEXT DEFAULT '[]'"),
+            ("queue_order", "INTEGER DEFAULT 0"),
+        ])
+
         await db.commit()
         logger.info(f"DB tayyor: {DB_PATH}")
+
+
+async def _ensure_columns(
+    db: aiosqlite.Connection, table: str, columns: list[tuple[str, str]]
+) -> None:
+    """
+    Idempotent migration: yo'q ustunlarni qo'shadi.
+
+    SQLite'da ALTER TABLE ADD COLUMN IF NOT EXISTS yo'q, shuning uchun
+    avval pragma_table_info bilan tekshiramiz.
+    """
+    async with db.execute(f"PRAGMA table_info({table})") as cur:
+        rows = await cur.fetchall()
+    existing = {row[1] for row in rows}  # row[1] = column name
+
+    for col_name, col_def in columns:
+        if col_name in existing:
+            continue
+        try:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+            logger.info(f"migration: {table}.{col_name} qoʻshildi")
+        except aiosqlite.OperationalError as e:
+            # Boshqa concurrent process qoʻshib qoʻygan boʻlishi mumkin
+            logger.debug(f"migration: {table}.{col_name} skip — {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -675,27 +743,30 @@ async def create_announcement(
     tenant_id: int,
     user_id: int,
     channel_id: int,
-    plugin: str,
-    content_data: dict,
+    raw_text: str,
     rendered_text: str,
+    *,
+    category_code: str = "",
+    photos: list[str] | None = None,
     lifetime_hours: int = Rotation.DEFAULT_LIFETIME_HOURS,
     max_active_per_user: int | None = None,
 ) -> tuple[bool, str, int | None]:
     """
     Yangi eʼlon yaratish (atomic, race-safe).
 
+    V1: erkin matn + ixtiyoriy rasmlar (foto file_id'lar JSON ro'yxati).
     Limit tekshirish + INSERT bitta transactionda.
-    Boshqa user bir vaqtda urinsa ham limit aniq saqlanadi.
 
     Returns:
-        (True, "ok", post_id)        — yaratildi
-        (False, "limit", None)       — user limitiga yetdi
+        (True, "ok", post_id)             — yaratildi (status=draft)
+        (False, "limit", None)            — user limitiga yetdi
         (False, "channel_inactive", None) — kanal yoʻq yoki nofaol
     """
     expires_at = (
         datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
         + timedelta(hours=lifetime_hours)
     ).isoformat()
+    photos_json = json.dumps(photos or [], ensure_ascii=False)
 
     async with _conn() as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -710,12 +781,14 @@ async def create_announcement(
                     await db.rollback()
                     return False, "channel_inactive", None
 
-            # 2. Limit tekshirish
+            # 2. Limit tekshirish (faqat aktiv eʼlonlar)
             if max_active_per_user is not None:
                 async with db.execute(
                     """SELECT COUNT(*) FROM announcements
-                       WHERE tenant_id=? AND user_id=? AND status=?""",
-                    (tenant_id, user_id, PostStatus.ACTIVE),
+                       WHERE tenant_id=? AND user_id=?
+                         AND status IN (?, ?, ?)""",
+                    (tenant_id, user_id,
+                     PostStatus.DRAFT, PostStatus.QUEUED, PostStatus.ACTIVE),
                 ) as cur:
                     row = await cur.fetchone()
                     cnt = int(row[0]) if row else 0
@@ -723,18 +796,26 @@ async def create_announcement(
                     await db.rollback()
                     return False, "limit", None
 
-            # 3. INSERT
+            # 3. queue_order — bitta ortga (galaning oxiriga)
+            async with db.execute(
+                """SELECT COALESCE(MAX(queue_order), 0) FROM announcements
+                   WHERE tenant_id=? AND user_id=?""",
+                (tenant_id, user_id),
+            ) as cur:
+                row = await cur.fetchone()
+                next_order = int(row[0] or 0) + 1
+
+            # 4. INSERT (status=DRAFT, scheduler tomonidan ACTIVE qilinadi)
             cur = await db.execute(
                 """INSERT INTO announcements
-                   (tenant_id, user_id, channel_id, plugin,
-                    content_data, rendered_text, status, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (tenant_id, user_id, channel_id, category_code,
+                    raw_text, photos, rendered_text,
+                    status, queue_order, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    tenant_id, user_id, channel_id, plugin,
-                    json.dumps(content_data, ensure_ascii=False),
-                    rendered_text,
-                    PostStatus.DRAFT,
-                    expires_at,
+                    tenant_id, user_id, channel_id, category_code,
+                    raw_text, photos_json, rendered_text,
+                    PostStatus.DRAFT, next_order, expires_at,
                 ),
             )
             post_id = cur.lastrowid
@@ -766,9 +847,11 @@ async def get_announcement(post_id: int, tenant_id: int | None = None) -> dict |
             )
         row = _row_to_dict(await cur.fetchone())
         await cur.close()
-        if row and row.get("content_data"):
-            with contextlib.suppress(Exception):
-                row["content_data"] = json.loads(row["content_data"])
+        if row:
+            # photos JSON ni list'ga aylantirish
+            if row.get("photos"):
+                with contextlib.suppress(Exception):
+                    row["photos"] = json.loads(row["photos"])
         return row
 
 
@@ -776,8 +859,8 @@ async def update_announcement(post_id: int, tenant_id: int, **fields) -> None:
     """Eʼlonni yangilash (tenant filtri bilan)."""
     if not fields:
         return
-    if "content_data" in fields and isinstance(fields["content_data"], dict):
-        fields["content_data"] = json.dumps(fields["content_data"], ensure_ascii=False)
+    if "photos" in fields and isinstance(fields["photos"], list):
+        fields["photos"] = json.dumps(fields["photos"], ensure_ascii=False)
     fields["updated_at"] = _now_iso()
     sets = ", ".join(f"{k}=?" for k in fields)
     vals = list(fields.values()) + [post_id, tenant_id]
@@ -1153,6 +1236,168 @@ async def list_warnings(tenant_id: int, user_id: int) -> list[dict]:
         rows = await cur.fetchall()
         await cur.close()
         return _rows_to_list(rows)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# PER-POSTER ROTATION — V1 yangiliklari
+# ═════════════════════════════════════════════════════════════════════
+async def get_posters_with_active_rotation(limit: int = 10000) -> list[dict]:
+    """
+    Auto-post yoqilgan barcha posterlarni olish (scheduler uchun).
+
+    Filter: status=active, rotation_active=1, user_role IN (poster, both)
+    Faqat hech bo'lmaganda 1 ta aktiv eʼloni borlar.
+    """
+    async with _conn() as db:
+        cur = await db.execute(
+            """
+            SELECT u.* FROM users u
+            WHERE u.status = ?
+              AND u.rotation_active = 1
+              AND u.user_role IN ('poster', 'both')
+              AND EXISTS (
+                  SELECT 1 FROM announcements a
+                  WHERE a.tenant_id = u.tenant_id
+                    AND a.user_id = u.user_id
+                    AND a.status IN (?, ?)
+              )
+            ORDER BY COALESCE(u.last_rotated_at, '0') ASC
+            LIMIT ?
+            """,
+            (UserStatus.ACTIVE, PostStatus.ACTIVE, PostStatus.QUEUED, limit),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def get_user_post_queue(tenant_id: int, user_id: int) -> list[dict]:
+    """
+    Posterning gala ro'yxati (queue) — queue_order bo'yicha.
+
+    Faqat aktiv yoki navbatdagi eʼlonlar (DRAFT/QUEUED/ACTIVE).
+    Eskirgan/o'chirilganlar — chiqarilmaydi.
+    """
+    async with _conn() as db:
+        cur = await db.execute(
+            """SELECT * FROM announcements
+               WHERE tenant_id=? AND user_id=?
+                 AND status IN (?, ?, ?)
+               ORDER BY queue_order ASC, id ASC""",
+            (tenant_id, user_id,
+             PostStatus.DRAFT, PostStatus.QUEUED, PostStatus.ACTIVE),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def advance_user_rotation(
+    tenant_id: int, user_id: int, new_index: int
+) -> None:
+    """
+    Posterning current_post_index'ini yangilash + last_rotated_at.
+
+    Scheduler har rotation tickda chaqiradi.
+    """
+    await update_user(
+        tenant_id, user_id,
+        current_post_index=new_index,
+        last_rotated_at=_now_iso(),
+    )
+
+
+async def set_poster_rotation(
+    tenant_id: int, user_id: int, *, active: bool, interval_min: int | None = None
+) -> None:
+    """
+    Posterning auto-post holatini yoqish/oʻchirish va intervalni belgilash.
+
+    interval_min None boʻlsa — faqat ON/OFF oʻzgaradi.
+    """
+    fields: dict = {"rotation_active": int(bool(active))}
+    if interval_min is not None:
+        # MIN cheklov tasdiqlash
+        from config import Rotation
+        if interval_min < Rotation.MIN_INTERVAL_MIN:
+            interval_min = Rotation.MIN_INTERVAL_MIN
+        fields["rotation_interval_min"] = int(interval_min)
+    await update_user(tenant_id, user_id, **fields)
+
+
+async def reorder_user_queue(tenant_id: int, user_id: int) -> None:
+    """
+    Posterning eʼlonlar gala-tartibini qayta raqamlash (1, 2, 3, ...).
+
+    Eʼlonni oʻchirgandan keyin chaqiriladi — qoʻshlik bo'lmasin.
+    """
+    async with _conn() as db:
+        async with db.execute(
+            """SELECT id FROM announcements
+               WHERE tenant_id=? AND user_id=?
+                 AND status IN (?, ?, ?)
+               ORDER BY queue_order ASC, id ASC""",
+            (tenant_id, user_id,
+             PostStatus.DRAFT, PostStatus.QUEUED, PostStatus.ACTIVE),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        for new_order, (post_id,) in enumerate(rows, start=1):
+            await db.execute(
+                "UPDATE announcements SET queue_order=? WHERE id=?",
+                (new_order, post_id),
+            )
+        await db.commit()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# CUSTOMER QIDIRUV — V1 yangiliklari
+# ═════════════════════════════════════════════════════════════════════
+async def search_announcements(
+    tenant_id: int,
+    *,
+    category_code: str | None = None,
+    keyword: str | None = None,
+    limit: int = 30,
+) -> list[dict]:
+    """
+    Mijoz uchun aktiv eʼlonlarni qidirish.
+
+    Filter: status=active, faqat shu tenantning.
+    keyword bo'lsa — raw_text'da LIKE qidiruv.
+    """
+    clauses = ["tenant_id = ?", "status = ?"]
+    params: list = [tenant_id, PostStatus.ACTIVE]
+
+    if category_code:
+        clauses.append("category_code = ?")
+        params.append(category_code)
+
+    if keyword:
+        clauses.append("raw_text LIKE ?")
+        params.append(f"%{keyword}%")
+
+    where = " AND ".join(clauses)
+    params.append(limit)
+
+    async with _conn() as db:
+        cur = await db.execute(
+            f"""SELECT * FROM announcements
+                WHERE {where}
+                ORDER BY last_rotated_at DESC NULLS LAST, created_at DESC
+                LIMIT ?""",
+            params,
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def get_recent_announcements(
+    tenant_id: int, limit: int = 20
+) -> list[dict]:
+    """Eng so'nggi aktiv eʼlonlar (mijoz lentasi uchun)."""
+    return await search_announcements(tenant_id, limit=limit)
 
 
 # ═════════════════════════════════════════════════════════════════════

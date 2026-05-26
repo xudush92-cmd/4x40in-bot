@@ -79,27 +79,33 @@ def _register_routers() -> None:
     from panels.start import router as start_router
     dp.include_router(start_router)
 
-    # Plugin'lar (matn handlerlaridan oldin, callback'lar uchun)
-    from plugins.taxi.handlers import router as taxi_router
-    dp.include_router(taxi_router)
-
-    # Super admin
+    # Super admin (yuqori prioritet, faqat siz)
     from panels.super_admin.handlers import router as super_router
     dp.include_router(super_router)
 
-    # Tenant
+    # Tenant (guruh egasi)
     from panels.tenant.handlers import router as tenant_router
     dp.include_router(tenant_router)
 
-    # Moderator
+    # Moderator (v1.5+ uchun, hozircha bo'sh handlerlar)
     from panels.moderator.handlers import router as mod_router
     dp.include_router(mod_router)
 
-    # User (eng oxirgi — fallback matn handlerlari)
+    # POSTER (e'lon beruvchi)
+    from panels.poster.handlers import router as poster_router
+    dp.include_router(poster_router)
+
+    # CUSTOMER (mijoz)
+    from panels.customer.handlers import router as customer_router
+    dp.include_router(customer_router)
+
+    # User legacy stub (bo'sh, eski importlar buzilmasin uchun)
     from panels.user.handlers import router as user_router
     dp.include_router(user_router)
 
-    logger.info(f"📡 6 ta router ulandi (start, taxi, super, tenant, mod, user)")
+    logger.info(
+        "📡 7 ta router ulandi: start, super, tenant, mod, poster, customer, user-legacy"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────
