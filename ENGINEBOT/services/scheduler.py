@@ -1,21 +1,24 @@
 """
-services/scheduler.py — aylanish (rotation) servisi.
+services/scheduler.py — PER-POSTER aylanish (rotation) servisi.
 
-VAZIFASI:
-─────────
-Vaqti-vaqti bilan aktiv tenantlarni tekshirib, rotation yoqilgan
-bo'lsa va interval o'tgan bo'lsa — aktiv e'lonlarni yangilab qayta yozish.
+V1 MODELI (foydalanuvchi qatʼiy talabi):
+─────────────────────────────────────────
+- Har POSTER oʻz intervalini belgilaydi (min 10 daq)
+- Posterning eʼlonlari KETMA-KET (queue_order bo'yicha) chiqadi
+- Cheksiz aylanadi — POSTER STOP bosmaguncha
+- Birinchi marta START bosganda — birinchi e'lon DARHOL chiqadi
+- Boshqa posterlardan MUSTAQIL ishlaydi (bittasi crash → boshqalar davom etadi)
 
-ALGORITM:
-─────────
-Har 60 soniyada:
-  1. rotation_active=1 bo'lgan tenantlarni olish
-  2. Har tenant uchun:
-     - aktiv vaqt oralig'idamiz?
-     - oxirgi rotation'dan beri interval o'tdimi?
-  3. Vaqti yetgan tenant'da:
-     - aktiv e'lonlardan eng eski yangilanganini olib
-     - publisher.publish_post(...) chaqirish
+ALGORITM (har 60 soniya):
+─────────────────────────
+1. rotation_active=1 bo'lgan barcha posterlarni olish
+2. Har poster uchun:
+   a. last_rotated_at + interval_min > now → kutib turamiz (vaqt yetmagan)
+   b. tenant_settings ekranlash (bot_active va tenant min cheklovi)
+   c. queue (queue_order ASC) olamiz, current_post_index'ga qarab
+   d. Sikldagi keyingi e'lonni olib publisher.publish_post(...) chaqiramiz
+   e. current_post_index'ni keyingiga (oxiridan keyin 0'ga)
+   f. last_rotated_at = now
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from config import DEFAULT_TZ_OFFSET, PostStatus, Rotation, TenantStatus
+from config import DEFAULT_TZ_OFFSET, PostStatus, Rotation
 from core import database as db
 from core.error_handler import safe_loop
 from utils import logger as log_mod
@@ -35,9 +38,7 @@ logger = log_mod.get_logger("services.scheduler")
 # Asosiy loop
 # ─────────────────────────────────────────────────────────────────────
 async def scheduler_run_once() -> None:
-    """
-    Cheksiz scheduler loop — har 60 soniyada bir marta tekshiradi.
-    """
+    """Cheksiz scheduler loop — har 60 soniyada bir marta tekshiradi."""
     while True:
         try:
             await _process_rotations()
@@ -50,10 +51,7 @@ async def scheduler_run_once() -> None:
 
 
 async def start_scheduler() -> None:
-    """
-    Scheduler servisini ishga tushirish (main.py'da chaqiriladi).
-    safe_loop bilan o'ralgan — crash bo'lsa qayta ishga tushadi.
-    """
+    """Scheduler servisini ishga tushirish (main.py'da chaqiriladi)."""
     await safe_loop("scheduler", scheduler_run_once, restart_delay=10)
 
 
@@ -61,88 +59,95 @@ async def start_scheduler() -> None:
 # Bitta tick mantiqi
 # ─────────────────────────────────────────────────────────────────────
 async def _process_rotations() -> None:
-    """Aktiv tenantlarni tekshirib, kerak bo'lsa rotation bajarish."""
-    tenants = await db.list_tenants(status=TenantStatus.ACTIVE, limit=10000)
-    now = datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
+    """Auto-post yoqilgan barcha posterlarni tekshirish."""
+    posters = await db.get_posters_with_active_rotation(limit=10000)
+    if not posters:
+        return
 
-    for tenant in tenants:
+    now = datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
+    rotated = 0
+
+    for poster in posters:
         try:
-            await _process_tenant_rotation(tenant, now)
+            if await _process_poster(poster, now):
+                rotated += 1
         except Exception as e:
             logger.error(
-                f"tenant {tenant['tenant_id']} rotation error: {type(e).__name__}: {e}"
+                f"poster {poster.get('user_id')} rotation error: "
+                f"{type(e).__name__}: {e}"
             )
-            # Bittasi crash bo'lsa boshqalari davom etadi
+            # Bitta poster crash bo'lsa — boshqalari davom etadi (izolyatsiya)
+
+    if rotated > 0:
+        logger.info(f"scheduler: {rotated}/{len(posters)} poster aylantirildi")
 
 
-async def _process_tenant_rotation(tenant: dict, now: datetime) -> None:
-    """Bitta tenant uchun rotation tekshirish va bajarish."""
-    tenant_id = int(tenant["tenant_id"])
-    settings = await db.get_settings(tenant_id)
+async def _process_poster(poster: dict, now: datetime) -> bool:
+    """
+    Bitta posterning navbatdagi eʼlonini chiqarish.
 
-    if not settings.get("rotation_active") or not settings.get("bot_active"):
-        return
+    Returns: True = eʼlon chiqarildi, False = vaqt yetmagan / chiqarilmadi
+    """
+    tenant_id = int(poster["tenant_id"])
+    user_id = int(poster["user_id"])
+    interval_min = int(poster.get("rotation_interval_min", Rotation.DEFAULT_INTERVAL_MIN))
 
-    # Aktiv vaqt oralig'idamiz?
-    if not _within_active_window(
-        now, settings.get("active_from", "06:00"), settings.get("active_to", "23:00")
-    ):
-        return
+    # Tenant cheklovini hurmat qilamiz (tenant min'ni override qila olmaydi)
+    tenant_settings = await db.get_settings(tenant_id)
+    if not tenant_settings.get("bot_active"):
+        # Tenant botni o'chirgan — rotation yo'q
+        return False
 
-    interval_min = int(settings.get("rotation_interval_min", Rotation.DEFAULT_INTERVAL_MIN))
-    if interval_min < Rotation.MIN_INTERVAL_MIN:
-        # Defensive — DB'da xato qiymat bo'lsa rotation qilmaymiz
-        return
+    tenant_min = int(tenant_settings.get("rotation_interval_min", Rotation.MIN_INTERVAL_MIN))
+    effective_interval = max(interval_min, tenant_min, Rotation.MIN_INTERVAL_MIN)
 
-    # Aktiv e'lonlar (eng eski yangilanganini birinchi)
-    posts = await db.list_active_announcements(tenant_id=tenant_id)
-    if not posts:
-        return
-
-    # Birinchi candidate'ni ko'ramiz
-    candidate = posts[0]
-    last_rotated_str = candidate.get("last_rotated_at")
-    if last_rotated_str:
-        try:
-            last_rotated = datetime.fromisoformat(last_rotated_str)
-        except ValueError:
-            last_rotated = None
-    else:
-        last_rotated = None
-
+    # Vaqt yetdimi?
+    last_rotated = poster.get("last_rotated_at")
     if last_rotated:
-        elapsed = (now - last_rotated).total_seconds() / 60
-        if elapsed < interval_min:
-            return  # vaqt hali yetmagan
+        try:
+            last_dt = datetime.fromisoformat(last_rotated)
+        except ValueError:
+            last_dt = None
+    else:
+        last_dt = None
 
-    # Rotation vaqti yetgan — publisher orqali qayta yozamiz
+    if last_dt is not None:
+        elapsed = (now - last_dt).total_seconds() / 60
+        if elapsed < effective_interval:
+            return False
+
+    # Posterning gala ro'yxati
+    queue = await db.get_user_post_queue(tenant_id, user_id)
+    if not queue:
+        # Eʼlon yo'q — rotation o'chiramiz
+        await db.set_poster_rotation(tenant_id, user_id, active=False)
+        logger.info(f"poster {user_id}: queue bo'sh — rotation auto-OFF")
+        return False
+
+    # Sikldagi keyingi indeks
+    current_idx = int(poster.get("current_post_index", 0))
+    if current_idx >= len(queue):
+        current_idx = 0  # cycle restart
+
+    candidate = queue[current_idx]
+    post_id = int(candidate["id"])
+
+    # Publisher orqali chiqaramiz (publisher set_bot allaqachon main.py'da chaqirilgan)
     from services.publisher import publish_post
-    success = await publish_post(int(candidate["id"]), tenant_id, is_new=False)
-    if success:
-        logger.info(
-            f"rotated post #{candidate['id']} for tenant #{tenant_id} "
-            f"(interval={interval_min}m)"
-        )
+    is_first = candidate.get("status") == PostStatus.DRAFT
+    success = await publish_post(post_id, tenant_id, is_new=is_first)
 
+    if not success:
+        logger.warning(f"poster {user_id} post #{post_id} publish failed")
+        # Failure — keyingi tickda qayta urinib ko'ramiz, indeks o'zgarmaydi
+        return False
 
-# ─────────────────────────────────────────────────────────────────────
-# Yordamchi: aktiv vaqt oralig'i
-# ─────────────────────────────────────────────────────────────────────
-def _within_active_window(now: datetime, start_str: str, end_str: str) -> bool:
-    """
-    HH:MM formatdagi start va end orasida ekanligini tekshiradi.
-    end < start bo'lsa (kechagi davom etadi: 22:00-06:00) — qo'llanadi.
-    """
-    try:
-        sh, sm = map(int, start_str.split(":"))
-        eh, em = map(int, end_str.split(":"))
-    except (ValueError, AttributeError):
-        return True  # parse error — har doim aktiv
+    # Indeksni keyingiga
+    next_idx = (current_idx + 1) % len(queue)
+    await db.advance_user_rotation(tenant_id, user_id, new_index=next_idx)
 
-    cur = now.hour * 60 + now.minute
-    start = sh * 60 + sm
-    end = eh * 60 + em
-
-    if start <= end:
-        return start <= cur <= end
-    return cur >= start or cur <= end
+    logger.info(
+        f"rotated: poster={user_id} post=#{post_id} "
+        f"({current_idx+1}/{len(queue)}) interval={effective_interval}m"
+    )
+    return True

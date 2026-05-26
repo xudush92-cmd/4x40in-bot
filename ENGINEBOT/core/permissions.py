@@ -1,27 +1,32 @@
 """
-core/permissions.py — 4 darajali ruxsat tizimi.
+core/permissions.py — 4 darajali ruxsat tizimi (V1 redesign).
 
-ROLLAR:
-───────
+ROLLAR (asosiy):
+────────────────
 1. SUPER_ADMIN  — bot egasi (siz). Hammasini koʻradi va boshqaradi.
 2. TENANT       — kanal egasi. Faqat oʻz guruhini boshqaradi.
-3. MODERATOR    — tenant tomonidan tayinlangan yordamchi. Cheklangan.
-4. USER         — oddiy foydalanuvchi. Faqat oʻzini koʻradi.
+3. MODERATOR    — tenant tomonidan tayinlangan yordamchi (v1.5+ uchun zaxira).
+4. USER         — oddiy foydalanuvchi. Sub-rollar bor (POSTER, CUSTOMER, BOTH).
 5. GUEST        — roʻyxatdan oʻtmagan (faqat /start)
+
+USER SUB-ROLLAR (V1):
+─────────────────────
+- POSTER   — eʼlon beruvchi (taksist, usta, ishchi)
+- CUSTOMER — mijoz (qidiruvchi)
+- BOTH     — ikkala rolda (taksist mijoz ham)
 
 PRINSIPLAR:
 ───────────
 - ROL ANIQLASH (resolve_role): user_id va tenant_id boʻyicha aniq rol
-  qaytaradi. Bitta foydalanuvchi har xil tenantda har xil rolda boʻladi:
-  masalan, A tenantida SUPER_ADMIN, B tenantida TENANT, C'da USER.
+  qaytaradi. Bitta foydalanuvchi har xil tenantda har xil rolda boʻladi.
 
 - RUXSAT TEKSHIRISH (can): rol va action boʻyicha True/False qaytaradi.
-  Hech qachon "default allow" yoʻq — ruxsat aniq berilgan boʻlsa True.
+  Hech qachon "default allow" yoʻq — fail-closed.
+
+- SUB-ROL: USER ichida POSTER/CUSTOMER/BOTH (ctx.user_sub_role).
+  Posterga e'lon yozish ruxsati, customer'ga qidiruv ruxsati.
 
 - IZOLYATSIYA: tenant boshqa tenantning maʼlumotini koʻra olmaydi.
-  Bu DB qatlamida ham, permissions qatlamida ham qoʻshimcha tasdiqlanadi.
-
-- FAIL-CLOSED: noaniq holatda — RUXSAT YOʻQ.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable
 
-from config import Role, SUPER_ADMIN_ID
+from config import Role, SUPER_ADMIN_ID, UserRole
 from core import database as db
 
 logger = logging.getLogger("enginebot.permissions")
@@ -41,13 +46,7 @@ logger = logging.getLogger("enginebot.permissions")
 # Action — ruxsat sʼaratoqlari
 # ─────────────────────────────────────────────────────────────────────
 class Action(str, Enum):
-    """
-    Tizimdagi barcha amallar.
-
-    Har bir amal alohida ruxsat sifatida tekshiriladi. Yangi amal
-    qoʻshish uchun shu yerga yangi qiymat qoʻshib, PERMISSIONS dict'ga
-    rolga kerak boʻlsa qoʻshib qoʻyish kerak.
-    """
+    """Tizimdagi barcha amallar (rolga qarab ruxsat etiladi)."""
 
     # ─── Super Admin global amallar ─────────────────────────────────
     VIEW_ALL_TENANTS = "view_all_tenants"
@@ -63,7 +62,7 @@ class Action(str, Enum):
     # ─── Tenant amallar (oʻz guruhi ichida) ─────────────────────────
     CONNECT_CHANNEL = "connect_channel"
     DISCONNECT_CHANNEL = "disconnect_channel"
-    CONFIGURE_ROTATION = "configure_rotation"
+    SET_MIN_ROTATION = "set_min_rotation"     # tenant min interval cheklovi
     TOGGLE_BOT = "toggle_bot"
     TOGGLE_POST_INTAKE = "toggle_post_intake"
     APPROVE_USER = "approve_user"
@@ -75,60 +74,58 @@ class Action(str, Enum):
     VIEW_TENANT_AUDIT = "view_tenant_audit"
     DELETE_ANY_POST = "delete_any_post"
     PAUSE_ANY_POST = "pause_any_post"
-    SET_TEMPLATE = "set_template"
+    SET_AUTO_APPROVAL = "set_auto_approval"   # tenant auto/manual approve
 
-    # ─── Moderator amallar (cheklangan) ─────────────────────────────
+    # ─── Moderator amallar (cheklangan, v1.5+) ──────────────────────
     REVIEW_USER_REQUESTS = "review_user_requests"
     WARN_USER = "warn_user"
     PAUSE_OTHER_POST = "pause_other_post"
     VIEW_QUEUE = "view_queue"
 
-    # ─── User amallar (oʻzi uchun) ──────────────────────────────────
-    REGISTER = "register"
-    CREATE_OWN_POST = "create_own_post"
+    # ─── User: POSTER amallari ──────────────────────────────────────
+    BECOME_POSTER = "become_poster"           # guest → poster
+    CREATE_OWN_POST = "create_own_post"       # erkin matn eʼlon
     EDIT_OWN_POST = "edit_own_post"
     DELETE_OWN_POST = "delete_own_post"
     VIEW_OWN_POSTS = "view_own_posts"
+    TOGGLE_OWN_ROTATION = "toggle_own_rotation"  # START/STOP
+    SET_OWN_INTERVAL = "set_own_interval"        # interval o'zgartirish (min 10)
+    SET_OWN_CATEGORY = "set_own_category"        # soha tanlash/oʻzgartirish
+
+    # ─── User: CUSTOMER amallari ────────────────────────────────────
+    BECOME_CUSTOMER = "become_customer"       # guest → customer
+    SEARCH_POSTS = "search_posts"             # filtr bilan qidirish
+    BROWSE_FEED = "browse_feed"               # yangi eʼlonlar lentasi
+    BOOKMARK_POST = "bookmark_post"           # saqlash (v1.5+)
+    SUBSCRIBE_CATEGORY = "subscribe_category" # kuzatuv (v1.5+)
+    RATE_POSTER = "rate_poster"               # baholash (v1.5+)
+    CONTACT_POSTER = "contact_poster"         # bog'lanish
+
+    # ─── User umumiy ────────────────────────────────────────────────
     EDIT_OWN_PROFILE = "edit_own_profile"
+    VIEW_OWN_HISTORY = "view_own_history"
     LOGOUT = "logout"
 
     # ─── Hamma foydalanadigan ───────────────────────────────────────
     VIEW_HELP = "view_help"
-    SEARCH_POSTS = "search_posts"
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Ruxsat matritsasi (rol → ruxsat berilgan amallar toʻplami)
 # ─────────────────────────────────────────────────────────────────────
 # Eslatma: SUPER_ADMIN avtomatik HAMMA narsani qila oladi (pastda mantiq).
-# Shuning uchun shu yerda super_admin'ga alohida sʼinov yozish shart emas.
 
+# Asosiy ruxsatlar (rol bo'yicha, sub-rolga bog'liq emas)
 _PERMISSIONS: dict[str, frozenset[Action]] = {
     Role.GUEST: frozenset({
         Action.VIEW_HELP,
-        Action.REGISTER,
-    }),
-    Role.USER: frozenset({
-        Action.VIEW_HELP,
-        Action.SEARCH_POSTS,
-        Action.CREATE_OWN_POST,
-        Action.EDIT_OWN_POST,
-        Action.DELETE_OWN_POST,
-        Action.VIEW_OWN_POSTS,
-        Action.EDIT_OWN_PROFILE,
-        Action.LOGOUT,
+        Action.BECOME_POSTER,
+        Action.BECOME_CUSTOMER,
     }),
     Role.MODERATOR: frozenset({
-        # User huquqlari + moderator qoʻshimcha
         Action.VIEW_HELP,
-        Action.SEARCH_POSTS,
-        Action.CREATE_OWN_POST,
-        Action.EDIT_OWN_POST,
-        Action.DELETE_OWN_POST,
-        Action.VIEW_OWN_POSTS,
-        Action.EDIT_OWN_PROFILE,
         Action.LOGOUT,
-        # Moderator
+        Action.EDIT_OWN_PROFILE,
         Action.REVIEW_USER_REQUESTS,
         Action.APPROVE_USER,
         Action.WARN_USER,
@@ -136,14 +133,11 @@ _PERMISSIONS: dict[str, frozenset[Action]] = {
         Action.VIEW_QUEUE,
     }),
     Role.TENANT: frozenset({
-        # User huquqlari
         Action.VIEW_HELP,
-        Action.SEARCH_POSTS,
         Action.LOGOUT,
-        # Tenant tugallangan huquqlar
         Action.CONNECT_CHANNEL,
         Action.DISCONNECT_CHANNEL,
-        Action.CONFIGURE_ROTATION,
+        Action.SET_MIN_ROTATION,
         Action.TOGGLE_BOT,
         Action.TOGGLE_POST_INTAKE,
         Action.APPROVE_USER,
@@ -155,33 +149,64 @@ _PERMISSIONS: dict[str, frozenset[Action]] = {
         Action.VIEW_TENANT_AUDIT,
         Action.DELETE_ANY_POST,
         Action.PAUSE_ANY_POST,
-        Action.SET_TEMPLATE,
         Action.WARN_USER,
         Action.REVIEW_USER_REQUESTS,
         Action.VIEW_QUEUE,
+        Action.SET_AUTO_APPROVAL,
     }),
-    # SUPER_ADMIN — quyida `can()` funksiyasida HAMMASI ruxsat etilgan.
+    # USER ruxsatlari sub-rolga qarab dynamic — pastda hisoblanadi
+    Role.USER: frozenset({
+        Action.VIEW_HELP,
+        Action.LOGOUT,
+        Action.EDIT_OWN_PROFILE,
+        Action.VIEW_OWN_HISTORY,
+    }),
 }
+
+# Sub-rol uchun qo'shimcha ruxsatlar
+_USER_SUB_PERMISSIONS: dict[str, frozenset[Action]] = {
+    UserRole.POSTER: frozenset({
+        Action.CREATE_OWN_POST,
+        Action.EDIT_OWN_POST,
+        Action.DELETE_OWN_POST,
+        Action.VIEW_OWN_POSTS,
+        Action.TOGGLE_OWN_ROTATION,
+        Action.SET_OWN_INTERVAL,
+        Action.SET_OWN_CATEGORY,
+    }),
+    UserRole.CUSTOMER: frozenset({
+        Action.SEARCH_POSTS,
+        Action.BROWSE_FEED,
+        Action.BOOKMARK_POST,
+        Action.SUBSCRIBE_CATEGORY,
+        Action.RATE_POSTER,
+        Action.CONTACT_POSTER,
+    }),
+}
+# BOTH = poster + customer ruxsatlari
+_USER_SUB_PERMISSIONS[UserRole.BOTH] = (
+    _USER_SUB_PERMISSIONS[UserRole.POSTER]
+    | _USER_SUB_PERMISSIONS[UserRole.CUSTOMER]
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# RolContext — bitta soʻrov uchun rol ma'lumoti
+# RoleContext — bitta soʻrov uchun rol ma'lumoti
 # ─────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class RoleContext:
     """
     Bitta foydalanuvchi va kontekstdagi roli.
 
-    user_id    — Telegram user ID
-    role       — aniqlangan rol (Role.* dan)
-    tenant_id  — qaysi tenant'da (None = global yoki tenant tanlanmagan)
-
-    Bu obyekt bir requestning umri davomida saqlanadi (cache qilinmaydi),
-    chunki rol tenantga bogʻliq holda oʻzgarishi mumkin.
+    user_id        — Telegram user ID
+    role           — aniqlangan asosiy rol (Role.* dan)
+    tenant_id      — qaysi tenant'da (None = global yoki tenant tanlanmagan)
+    user_sub_role  — USER ichida POSTER/CUSTOMER/BOTH (boshqa rol bo'lsa None)
     """
     user_id: int
     role: str
     tenant_id: int | None = None
+    user_sub_role: str | None = None  # POSTER / CUSTOMER / BOTH
 
     @property
     def is_super_admin(self) -> bool:
@@ -203,6 +228,16 @@ class RoleContext:
     def is_guest(self) -> bool:
         return self.role == Role.GUEST
 
+    @property
+    def is_poster(self) -> bool:
+        """USER va sub-rol POSTER yoki BOTH bo'lsa."""
+        return self.is_user and self.user_sub_role in (UserRole.POSTER, UserRole.BOTH)
+
+    @property
+    def is_customer(self) -> bool:
+        """USER va sub-rol CUSTOMER yoki BOTH bo'lsa."""
+        return self.is_user and self.user_sub_role in (UserRole.CUSTOMER, UserRole.BOTH)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Rol aniqlash
@@ -216,6 +251,7 @@ async def resolve_role(user_id: int, tenant_id: int | None = None) -> RoleContex
       2. tenant_id == user_id boʻlsa va u tenants jadvalida bor → TENANT
       3. moderators jadvalida (tenant_id, user_id) bor → MODERATOR
       4. users jadvalida (tenant_id, user_id) bor va status active → USER
+         (sub-rol DB'dan: poster/customer/both)
       5. Aks holda → GUEST
     """
     # 1. Super admin har doim ustunlikka ega
@@ -239,10 +275,18 @@ async def resolve_role(user_id: int, tenant_id: int | None = None) -> RoleContex
     if await db.is_moderator(tenant_id, user_id):
         return RoleContext(user_id=user_id, role=Role.MODERATOR, tenant_id=tenant_id)
 
-    # 4. Oddiy user?
+    # 4. Oddiy user? Sub-rolni DB'dan olamiz
     user = await db.get_user(tenant_id, user_id)
     if user is not None:
-        return RoleContext(user_id=user_id, role=Role.USER, tenant_id=tenant_id)
+        sub_role = user.get("user_role") or UserRole.CUSTOMER
+        if sub_role not in UserRole.ALL:
+            sub_role = UserRole.CUSTOMER
+        return RoleContext(
+            user_id=user_id,
+            role=Role.USER,
+            tenant_id=tenant_id,
+            user_sub_role=sub_role,
+        )
 
     # 5. Roʻyxatdan oʻtmagan
     return RoleContext(user_id=user_id, role=Role.GUEST, tenant_id=tenant_id)
@@ -255,15 +299,9 @@ def can(ctx: RoleContext, action: Action | str) -> bool:
     """
     Foydalanuvchi shu amalni qila oladimi?
 
-    Args:
-        ctx     : resolve_role()'dan kelgan RoleContext
-        action  : Action enum yoki uning string qiymati
-
     Returns:
         True  — ruxsat berilgan
-        False — ruxsat yoʻq (default)
-
-    XAVFSIZLIK: noaniq holatda False qaytaradi (fail-closed).
+        False — ruxsat yoʻq (default fail-closed)
     """
     # Super admin — har doim ruxsat
     if ctx.role == Role.SUPER_ADMIN:
@@ -277,8 +315,18 @@ def can(ctx: RoleContext, action: Action | str) -> bool:
             logger.warning(f"Nomaʼlum action: {action}")
             return False
 
-    allowed = _PERMISSIONS.get(ctx.role, frozenset())
-    return action in allowed
+    # Asosiy rol ruxsatlari
+    base_allowed = _PERMISSIONS.get(ctx.role, frozenset())
+    if action in base_allowed:
+        return True
+
+    # USER bo'lsa — sub-rolni ham tekshiramiz
+    if ctx.role == Role.USER and ctx.user_sub_role:
+        sub_allowed = _USER_SUB_PERMISSIONS.get(ctx.user_sub_role, frozenset())
+        if action in sub_allowed:
+            return True
+
+    return False
 
 
 def can_any(ctx: RoleContext, actions: Iterable[Action | str]) -> bool:
@@ -295,22 +343,17 @@ def can_all(ctx: RoleContext, actions: Iterable[Action | str]) -> bool:
 # Ortiqcha xavfsizlik tekshiruvlari
 # ─────────────────────────────────────────────────────────────────────
 def assert_can(ctx: RoleContext, action: Action | str) -> None:
-    """
-    Ruxsatni tekshirish va xato boʻlsa raise qilish.
-
-    Handler ichida muhim joylarda ishlatiladi — defensive programming.
-    """
+    """Ruxsatni tekshirish va xato boʻlsa raise qilish."""
     if not can(ctx, action):
         raise PermissionDenied(
-            f"Foydalanuvchi {ctx.user_id} (rol: {ctx.role}) "
-            f"'{action}' amalini bajara olmaydi."
+            f"Foydalanuvchi {ctx.user_id} (rol: {ctx.role}, "
+            f"sub: {ctx.user_sub_role}) '{action}' amalini bajara olmaydi."
         )
 
 
 def assert_same_tenant(ctx: RoleContext, target_tenant_id: int) -> None:
     """
-    Tenant izolyatsiyasi: foydalanuvchi faqat oʻz tenantida ishlay oladi.
-
+    Tenant izolyatsiyasi: faqat oʻz tenantida ishlay oladi.
     Super admin har qanday tenantga kira oladi — undan istisno.
     """
     if ctx.role == Role.SUPER_ADMIN:
@@ -347,7 +390,28 @@ _ROLE_LABELS_UZ: dict[str, str] = {
     Role.GUEST: "🚪 Mehmon",
 }
 
+_SUB_ROLE_LABELS_UZ: dict[str, str] = {
+    UserRole.POSTER: "📝 Eʼlon beruvchi",
+    UserRole.CUSTOMER: "🔍 Mijoz",
+    UserRole.BOTH: "🔄 Ikkalasi",
+}
+
 
 def role_label(role: str) -> str:
-    """Rol nomini koʻrsatish uchun (UI/audit log)."""
+    """Rol nomini koʻrsatish uchun."""
     return _ROLE_LABELS_UZ.get(role, f"❓ {role}")
+
+
+def sub_role_label(sub_role: str | None) -> str:
+    """Sub-rol nomini koʻrsatish uchun."""
+    if not sub_role:
+        return ""
+    return _SUB_ROLE_LABELS_UZ.get(sub_role, f"❓ {sub_role}")
+
+
+def full_role_label(ctx: RoleContext) -> str:
+    """Toʻliq ko'rinish: rol + sub-rol."""
+    base = role_label(ctx.role)
+    if ctx.role == Role.USER and ctx.user_sub_role:
+        return f"{base} ({sub_role_label(ctx.user_sub_role)})"
+    return base

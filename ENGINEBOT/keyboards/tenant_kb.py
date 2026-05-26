@@ -1,88 +1,94 @@
 """
 keyboards/tenant_kb.py — guruh egasi (tenant) menyusi.
+
+V1 yangilanish:
+- Rotation panel'da "tenant rotation_active" toggle YO'Q (hozir per-poster)
+- Tenant faqat MIN INTERVAL cheklovini belgilaydi (default 10 daq)
+- Bot ON/OFF, Post intake ON/OFF — tenant darajasida saqlanadi
+- Auto-approval toggle — qo'shildi
 """
 
 from __future__ import annotations
 
-from keyboards.common_kb import Btn, inline_grid, make_reply, toggle_label
 from config import Rotation
+from keyboards.common_kb import Btn, inline_grid, make_reply, toggle_label
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Tenant asosiy menyusi
+# ─────────────────────────────────────────────────────────────────────
 def tenant_main_menu():
     """
     Guruh egasi asosiy menyusi.
 
     📺 Kanallarim         👥 Foydalanuvchilar
-    📋 E'lonlar           🔄 Aylanish
-    📊 Statistika         👮 Moderatorlar
-    💰 To'lov             ⚙️ Sozlamalar
-    📜 Tarix              🚪 Chiqish
+    📋 Eʼlonlar           ⚙️ Sozlamalar
+    📊 Statistika         📜 Tarix
+    💰 Toʻlov             ℹ️ Yordam
+    🚪 Chiqish
     """
     return make_reply([
         [Btn.MY_CHANNELS, Btn.MANAGE_USERS],
-        [Btn.MANAGE_POSTS, Btn.ROTATION_SETTINGS],
-        [Btn.STATS, Btn.MODERATORS],
-        [Btn.BILLING, Btn.BOT_SETTINGS],
-        [Btn.AUDIT_LOG, Btn.HELP],
+        [Btn.MANAGE_POSTS, Btn.BOT_SETTINGS],
+        [Btn.STATS, Btn.AUDIT_LOG],
+        [Btn.BILLING, Btn.HELP],
         [Btn.LOGOUT],
     ])
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Aylanish (rotation) sozlamalari
+# Sozlamalar paneli (Bot ON/OFF, post intake, min interval, auto-approval)
 # ─────────────────────────────────────────────────────────────────────
-def rotation_panel(
+def settings_panel(
     *,
-    rotation_active: bool,
-    interval_min: int,
     bot_active: bool,
     post_intake_active: bool,
+    require_approval: bool,
+    min_interval_min: int,
 ):
     """
-    Aylanish boshqaruv paneli (inline).
+    Tenant sozlamalari paneli (inline).
 
     🟢/🔴 Bot: ON/OFF
-    🟢/🔴 E'lon qabuli: ON/OFF
-    🟢/🔴 Aylanish: ON/OFF
-    ⏱ Interval: 30 daq
-    📅 Vaqt jadvali
+    🟢/🔴 Eʼlon qabuli: ON/OFF
+    🟢/🔴 Auto-tasdiqlash: ON/OFF (yoqilgan bo'lsa user'lar avtomatik tasdiq)
+    ⏱ Min interval: 10 daq (posterlar uchun min cheklov)
     """
     items = [
         (toggle_label(bot_active, "Bot"), "tenant:toggle:bot"),
         (toggle_label(post_intake_active, "Eʼlon qabuli"), "tenant:toggle:post_intake"),
-        (toggle_label(rotation_active, "Aylanish"), "tenant:toggle:rotation"),
-        (f"⏱ Interval: {interval_min} daq", "tenant:rotation:set_interval"),
-        ("📅 Vaqt jadvali", "tenant:rotation:set_schedule"),
-        ("⏳ Eʼlon yashash muddati", "tenant:rotation:set_lifetime"),
+        (toggle_label(require_approval is False, "Auto-tasdiq"),
+         "tenant:toggle:auto_approve"),
+        (f"⏱ Min interval: {min_interval_min} daq", "tenant:set_min_interval"),
     ]
     return inline_grid(
         items,
         columns=1,
-        extra_rows=[[(Btn.BACK, "tenant:rotation:back")]],
-    )
-
-
-def interval_quick_picker():
-    """Tezkor interval tanlash (Rotation.QUICK_INTERVALS asosida)."""
-    items: list[tuple[str, str]] = []
-    for m in Rotation.QUICK_INTERVALS:
-        if m < 60:
-            label = f"{m} daq"
-        elif m < 1440:
-            label = f"{m // 60} soat"
-        else:
-            label = f"{m // 1440} kun"
-        items.append((label, f"tenant:interval:set:{m}"))
-    items.append(("✏️ Boshqa qiymat", "tenant:interval:custom"))
-    return inline_grid(
-        items,
-        columns=3,
-        extra_rows=[[(Btn.BACK, "tenant:rotation:back")]],
+        extra_rows=[[(Btn.BACK, "tenant:settings:back")]],
     )
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Foydalanuvchi boshqaruvi
+# Min interval picker (10 daqdan kam emas)
+# ─────────────────────────────────────────────────────────────────────
+def min_interval_picker():
+    """
+    Tenant tomonidan belgilanadigan posterlar uchun MIN cheklov.
+
+    Default 10 daq (foydalanuvchining qatʼiy qoidasi).
+    Tenant kerak bo'lsa kattarog'ini qo'yishi mumkin (15, 30, 60).
+    """
+    options = [10, 15, 20, 30, 60]
+    items = [(f"⏱ {m} daq", f"tenant:min_interval:set:{m}") for m in options]
+    return inline_grid(
+        items,
+        columns=3,
+        extra_rows=[[(Btn.BACK, "tenant:settings:back")]],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Foydalanuvchilar filtri
 # ─────────────────────────────────────────────────────────────────────
 def users_filter():
     """Foydalanuvchilar filtri."""
@@ -131,7 +137,6 @@ def channel_actions(channel_id: int, is_active: bool):
             "🔴 Vaqtincha oʻchirish" if is_active else "🟢 Yoqish",
             f"tenant:channel:toggle:{channel_id}",
         ),
-        ("✏️ Sozlamalar", f"tenant:channel:settings:{channel_id}"),
         ("🗑 Olib tashlash", f"tenant:channel:remove:{channel_id}"),
     ]
     return inline_grid(
