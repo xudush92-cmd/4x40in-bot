@@ -314,6 +314,21 @@ async def init_db() -> None:
             )
         """)
 
+        # ─── bookmarks ───────────────────────────────────────────────
+        # Mijoz saqlagan e'lonlar (yulduzcha qilingan).
+        # UNIQUE (tenant_id, user_id, post_id) — bir e'lonni 2 marta saqlash yo'q.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id   INTEGER NOT NULL,
+                user_id     INTEGER NOT NULL,
+                post_id     INTEGER NOT NULL,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, user_id, post_id),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
         # ─── INDEKSLAR ───────────────────────────────────────────────
         # Tezlik uchun (1000+ tenant, 100k+ eʼlon stsenariysida)
         for stmt in [
@@ -335,6 +350,7 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_payments_tenant    ON payments(tenant_id, paid_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_warnings_tenant_u  ON warnings(tenant_id, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_mods_tenant        ON moderators(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_bookmarks_user     ON bookmarks(tenant_id, user_id, created_at DESC)",
         ]:
             await db.execute(stmt)
 
@@ -359,6 +375,9 @@ async def init_db() -> None:
         ])
         await _ensure_columns(db, "tenant_settings", [
             ("allowed_categories", "TEXT DEFAULT ''"),
+        ])
+        await _ensure_columns(db, "tenants", [
+            ("description", "TEXT DEFAULT ''"),
         ])
 
         await db.commit()
@@ -602,6 +621,19 @@ async def remove_channel(tenant_id: int, channel_id: int) -> bool:
         return cur.rowcount > 0
 
 
+async def update_channel_active(
+    tenant_id: int, channel_id: int, *, is_active: bool
+) -> bool:
+    """Kanalni vaqtincha yoqish/o'chirish."""
+    async with _conn() as db:
+        cur = await db.execute(
+            "UPDATE channels SET is_active=? WHERE tenant_id=? AND channel_id=?",
+            (int(bool(is_active)), tenant_id, channel_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
 # ═════════════════════════════════════════════════════════════════════
 # USERS — foydalanuvchilar (per-tenant)
 # ═════════════════════════════════════════════════════════════════════
@@ -663,7 +695,7 @@ async def get_user(tenant_id: int, user_id: int) -> dict | None:
         ) as cur:
             row = _row_to_dict(await cur.fetchone())
             if row and row.get("profile_data"):
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
                     row["profile_data"] = json.loads(row["profile_data"])
             return row
 
@@ -853,7 +885,7 @@ async def get_announcement(post_id: int, tenant_id: int | None = None) -> dict |
         if row:
             # photos JSON ni list'ga aylantirish
             if row.get("photos"):
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
                     row["photos"] = json.loads(row["photos"])
         return row
 
@@ -1003,7 +1035,7 @@ async def get_moderator(tenant_id: int, user_id: int) -> dict | None:
         ) as cur:
             row = _row_to_dict(await cur.fetchone())
             if row and row.get("permissions"):
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
                     row["permissions"] = json.loads(row["permissions"])
             return row
 
@@ -1161,7 +1193,7 @@ async def add_payment(
         total_paid = 0
         if row:
             if row[0]:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(ValueError, TypeError):
                     current_until = datetime.fromisoformat(row[0])
             total_paid = int(row[1] or 0)
 
@@ -1663,3 +1695,85 @@ async def set_allowed_categories(tenant_id: int, codes: list[str]) -> None:
     """Tenant uchun ruxsat etilgan kategoriyalarni saqlash."""
     val = json.dumps(codes, ensure_ascii=False) if codes else ""
     await update_settings(tenant_id, allowed_categories=val)
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+# BOOKMARKS — mijoz saqlagan e'lonlar (v1.1)
+# ═════════════════════════════════════════════════════════════════════
+async def add_bookmark(tenant_id: int, user_id: int, post_id: int) -> bool:
+    """Mijoz e'lonni saqlash (yulduzcha)."""
+    async with _conn() as db:
+        try:
+            await db.execute(
+                """INSERT INTO bookmarks (tenant_id, user_id, post_id)
+                   VALUES (?, ?, ?)""",
+                (tenant_id, user_id, post_id),
+            )
+            await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False  # allaqachon saqlangan
+
+
+async def remove_bookmark(tenant_id: int, user_id: int, post_id: int) -> bool:
+    """Saqlangan e'lonni olib tashlash."""
+    async with _conn() as db:
+        cur = await db.execute(
+            """DELETE FROM bookmarks
+               WHERE tenant_id=? AND user_id=? AND post_id=?""",
+            (tenant_id, user_id, post_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def is_bookmarked(tenant_id: int, user_id: int, post_id: int) -> bool:
+    """E'lon saqlanganmi?"""
+    async with _conn() as db:
+        async with db.execute(
+            """SELECT 1 FROM bookmarks
+               WHERE tenant_id=? AND user_id=? AND post_id=?""",
+            (tenant_id, user_id, post_id),
+        ) as cur:
+            return (await cur.fetchone()) is not None
+
+
+async def list_bookmarks(
+    tenant_id: int, user_id: int, limit: int = 30
+) -> list[dict]:
+    """
+    Foydalanuvchining saqlangan e'lonlari (eng yangidan).
+
+    JOIN qilamiz announcements bilan — barcha post ma'lumotlari bilan.
+    Faqat aktiv yoki paused e'lonlar (deleted/expired chiqarilmaydi).
+    """
+    async with _conn() as db:
+        cur = await db.execute(
+            """SELECT a.*, b.created_at as bookmarked_at
+               FROM bookmarks b
+               JOIN announcements a ON a.id = b.post_id
+               WHERE b.tenant_id=? AND b.user_id=?
+                 AND a.status IN (?, ?, ?)
+               ORDER BY b.created_at DESC
+               LIMIT ?""",
+            (
+                tenant_id, user_id,
+                PostStatus.ACTIVE, PostStatus.PAUSED, PostStatus.QUEUED,
+                limit,
+            ),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def count_bookmarks(tenant_id: int, user_id: int) -> int:
+    """Saqlanganlar soni."""
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM bookmarks WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0

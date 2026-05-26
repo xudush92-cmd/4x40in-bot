@@ -25,14 +25,16 @@ def tenant_main_menu():
     📋 Eʼlonlar           ⚙️ Sozlamalar
     📊 Statistika         📜 Tarix
     🔗 Havola             🚫 Kategoriyalar
-    ℹ️ Yordam             🚪 Chiqish
+    👤 Profilim           ℹ️ Yordam
+    🚪 Chiqish
     """
     return make_reply([
         [Btn.MY_CHANNELS, Btn.MANAGE_USERS],
         [Btn.MANAGE_POSTS, Btn.BOT_SETTINGS],
         [Btn.STATS, Btn.AUDIT_LOG],
         [Btn.DEEP_LINK, Btn.CATEGORY_RESTRICTION],
-        [Btn.HELP, Btn.LOGOUT],
+        [Btn.MY_PROFILE, Btn.HELP],
+        [Btn.LOGOUT],
     ])
 
 
@@ -235,4 +237,22 @@ def deep_link_card():
         [("📋 Nusxa olish", "tenant:deeplink:copy")],
         columns=1,
         extra_rows=[[(Btn.BACK, "tenant:deeplink:back")]],
+    )
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 👤 PROFILE edit (tenant)
+# ─────────────────────────────────────────────────────────────────────
+def profile_edit_panel():
+    """Tenant profilini tahrirlash menyusi."""
+    items = [
+        ("✏️ Ism", "tenant:profile:edit:name"),
+        ("📱 Telefon", "tenant:profile:edit:phone"),
+        ("📝 Tavsif", "tenant:profile:edit:description"),
+    ]
+    return inline_grid(
+        items,
+        columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:profile:back")]],
     )

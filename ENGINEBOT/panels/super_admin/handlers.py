@@ -501,7 +501,15 @@ async def start_broadcast(message: Message) -> None:
 # ─────────────────────────────────────────────────────────────────────
 # Block sababini matn orqali olish
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text)
+async def _in_super_flow(message: Message) -> bool:
+    """Filter: faqat super_admin flow state'ida ishlaydi."""
+    if message.from_user is None or message.from_user.id != SUPER_ADMIN_ID:
+        return False
+    state = await session.get(message.from_user.id)
+    return state.step.startswith("super:")
+
+
+@router.message(F.text, _in_super_flow)
 async def handle_super_admin_text(message: Message) -> None:
     """
     Boshqa filterlardan oʻtmagan matnlar shu yerga keladi.
