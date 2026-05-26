@@ -111,13 +111,20 @@ def pending_menu():
 # ─────────────────────────────────────────────────────────────────────
 # 6. KATEGORIYA tanlash (inline)
 # ─────────────────────────────────────────────────────────────────────
-def category_picker(callback_prefix: str = "user:category"):
+def category_picker(
+    callback_prefix: str = "user:category",
+    allowed_codes: list[str] | None = None,
+):
     """
     13 ta kategoriya tugmasi (12 standart + Boshqa).
 
     callback_prefix : "user:category" → "user:category:taxi"
+    allowed_codes   : None = hammasi, yoki faqat ruxsat etilganlar
     """
-    items = [(c.label, f"{callback_prefix}:{c.code}") for c in all_categories()]
+    cats = all_categories()
+    if allowed_codes:
+        cats = [c for c in cats if c.code in allowed_codes]
+    items = [(c.label, f"{callback_prefix}:{c.code}") for c in cats]
     return inline_grid(
         items,
         columns=2,
@@ -186,9 +193,12 @@ def confirm_post_create():
 # ─────────────────────────────────────────────────────────────────────
 # 10. Customer search — kategoriya tanlash
 # ─────────────────────────────────────────────────────────────────────
-def customer_search_categories():
-    """Mijoz qidiruvi: kategoriya tanlash."""
-    items = [(c.label, f"customer:search:category:{c.code}") for c in all_categories()]
+def customer_search_categories(allowed_codes: list[str] | None = None):
+    """Mijoz qidiruvi: kategoriya tanlash (tenant cheklovi bilan)."""
+    cats = all_categories()
+    if allowed_codes:
+        cats = [c for c in cats if c.code in allowed_codes]
+    items = [(c.label, f"customer:search:category:{c.code}") for c in cats]
     items.append(("🔍 Hammasidan qidirish", "customer:search:category:all"))
     return inline_grid(
         items,

@@ -24,15 +24,15 @@ def tenant_main_menu():
     📺 Kanallarim         👥 Foydalanuvchilar
     📋 Eʼlonlar           ⚙️ Sozlamalar
     📊 Statistika         📜 Tarix
-    💰 Toʻlov             ℹ️ Yordam
-    🚪 Chiqish
+    🔗 Havola             🚫 Kategoriyalar
+    ℹ️ Yordam             🚪 Chiqish
     """
     return make_reply([
         [Btn.MY_CHANNELS, Btn.MANAGE_USERS],
         [Btn.MANAGE_POSTS, Btn.BOT_SETTINGS],
         [Btn.STATS, Btn.AUDIT_LOG],
-        [Btn.BILLING, Btn.HELP],
-        [Btn.LOGOUT],
+        [Btn.DEEP_LINK, Btn.CATEGORY_RESTRICTION],
+        [Btn.HELP, Btn.LOGOUT],
     ])
 
 
@@ -157,4 +157,82 @@ def approve_user_inline(target_user_id: int):
             ("❌ Rad etish", f"tenant:user:reject:{target_user_id}"),
         ],
         columns=2,
+    )
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 📋 Eʼlonlar nazorati
+# ─────────────────────────────────────────────────────────────────────
+def posts_filter():
+    """Eʼlonlar filtri (kategoriya yoki status bo'yicha)."""
+    items = [
+        ("📋 Hammasi", "tenant:posts:filter:all"),
+        ("🟢 Aktiv", "tenant:posts:filter:active"),
+        ("⏸ Pause", "tenant:posts:filter:paused"),
+        ("🟡 Navbatda", "tenant:posts:filter:queued"),
+    ]
+    return inline_grid(
+        items,
+        columns=2,
+        extra_rows=[[(Btn.BACK, "tenant:posts:back")]],
+    )
+
+
+def post_actions(post_id: int, status: str = "active"):
+    """Bitta e'lon ustida amallar (tenant uchun)."""
+    items: list[tuple[str, str]] = [
+        ("👁 Ko'rish", f"tenant:post:view:{post_id}"),
+    ]
+    if status == "active":
+        items.append(("⏸ Pause", f"tenant:post:pause:{post_id}"))
+    elif status == "paused":
+        items.append(("▶️ Davom", f"tenant:post:resume:{post_id}"))
+    items.append(("🗑 O'chirish", f"tenant:post:delete:{post_id}"))
+    items.append(("⚠️ Egasiga ogohlantirish", f"tenant:post:warn_owner:{post_id}"))
+    return inline_grid(
+        items,
+        columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:posts:back")]],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 🚫 Kategoriya cheklovi (tenant ruxsat bergan kategoriyalar)
+# ─────────────────────────────────────────────────────────────────────
+def category_restriction_picker(allowed_codes: list[str]):
+    """
+    Kategoriya tanlash paneli.
+
+    allowed_codes — hozirda ruxsat berilgan kategoriyalar.
+    Tugma bosib qo'shish/olib tashlash.
+    """
+    from core.categories import CATEGORIES
+
+    items: list[tuple[str, str]] = []
+    for cat in CATEGORIES:
+        is_on = cat.code in allowed_codes
+        prefix = "✅" if is_on else "⬜"
+        items.append(
+            (f"{prefix} {cat.icon} {cat.name}", f"tenant:cat_toggle:{cat.code}")
+        )
+    return inline_grid(
+        items,
+        columns=2,
+        extra_rows=[
+            [("💾 Saqlash", "tenant:cat_save")],
+            [(Btn.BACK, "tenant:cat:back")],
+        ],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 🔗 Deep-link karta
+# ─────────────────────────────────────────────────────────────────────
+def deep_link_card():
+    """Deep link o'qish (Orqaga tugmasi bilan)."""
+    return inline_grid(
+        [("📋 Nusxa olish", "tenant:deeplink:copy")],
+        columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:deeplink:back")]],
     )
