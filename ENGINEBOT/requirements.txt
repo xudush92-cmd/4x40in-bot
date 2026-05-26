@@ -1,0 +1,11 @@
+# Telegram bot framework (zamonaviy aiogram 3.x)
+aiogram>=3.4.0
+
+# Asinxron SQLite — concurrent-safe storage
+aiosqlite>=0.19.0
+
+# HTTP server (health/monitoring endpoint)
+aiohttp>=3.9.0
+
+# Environment variable management
+python-dotenv>=1.0.0
