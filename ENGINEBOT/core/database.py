@@ -357,6 +357,9 @@ async def init_db() -> None:
             ("photos", "TEXT DEFAULT '[]'"),
             ("queue_order", "INTEGER DEFAULT 0"),
         ])
+        await _ensure_columns(db, "tenant_settings", [
+            ("allowed_categories", "TEXT DEFAULT ''"),
+        ])
 
         await db.commit()
         logger.info(f"DB tayyor: {DB_PATH}")
@@ -1462,3 +1465,201 @@ async def global_stats() -> dict:
             "posts_active": posts_active,
             "total_revenue_uzs": int(total_revenue or 0),
         }
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TENANT E'LON NAZORATI — v1.1
+# ═════════════════════════════════════════════════════════════════════
+async def list_tenant_announcements(
+    tenant_id: int,
+    status: str | None = None,
+    category_code: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> list[dict]:
+    """
+    Tenant uchun e'lonlar ro'yxati (nazorat paneli).
+
+    Filter: status va/yoki categoriya.
+    """
+    async with _conn() as db:
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant_id]
+
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+
+        if category_code:
+            clauses.append("category_code = ?")
+            params.append(category_code)
+
+        where = " AND ".join(clauses)
+        params.extend([limit, offset])
+        cur = await db.execute(
+            f"""SELECT * FROM announcements
+                WHERE {where}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?""",
+            params,
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def count_tenant_announcements(
+    tenant_id: int, status: str | None = None
+) -> int:
+    """Tenant e'lonlar soni (status bo'yicha)."""
+    async with _conn() as db:
+        if status:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM announcements WHERE tenant_id=? AND status=?",
+                (tenant_id, status),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM announcements WHERE tenant_id=?",
+                (tenant_id,),
+            )
+        row = await cur.fetchone()
+        await cur.close()
+        return int(row[0]) if row else 0
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TENANT KENGAYTIRILGAN STATISTIKA — v1.1
+# ═════════════════════════════════════════════════════════════════════
+async def tenant_detailed_stats(tenant_id: int) -> dict:
+    """
+    Tenant uchun kengaytirilgan statistika.
+
+    Bugungi, haftalik ma'lumotlar va top kategoriyalar.
+    """
+    now = _now_iso()
+    today_start = now[:10] + "T00:00:00"
+    # 7 kun oldin
+    from datetime import datetime, timedelta, timezone
+    week_ago = (
+        datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
+        - timedelta(days=7)
+    ).isoformat()
+
+    async with _conn() as db:
+        # Umumiy raqamlar
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=?", (tenant_id,)
+        ) as cur:
+            users_total = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=? AND status=?",
+            (tenant_id, UserStatus.ACTIVE),
+        ) as cur:
+            users_active = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=? AND user_role IN ('poster','both')",
+            (tenant_id,),
+        ) as cur:
+            posters_count = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=? AND user_role IN ('customer','both')",
+            (tenant_id,),
+        ) as cur:
+            customers_count = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM announcements WHERE tenant_id=? AND status=?",
+            (tenant_id, PostStatus.ACTIVE),
+        ) as cur:
+            posts_active = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM channels WHERE tenant_id=? AND is_active=1",
+            (tenant_id,),
+        ) as cur:
+            channels_active = (await cur.fetchone())[0]
+
+        # Bugungi yangi foydalanuvchilar
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=? AND created_at >= ?",
+            (tenant_id, today_start),
+        ) as cur:
+            today_new_users = (await cur.fetchone())[0]
+
+        # Bugungi yangi e'lonlar
+        async with db.execute(
+            "SELECT COUNT(*) FROM announcements WHERE tenant_id=? AND created_at >= ?",
+            (tenant_id, today_start),
+        ) as cur:
+            today_new_posts = (await cur.fetchone())[0]
+
+        # Haftalik yangi e'lonlar
+        async with db.execute(
+            "SELECT COUNT(*) FROM announcements WHERE tenant_id=? AND created_at >= ?",
+            (tenant_id, week_ago),
+        ) as cur:
+            week_new_posts = (await cur.fetchone())[0]
+
+        # Aktiv rotation posterlar
+        async with db.execute(
+            """SELECT COUNT(*) FROM users
+               WHERE tenant_id=? AND rotation_active=1 AND status=?""",
+            (tenant_id, UserStatus.ACTIVE),
+        ) as cur:
+            rotation_active_posters = (await cur.fetchone())[0]
+
+        # Top kategoriyalar (top 5)
+        async with db.execute(
+            """SELECT category_code, COUNT(*) as cnt
+               FROM announcements
+               WHERE tenant_id=? AND status=? AND category_code != ''
+               GROUP BY category_code
+               ORDER BY cnt DESC
+               LIMIT 5""",
+            (tenant_id, PostStatus.ACTIVE),
+        ) as cur:
+            top_categories = _rows_to_list(await cur.fetchall())
+
+        return {
+            "users_total": users_total,
+            "users_active": users_active,
+            "posters_count": posters_count,
+            "customers_count": customers_count,
+            "posts_active": posts_active,
+            "channels_active": channels_active,
+            "today_new_users": today_new_users,
+            "today_new_posts": today_new_posts,
+            "week_new_posts": week_new_posts,
+            "rotation_active_posters": rotation_active_posters,
+            "top_categories": top_categories,
+        }
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TENANT_SETTINGS: allowed_categories ustuni — v1.1
+# ═════════════════════════════════════════════════════════════════════
+async def get_allowed_categories(tenant_id: int) -> list[str]:
+    """
+    Tenant ruxsat bergan kategoriyalar ro'yxati.
+
+    Bo'sh ro'yxat = BARCHASI ruxsat (default).
+    """
+    settings = await get_settings(tenant_id)
+    raw = settings.get("allowed_categories", "") or ""
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+async def set_allowed_categories(tenant_id: int, codes: list[str]) -> None:
+    """Tenant uchun ruxsat etilgan kategoriyalarni saqlash."""
+    val = json.dumps(codes, ensure_ascii=False) if codes else ""
+    await update_settings(tenant_id, allowed_categories=val)

@@ -374,10 +374,12 @@ async def show_search_menu(message: Message) -> None:
         await message.answer("🚫 Bu funksiya faqat mijozlar uchun.")
         return
 
+    # Tenant kategoriya cheklovi
+    allowed = await db.get_allowed_categories(tenant_id)
     await message.answer(
         "🔍 <b>Qidirish</b>\n\n"
         "Qaysi kategoriyada qidirayapsiz?",
-        reply_markup=user_kb.customer_search_categories(),
+        reply_markup=user_kb.customer_search_categories(allowed_codes=allowed or None),
     )
 
 

@@ -84,7 +84,8 @@ class Btn:
     STATS = "📊 Statistika"
     AUDIT_LOG = "📜 Tarix (log)"
     MODERATORS = "👮 Moderatorlar"
-    BILLING = "💰 Toʻlov"
+    DEEP_LINK = "🔗 Havola"
+    CATEGORY_RESTRICTION = "🚫 Kategoriyalar"
 
     # ─── SUPER ADMIN paneli ──────────────────────────────────────────
     ALL_TENANTS = "👥 Tenantlar"

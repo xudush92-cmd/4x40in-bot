@@ -169,7 +169,17 @@ async def select_category_setup(query: CallbackQuery) -> None:
     if not is_valid_category(code):
         return await query.answer("Notoʻgʻri kategoriya.", show_alert=True)
 
+    # ── Tenant kategoriya cheklovi tekshiruvi ────────────────────────
     state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+    if tenant_id:
+        allowed = await db.get_allowed_categories(tenant_id)
+        if allowed and code not in allowed:
+            return await query.answer(
+                "🚫 Bu kategoriya guruh tomonidan ruxsat etilmagan.",
+                show_alert=True,
+            )
+
     state.data["category_code"] = code
     await session.set(query.from_user.id, state)
 
@@ -199,10 +209,15 @@ async def _start_registration(
         tenant_id=tenant_id,
         data={"role_target": role_target},
     )
+    # Tenant kategoriya cheklovi
+    allowed = await db.get_allowed_categories(tenant_id)
     await message.answer(
         "🎯 <b>Qaysi sohada ishlaysiz?</b>\n\n"
         "Sohani tanlang:",
-        reply_markup=user_kb.category_picker("poster:setup:category"),
+        reply_markup=user_kb.category_picker(
+            "poster:setup:category",
+            allowed_codes=allowed or None,
+        ),
     )
 
 

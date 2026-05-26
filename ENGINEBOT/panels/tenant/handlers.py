@@ -410,25 +410,9 @@ async def unblock_user_cb(query: CallbackQuery) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 📊 Statistika
+# 📊 Statistika (eski — kengaytirilgan versiya pastda)
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text == Btn.STATS)
-async def show_stats(message: Message) -> None:
-    if message.from_user is None:
-        return
-    ctx = await _ensure_tenant(message.from_user.id)
-
-    stats = await db.tenant_stats(ctx.user_id)
-    text = fmt.format_stats_card(
-        "Mening guruhim — Statistika",
-        {
-            "Foydalanuvchilar (jami)": stats["users_total"],
-            "Aktiv foydalanuvchilar": stats["users_active"],
-            "Aktiv eʼlonlar": stats["posts_active"],
-            "Kanallar": stats["channels_active"],
-        },
-    )
-    await message.answer(text)
+# Eski show_stats olib tashlandi — pastdagi show_detailed_stats ishlatiladi.
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -574,3 +558,419 @@ async def tenant_text_router(message: Message) -> None:
             f"User #{target_uid} | {warns}/{Limits.MAX_WARNINGS_BEFORE_BLOCK}"
         )
         return
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 📋 E'LONLAR NAZORATI (manage_posts)
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.MANAGE_POSTS)
+async def show_posts_panel(message: Message) -> None:
+    """Tenant — e'lonlar nazorat paneli."""
+    if message.from_user is None:
+        return
+    ctx = await _ensure_tenant(message.from_user.id)
+
+    from config import PostStatus
+    active = await db.count_tenant_announcements(ctx.user_id, PostStatus.ACTIVE)
+    paused = await db.count_tenant_announcements(ctx.user_id, PostStatus.PAUSED)
+    queued = await db.count_tenant_announcements(ctx.user_id, PostStatus.QUEUED)
+    total = active + paused + queued
+
+    text = (
+        f"📋 <b>Eʼlonlar nazorati</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 Jami aktiv/pauza/navbat: <b>{total}</b>\n"
+        f"   🟢 Aktiv: {active}\n"
+        f"   ⏸ Pause: {paused}\n"
+        f"   🟡 Navbat: {queued}\n\n"
+        f"Filtrni tanlang:"
+    )
+    await message.answer(text, reply_markup=tenant_kb.posts_filter())
+
+
+@router.callback_query(F.data.startswith("tenant:posts:filter:"))
+async def posts_filter_cb(query: CallbackQuery) -> None:
+    """E'lonlarni status bo'yicha filtrlash."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+
+    from config import PostStatus
+    filter_val = query.data.rsplit(":", 1)[1]
+
+    status_map = {
+        "all": None,
+        "active": PostStatus.ACTIVE,
+        "paused": PostStatus.PAUSED,
+        "queued": PostStatus.QUEUED,
+    }
+    status = status_map.get(filter_val)
+
+    posts = await db.list_tenant_announcements(ctx.user_id, status=status, limit=15)
+    if not posts:
+        await query.answer("📭 Eʼlon topilmadi.", show_alert=True)
+        return
+
+    from core.categories import get_category_label
+    lines = [f"📋 <b>Eʼlonlar ({len(posts)} ta)</b>", ""]
+    for i, p in enumerate(posts[:10], 1):
+        st_emoji = {
+            "active": "🟢", "paused": "⏸", "queued": "🟡",
+            "draft": "📝", "expired": "⏰", "deleted": "🗑"
+        }.get(p.get("status", ""), "❓")
+        cat = get_category_label(p.get("category_code", ""))
+        text_preview = (p.get("raw_text") or "")[:40]
+        if len(p.get("raw_text") or "") > 40:
+            text_preview += "..."
+        lines.append(
+            f"{i}. {st_emoji} {cat}\n"
+            f"   #{p['id']} | {fmt.esc(text_preview)}\n"
+            f"   👤 User #{p.get('user_id', '?')}"
+        )
+
+    items = [
+        (f"#{p['id']} {(p.get('raw_text') or '?')[:15]}", f"tenant:post:show:{p['id']}")
+        for p in posts[:10]
+    ]
+    kb = inline_grid(
+        items, columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:posts:back")]],
+    )
+    if query.message:
+        await query.message.answer("\n".join(lines), reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("tenant:post:show:"))
+async def show_post_detail(query: CallbackQuery) -> None:
+    """Bitta e'lonni batafsil ko'rish."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    post_id = int(query.data.rsplit(":", 1)[1])
+
+    post = await db.get_announcement(post_id, tenant_id=ctx.user_id)
+    if not post:
+        return await query.answer("Topilmadi.", show_alert=True)
+
+    from core.categories import get_category_label
+    cat = get_category_label(post.get("category_code", ""))
+    raw = (post.get("raw_text") or "—")[:500]
+    photos = post.get("photos") or []
+    if isinstance(photos, str):
+        import json as _json
+        try:
+            photos = _json.loads(photos)
+        except Exception:
+            photos = []
+
+    text = (
+        f"📋 <b>Eʼlon #{post['id']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎯 Kategoriya: {cat}\n"
+        f"👤 Poster: <code>#{post.get('user_id')}</code>\n"
+        f"📊 Holat: {post.get('status', '?')}\n"
+        f"🔄 Rotation: {post.get('rotation_count', 0)} marta\n"
+        f"📷 Rasm: {len(photos)} ta\n"
+        f"📅 Yaratildi: {(post.get('created_at') or '')[:16]}\n"
+        f"⏰ Tugaydi: {(post.get('expires_at') or '—')[:16]}\n\n"
+        f"📝 <b>Matn:</b>\n{fmt.esc(raw)}"
+    )
+    kb = tenant_kb.post_actions(post_id, status=post.get("status", "active"))
+    if query.message:
+        await query.message.answer(text, reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("tenant:post:pause:"))
+async def pause_post_cb(query: CallbackQuery) -> None:
+    """E'lonni pause qilish."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    post_id = int(query.data.rsplit(":", 1)[1])
+
+    from config import PostStatus
+    await db.update_announcement(post_id, ctx.user_id, status=PostStatus.PAUSED)
+    await audit_log.log_action(
+        actor=ctx, action="post_paused",
+        target_type="announcement", target_id=post_id,
+    )
+    await query.answer("⏸ E'lon pauzaga olinidi.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("tenant:post:resume:"))
+async def resume_post_cb(query: CallbackQuery) -> None:
+    """E'lonni davom ettirish (resume)."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    post_id = int(query.data.rsplit(":", 1)[1])
+
+    from config import PostStatus
+    await db.update_announcement(post_id, ctx.user_id, status=PostStatus.ACTIVE)
+    await audit_log.log_action(
+        actor=ctx, action="post_resumed",
+        target_type="announcement", target_id=post_id,
+    )
+    await query.answer("▶️ E'lon davom ettirildi.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("tenant:post:delete:"))
+async def delete_post_cb(query: CallbackQuery) -> None:
+    """E'lonni o'chirish (status=deleted)."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    post_id = int(query.data.rsplit(":", 1)[1])
+
+    from config import PostStatus
+    await db.update_announcement(post_id, ctx.user_id, status=PostStatus.DELETED)
+    await audit_log.log_action(
+        actor=ctx, action="post_deleted",
+        target_type="announcement", target_id=post_id,
+    )
+    # Poster'ga xabar
+    post = await db.get_announcement(post_id)
+    if post:
+        await notifier.notify_post_action(
+            user_id=post["user_id"],
+            tenant_id=ctx.user_id,
+            post_id=post_id,
+            action="deleted",
+            reason="Guruh admini tomonidan o'chirildi",
+        )
+    await query.answer("🗑 E'lon o'chirildi.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("tenant:post:warn_owner:"))
+async def warn_post_owner_cb(query: CallbackQuery) -> None:
+    """E'lon egasiga ogohlantirish berish (post ustidan)."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    post_id = int(query.data.rsplit(":", 1)[1])
+
+    post = await db.get_announcement(post_id, tenant_id=ctx.user_id)
+    if not post:
+        return await query.answer("Topilmadi.", show_alert=True)
+
+    target_uid = post["user_id"]
+    await session.update(
+        query.from_user.id,
+        step="tenant:awaiting_warn_reason",
+        data={"target_user_id": target_uid},
+    )
+    if query.message:
+        await query.message.answer(
+            f"⚠️ E'lon #{post_id} egasiga ogohlantirish.\n"
+            f"Sababini yozing (min 3 belgi):"
+        )
+    await query.answer()
+
+
+@router.callback_query(F.data == "tenant:posts:back")
+async def posts_back_cb(query: CallbackQuery) -> None:
+    await query.answer()
+    if query.message:
+        await query.message.delete()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 🚫 KATEGORIYA CHEKLOVI
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.CATEGORY_RESTRICTION)
+async def show_category_restriction(message: Message) -> None:
+    """Tenant — ruxsat etilgan kategoriyalar sozlamasi."""
+    if message.from_user is None:
+        return
+    ctx = await _ensure_tenant(message.from_user.id)
+
+    allowed = await db.get_allowed_categories(ctx.user_id)
+    if not allowed:
+        note = "ℹ️ Hozir <b>barcha kategoriyalar</b> ruxsat etilgan (cheklov yo'q)."
+    else:
+        from core.categories import get_category_label
+        cats_str = ", ".join(get_category_label(c) for c in allowed)
+        note = f"✅ Ruxsat etilgan: {cats_str}"
+
+    text = (
+        f"🚫 <b>Kategoriya cheklovi</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"{note}\n\n"
+        f"Posterlar faqat siz ruxsat bergan kategoriyalarda e'lon bera oladi.\n"
+        f"Tanlash uchun tugmalarni bosing:"
+    )
+    await message.answer(
+        text,
+        reply_markup=tenant_kb.category_restriction_picker(allowed),
+    )
+
+
+@router.callback_query(F.data.startswith("tenant:cat_toggle:"))
+async def toggle_category_cb(query: CallbackQuery) -> None:
+    """Kategoriya yoqish/o'chirish (toggle)."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+
+    code = query.data.rsplit(":", 1)[1]
+    from core.categories import is_valid_category
+    if not is_valid_category(code):
+        return await query.answer("Nomaʼlum kategoriya.", show_alert=True)
+
+    allowed = await db.get_allowed_categories(ctx.user_id)
+    if code in allowed:
+        allowed.remove(code)
+    else:
+        allowed.append(code)
+
+    # Session'da saqlaymiz (save tugmasi bosilganida DB'ga yoziladi)
+    await session.update(
+        query.from_user.id,
+        step="tenant:category_edit",
+        data={"allowed_categories": allowed},
+    )
+
+    # KB yangilash
+    if query.message:
+        try:
+            await query.message.edit_reply_markup(
+                reply_markup=tenant_kb.category_restriction_picker(allowed),
+            )
+        except Exception:
+            pass
+    await query.answer()
+
+
+@router.callback_query(F.data == "tenant:cat_save")
+async def save_category_restriction(query: CallbackQuery) -> None:
+    """Kategoriya cheklovni saqlash."""
+    if query.from_user is None:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+
+    state = await session.get(query.from_user.id)
+    allowed = state.data.get("allowed_categories", [])
+
+    await db.set_allowed_categories(ctx.user_id, allowed)
+    await audit_log.log_tenant_event(
+        ctx, action="category_restriction_updated",
+        tenant_id=ctx.user_id, allowed_categories=allowed,
+    )
+    await session.reset(query.from_user.id)
+
+    if not allowed:
+        msg = "✅ Kategoriya cheklovi olib tashlandi (barchasi ruxsat)."
+    else:
+        from core.categories import get_category_label
+        cats_str = ", ".join(get_category_label(c) for c in allowed)
+        msg = f"✅ Saqlandi!\n\nRuxsat etilgan: {cats_str}"
+
+    await query.answer(msg, show_alert=True)
+    if query.message:
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "tenant:cat:back")
+async def cat_back_cb(query: CallbackQuery) -> None:
+    await session.reset(query.from_user.id)
+    await query.answer()
+    if query.message:
+        await query.message.delete()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 🔗 DEEP-LINK
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.DEEP_LINK)
+async def show_deep_link(message: Message) -> None:
+    """Tenant uchun maxsus deep-link ko'rsatish."""
+    if message.from_user is None:
+        return
+    ctx = await _ensure_tenant(message.from_user.id)
+
+    # Bot username olish
+    try:
+        from main import bot
+        me = await bot.get_me()
+        bot_username = me.username
+    except Exception:
+        bot_username = "enginebot"
+
+    link = f"https://t.me/{bot_username}?start=join_{ctx.user_id}"
+
+    text = (
+        f"🔗 <b>Sizning maxsus havolangiz</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"📎 <code>{link}</code>\n\n"
+        f"Bu linkni kanalingizga pin qilib qo'ying.\n"
+        f"Foydalanuvchilar bossa — to'g'ri sizning guruhga keladi.\n\n"
+        f"💡 <b>Maslahat:</b>\n"
+        f"Kanalingizning pinned xabariga shu matnni qo'ying:\n\n"
+        f"<i>\"📢 E'lon berish yoki xizmat izlash uchun:\n"
+        f"{link}\"</i>"
+    )
+    await message.answer(text, reply_markup=tenant_kb.deep_link_card())
+
+
+@router.callback_query(F.data == "tenant:deeplink:copy")
+async def deeplink_copy_cb(query: CallbackQuery) -> None:
+    await query.answer(
+        "📋 Havolani nusxalang: yuqoridagi kodni bosib ushlab turing",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data == "tenant:deeplink:back")
+async def deeplink_back_cb(query: CallbackQuery) -> None:
+    await query.answer()
+    if query.message:
+        await query.message.delete()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 📊 KENGAYTIRILGAN STATISTIKA (v1.1)
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.STATS)
+async def show_detailed_stats(message: Message) -> None:
+    """Tenant — kengaytirilgan statistika."""
+    if message.from_user is None:
+        return
+    ctx = await _ensure_tenant(message.from_user.id)
+
+    stats = await db.tenant_detailed_stats(ctx.user_id)
+    from core.categories import get_category_label
+
+    # Top kategoriyalar formatlash
+    top_cats_lines = []
+    for cat_row in stats.get("top_categories", []):
+        code = cat_row.get("category_code", "")
+        cnt = cat_row.get("cnt", 0)
+        top_cats_lines.append(f"   {get_category_label(code)}: {cnt}")
+    top_cats_str = "\n".join(top_cats_lines) if top_cats_lines else "   — hali yo'q"
+
+    text = (
+        f"📊 <b>Statistika — batafsil</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"👥 <b>Foydalanuvchilar</b>\n"
+        f"   Jami: {stats['users_total']}\n"
+        f"   Aktiv: {stats['users_active']}\n"
+        f"   📝 Posterlar: {stats['posters_count']}\n"
+        f"   🔍 Mijozlar: {stats['customers_count']}\n\n"
+        f"📋 <b>E'lonlar</b>\n"
+        f"   Aktiv: {stats['posts_active']}\n"
+        f"   🔄 Rotation ON: {stats['rotation_active_posters']} poster\n\n"
+        f"📅 <b>Bugun</b>\n"
+        f"   Yangi foydalanuvchilar: {stats['today_new_users']}\n"
+        f"   Yangi e'lonlar: {stats['today_new_posts']}\n\n"
+        f"📅 <b>Bu hafta</b>\n"
+        f"   Yangi e'lonlar: {stats['week_new_posts']}\n\n"
+        f"📺 Kanallar: {stats['channels_active']}\n\n"
+        f"🏆 <b>Top kategoriyalar</b>\n{top_cats_str}"
+    )
+    await message.answer(text)
