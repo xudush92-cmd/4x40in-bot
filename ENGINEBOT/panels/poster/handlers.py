@@ -498,7 +498,7 @@ async def start_new_post(message: Message) -> None:
     can, reason = await can_accept_new_post(tenant_id)
     if not can:
         msg = {
-            "tenant_status:paused": "⏸ Bot to'lov muddati tufayli pause holatida.",
+            "tenant_status:paused": "⏸ Bot muddati tufayli pause holatida.",
             "tenant_status:blocked": "🚫 Bot bloklangan.",
             "bot_off": "⛔ Bot guruh egasi tomonidan toʻxtatilgan.",
             "post_intake_off": "⛔ Yangi eʼlon qabuli vaqtincha toʻxtatilgan.",
@@ -1007,31 +1007,11 @@ async def show_stats(message: Message) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 10. PROFIL & LOGOUT (umumiy, customer bilan ham ishlaydi)
+# 10. PROFIL & LOGOUT — UMUMIY HANDLER'GA KO'CHIRILGAN
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text == Btn.MY_PROFILE)
-async def show_profile(message: Message) -> None:
-    """Poster profili (customer.handlers ham bunga match qiladi - prioritet routerga bog'liq)."""
-    if message.from_user is None:
-        return
-    state = await session.get(message.from_user.id)
-    tenant_id = state.tenant_id
-    if not tenant_id:
-        return
-
-    user = await db.get_user(tenant_id, message.from_user.id)
-    if not user:
-        return
-
-    text = fmt.format_user_card(user)
-    if user.get("region"):
-        text += f"\n🌍 Viloyat: {fmt.esc(user['region'])}"
-    if user.get("category_code"):
-        text += f"\n🎯 Soha: {get_category_label(user['category_code'])}"
-    interval = user.get("rotation_interval_min", 10)
-    rotation = "🟢 ON" if user.get("rotation_active") else "🔴 OFF"
-    text += f"\n⏱ Interval: {interval} daq | Auto-post: {rotation}"
-    await message.answer(text)
+# `Btn.MY_PROFILE` va `Btn.LOGOUT` tugmalari uchun handler'lar endi
+# `panels/common_handlers.py` faylida (har router'da duplicate
+# qilmaslik uchun). Bu yerda olib tashlandi.
 
 
 
@@ -1128,8 +1108,8 @@ async def _handle_edit_post_text(message: Message, text: str) -> None:
         rendered_text=rendered,
     )
 
-    # Kanaldagi xabarni ham yangilash (publisher bor bo'lsa)
-    with contextlib.suppress(ImportError, AttributeError):
+    # Kanaldagi xabarni ham yangilash (publisher.refresh_post_in_channel)
+    with contextlib.suppress(Exception):
         from services.publisher import refresh_post_in_channel
         await refresh_post_in_channel(post_id, tenant_id)
 
@@ -1155,17 +1135,7 @@ async def _handle_edit_post_text(message: Message, text: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 12. LOGOUT (poster) — confirmation customer router'ida
+# 12. LOGOUT — UMUMIY HANDLER'GA KO'CHIRILGAN
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text == Btn.LOGOUT)
-async def poster_cmd_logout(message: Message) -> None:
-    """
-    Poster — chiqish (tasdiqlash bilan).
-
-    confirm:yes:logout:* va confirm:no:logout:* — customer router'ida
-    bor, ikkala flow uchun ham ishlaydi (umumiy chiqish jarayoni).
-    """
-    if message.from_user is None:
-        return
-    text, kb = confirm_logout(message.from_user.id)
-    await message.answer(text, reply_markup=kb)
+# `Btn.LOGOUT` tugmasi uchun handler endi `panels/common_handlers.py`
+# faylida — barcha rollar uchun yagona joyda.

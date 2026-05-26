@@ -83,13 +83,19 @@ def _register_routers() -> None:
     from panels.super_admin.handlers import router as super_router
     dp.include_router(super_router)
 
-    # Tenant (guruh egasi)
+    # Tenant (guruh egasi) — o'z profile va settings'ini boshqaradi
     from panels.tenant.handlers import router as tenant_router
     dp.include_router(tenant_router)
 
     # Moderator (v1.5+ uchun, hozircha bo'sh handlerlar)
     from panels.moderator.handlers import router as mod_router
     dp.include_router(mod_router)
+
+    # Common handlers (USER uchun MY_PROFILE, LOGOUT)
+    # MUHIM: poster/customer'dan OLDIN — duplicate handler'lar
+    # bilan to'qnashmasligi uchun
+    from panels.common_handlers import router as common_router
+    dp.include_router(common_router)
 
     # POSTER (e'lon beruvchi)
     from panels.poster.handlers import router as poster_router
@@ -104,7 +110,8 @@ def _register_routers() -> None:
     dp.include_router(user_router)
 
     logger.info(
-        "📡 7 ta router ulandi: start, super, tenant, mod, poster, customer, user-legacy"
+        "📡 8 ta router ulandi: start, super, tenant, mod, common, "
+        "poster, customer, user-legacy"
     )
 
 
@@ -160,14 +167,18 @@ async def main() -> None:
     await core_db.init_db()
     logger.info("🗄 DB tayyor")
 
-    # 2. Routers
+    # 2. Middleware (error handler — har handler oldidan ishlaydi)
+    from core.middleware import register_middlewares
+    register_middlewares(dp)
+
+    # 3. Routers
     _register_routers()
 
-    # 3. Background services
+    # 4. Background services
     stop_event = asyncio.Event()
     services = await _start_services(stop_event)
 
-    # 4. Signal handling (SIGTERM/SIGINT)
+    # 5. Signal handling (SIGTERM/SIGINT)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -179,7 +190,7 @@ async def main() -> None:
             # Windows yoki cheklangan loop
             pass
 
-    # 5. Bot start_polling (asyncio'da blokirovka qiluvchi)
+    # 6. Bot start_polling (asyncio'da blokirovka qiluvchi)
     logger.info(f"🤖 Bot polling boshlandi @{(await bot.me()).username}")
     try:
         await dp.start_polling(

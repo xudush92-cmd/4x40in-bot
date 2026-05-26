@@ -93,7 +93,7 @@ class Btn:
     GLOBAL_AUDIT = "📜 Global log"
     BROADCAST = "📨 Broadcast"
     SYSTEM = "🛠 Tizim"
-    PAYMENTS = "💰 Toʻlovlar"
+    PAYMENTS = "📜 Muddat tarixi"
 
 
 # ─────────────────────────────────────────────────────────────────────

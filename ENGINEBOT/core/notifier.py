@@ -129,6 +129,16 @@ async def notify_critical(user_id: int, message: str, *, tenant_id: int | None =
 # Standart shablonlar (eng tez-tez ishlatiladigan)
 # ─────────────────────────────────────────────────────────────────────
 async def notify_user_approved(user_id: int, tenant_id: int, tenant_name: str = "") -> int:
+    """User'ga tasdiqlanganini bildirish.
+
+    tenant_name berilmagan bo'lsa, DB'dan avtomatik olamiz.
+    """
+    if not tenant_name:
+        from core import database as _db
+        tenant = await _db.get_tenant(tenant_id)
+        if tenant:
+            tenant_name = tenant.get("name", "") or ""
+
     return await notify_success(
         user_id=user_id,
         tenant_id=tenant_id,
@@ -208,20 +218,21 @@ async def notify_post_expired(user_id: int, tenant_id: int, post_id: int) -> int
 async def notify_tenant_payment_reminder(
     tenant_id: int, days_left: int, paid_until: str
 ) -> int:
-    """Tenant'ga toʻlov muddati yaqinlashayotganini eslatish."""
+    """Tenant'ga muddati yaqinlashayotganini eslatish (PULSIZ model)."""
     return await notify_warning(
         user_id=tenant_id,
         tenant_id=tenant_id,
-        title="Toʻlov muddati yaqin",
+        title="Muddat yaqin",
         message=(
             f"⚠️ Sizning tarif muddatingiz {days_left} kundan keyin tugaydi.\n\n"
             f"📅 Tugash sanasi: {paid_until}\n\n"
-            "Iltimos, toʻlov qiling — aks holda bot vaqtincha toʻxtaydi."
+            "Muddat tugagach bot vaqtincha to'xtaydi.\n"
+            "Iltimos, kanal egasi (super admin) bilan bog'lanib muddatni uzaytiring."
         ),
     )
 
 
-async def notify_tenant_paused(tenant_id: int, reason: str = "Toʻlov muddati tugadi") -> int:
+async def notify_tenant_paused(tenant_id: int, reason: str = "Muddat tugadi") -> int:
     return await notify_critical(
         user_id=tenant_id,
         tenant_id=tenant_id,
@@ -230,7 +241,7 @@ async def notify_tenant_paused(tenant_id: int, reason: str = "Toʻlov muddati tu
             f"🚨 Sizning bot xizmatingiz vaqtincha toʻxtatildi.\n\n"
             f"📌 Sabab: {reason}\n\n"
             "Mavjud eʼlonlar saqlandi, lekin yangilari qabul qilinmaydi.\n"
-            "Iltimos, toʻlov qiling va davom ettiring."
+            "Iltimos, super admin bilan bog'lanib muddatni uzaytiring."
         ),
     )
 
