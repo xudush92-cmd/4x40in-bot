@@ -153,7 +153,15 @@ async def _start_registration(
 
 
 # Matn handlerlari (state'ga qarab)
-@router.message(F.text)
+async def _in_customer_flow(message: Message) -> bool:
+    """Filter: faqat customer flow state'ida ishlaydi."""
+    if message.from_user is None:
+        return False
+    state = await session.get(message.from_user.id)
+    return state.step.startswith("customer:")
+
+
+@router.message(F.text, _in_customer_flow)
 async def customer_text_router(message: Message) -> None:
     if message.from_user is None:
         return
@@ -332,7 +340,8 @@ async def _finalize_registration(message: Message, user_id: int) -> None:
 
     # Manual approval — tenantga xabar
     from keyboards.tenant_kb import approve_user_inline
-    with contextlib.suppress(Exception):
+    from aiogram.exceptions import TelegramAPIError
+    with contextlib.suppress(TelegramAPIError):
         from main import bot
         await bot.send_message(
             tenant_id,
@@ -387,6 +396,12 @@ async def show_search_menu(message: Message) -> None:
 async def search_by_category(query: CallbackQuery) -> None:
     if query.from_user is None or not query.data:
         return
+
+    # Rate limiter — qidiruv abuse'ga qarshi
+    from core.rate_limiter import limiter, get_block_message
+    if not limiter.is_allowed(query.from_user.id, "command"):
+        msg = get_block_message(query.from_user.id, "command")
+        return await query.answer(msg or "⏳ Juda koʻp soʻrov.", show_alert=True)
     state = await session.get(query.from_user.id)
     tenant_id = state.tenant_id
     if not tenant_id:
@@ -474,11 +489,12 @@ async def _send_post_card(message: Message, post: dict) -> None:
     photos = post.get("photos") or []
     if isinstance(photos, str):
         import json
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
             photos = json.loads(photos)
 
     if photos and isinstance(photos, list) and photos:
-        with contextlib.suppress(Exception):
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
             await message.answer_photo(
                 photo=photos[0], caption=text, reply_markup=kb
             )
@@ -543,3 +559,148 @@ async def confirm_logout_no(query: CallbackQuery) -> None:
     if query.message:
         await query.message.answer("✅ Bekor qilindi.")
     await query.answer()
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 7. BOOKMARK (saqlash/olib tashlash) — toggle
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data.startswith("customer:bookmark:"))
+async def toggle_bookmark(query: CallbackQuery) -> None:
+    """E'lonni saqlash yoki saqlangandan olib tashlash (toggle)."""
+    if query.from_user is None or not query.data:
+        return
+
+    state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        return await query.answer("Tenant tanlanmagan.", show_alert=True)
+
+    try:
+        post_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    # E'lon mavjudligini tekshirish (tenant izolyatsiyasi bilan)
+    post = await db.get_announcement(post_id, tenant_id=tenant_id)
+    if not post:
+        return await query.answer("E'lon topilmadi.", show_alert=True)
+
+    # Toggle
+    is_saved = await db.is_bookmarked(tenant_id, query.from_user.id, post_id)
+    if is_saved:
+        await db.remove_bookmark(tenant_id, query.from_user.id, post_id)
+        msg = "🗑 Saqlanganlardan olib tashlandi"
+    else:
+        ok = await db.add_bookmark(tenant_id, query.from_user.id, post_id)
+        msg = "⭐ Saqlandi!" if ok else "Allaqachon saqlangan"
+
+    await query.answer(msg, show_alert=True)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 8. CONTACT (telefon orqali bog'lanish — counter)
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data.startswith("customer:contact:"))
+async def contact_poster(query: CallbackQuery) -> None:
+    """
+    Mijoz poster bilan bog'lanish — telefon raqamini ko'rsatadi va
+    contacts_count ni +1 qiladi.
+    """
+    if query.from_user is None or not query.data:
+        return
+
+    state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        return await query.answer("Tenant tanlanmagan.", show_alert=True)
+
+    try:
+        post_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    post = await db.get_announcement(post_id, tenant_id=tenant_id)
+    if not post:
+        return await query.answer("E'lon topilmadi.", show_alert=True)
+
+    poster = await db.get_user(tenant_id, int(post.get("user_id", 0)))
+    if not poster:
+        return await query.answer("Poster topilmadi.", show_alert=True)
+
+    phone = poster.get("phone", "")
+    name = poster.get("full_name", "")
+
+    # Counter +1
+    import aiosqlite
+    with contextlib.suppress(aiosqlite.Error, ValueError):
+        await db.increment_announcement_counter(post_id, tenant_id, "contacts_count")
+
+    # Audit
+    await audit_log.log_action(
+        actor_role="user",
+        actor_id=query.from_user.id,
+        tenant_id=tenant_id,
+        action="contact_poster",
+        target_type="announcement",
+        target_id=post_id,
+        details={"poster_id": poster.get("user_id")},
+    )
+
+    if phone:
+        text = (
+            f"📞 <b>Bog'lanish</b>\n\n"
+            f"👤 {fmt.esc(name)}\n"
+            f"📱 <code>{fmt.esc(phone)}</code>\n\n"
+            f"<i>Telefon raqamni nusxalash uchun bosib ushlab turing.</i>"
+        )
+    else:
+        text = (
+            f"⚠️ Telefon raqam ko'rsatilmagan.\n\n"
+            f"👤 {fmt.esc(name)}"
+        )
+    await query.answer()
+    if query.message:
+        await query.message.answer(text)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 9. MY BOOKMARKS — saqlangan e'lonlar ro'yxati
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.MY_BOOKMARKS)
+async def show_my_bookmarks(message: Message) -> None:
+    """Mijozning saqlangan e'lonlari."""
+    if message.from_user is None:
+        return
+    state = await session.get(message.from_user.id)
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        await message.answer("Avval guruh tanlang. /start")
+        return
+
+    posts = await db.list_bookmarks(tenant_id, message.from_user.id, limit=20)
+    if not posts:
+        await message.answer(
+            "📭 Saqlangan e'lonlar yo'q.\n\n"
+            "Qidiruvda yoqgan e'lonni ⭐ tugmasi bilan saqlashingiz mumkin."
+        )
+        return
+
+    await message.answer(
+        f"⭐ <b>Saqlangan e'lonlar ({len(posts)} ta)</b>"
+    )
+    for post in posts:
+        await _send_post_card(message, post)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 10. SEARCH HISTORY — placeholder (v1.5'da to'liq qo'shamiz)
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.SEARCH_HISTORY)
+async def show_search_history(message: Message) -> None:
+    """Qidiruv tarixi (hozir oddiy info, v1.5'da DB bilan)."""
+    await message.answer(
+        "📋 <b>Qidiruv tarixi</b>\n\n"
+        "Bu funksiya keyingi versiyada qo'shiladi.\n"
+        "Hozircha 🔍 Qidirish va 📰 Yangi eʼlonlardan foydalaning."
+    )

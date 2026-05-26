@@ -221,7 +221,15 @@ async def _start_registration(
     )
 
 
-@router.message(F.text)
+async def _in_poster_flow(message: Message) -> bool:
+    """Filter: faqat poster flow state'ida ishlaydi."""
+    if message.from_user is None:
+        return False
+    state = await session.get(message.from_user.id)
+    return state.step.startswith("poster:")
+
+
+@router.message(F.text, _in_poster_flow)
 async def poster_text_router(message: Message) -> None:
     if message.from_user is None:
         return
@@ -285,6 +293,11 @@ async def poster_text_router(message: Message) -> None:
             f"✅ Interval {n} daqiqaga oʻrnatildi va auto-post YOQILDI.",
             reply_markup=user_kb.poster_main_menu(rotation_active=True),
         )
+        return
+
+    # 5) E'lon matnini tahrirlash
+    if state.step == "poster:editing_post":
+        await _handle_edit_post_text(message, text)
         return
 
 
@@ -421,7 +434,8 @@ async def _finalize_registration(message: Message, user_id: int) -> None:
 
     # Manual approval
     from keyboards.tenant_kb import approve_user_inline
-    with contextlib.suppress(Exception):
+    from aiogram.exceptions import TelegramAPIError
+    with contextlib.suppress(TelegramAPIError):
         from main import bot
         await bot.send_message(
             tenant_id,
@@ -451,6 +465,14 @@ async def _finalize_registration(message: Message, user_id: int) -> None:
 @router.message(F.text == Btn.NEW_POST)
 async def start_new_post(message: Message) -> None:
     if message.from_user is None:
+        return
+
+    # Rate limiter — anti-spam (max 10 post/daqiqa per user)
+    from core.rate_limiter import limiter, get_block_message
+    if not limiter.is_allowed(message.from_user.id, "post"):
+        msg = get_block_message(message.from_user.id, "post")
+        if msg:
+            await message.answer(msg)
         return
     state = await session.get(message.from_user.id)
     tenant_id = state.tenant_id
@@ -769,7 +791,7 @@ async def delete_post(query: CallbackQuery) -> None:
         return await query.answer("Topilmadi.", show_alert=True)
 
     # Kanaldan o'chirish (publisher orqali)
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(ImportError, AttributeError):
         from services.publisher import remove_post_from_channel
         await remove_post_from_channel(post_id, tenant_id)
 
@@ -1010,3 +1032,140 @@ async def show_profile(message: Message) -> None:
     rotation = "🟢 ON" if user.get("rotation_active") else "🔴 OFF"
     text += f"\n⏱ Interval: {interval} daq | Auto-post: {rotation}"
     await message.answer(text)
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 11. POST:VIEW va POST:EDIT (KB tugmalari uchun)
+# ─────────────────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("poster:post:view:"))
+async def view_post_alias(query: CallbackQuery) -> None:
+    """post:view callback — show_post_detail bilan bir xil."""
+    await show_post_detail(query)
+
+
+@router.callback_query(F.data.startswith("poster:post:edit:"))
+async def start_edit_post(query: CallbackQuery) -> None:
+    """E'lon matnini tahrirlashni boshlash."""
+    if query.from_user is None or not query.data:
+        return
+    try:
+        post_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        return await query.answer("Sessiya tugadi.", show_alert=True)
+
+    post = await db.get_announcement(post_id, tenant_id=tenant_id)
+    if not post or post.get("user_id") != query.from_user.id:
+        return await query.answer("Bu sizning eʼloningiz emas.", show_alert=True)
+
+    if post.get("status") in (PostStatus.EXPIRED, PostStatus.DELETED):
+        return await query.answer(
+            "Bu eʼlon o'chirilgan yoki muddati tugagan.", show_alert=True
+        )
+
+    state.step = "poster:editing_post"
+    state.data["edit_post_id"] = post_id
+    await session.set(query.from_user.id, state)
+
+    current_text = post.get("raw_text") or ""
+    if query.message:
+        await query.message.answer(
+            f"✏️ <b>E'lon #{post_id} tahrirlash</b>\n\n"
+            f"<b>Hozirgi matn:</b>\n"
+            f"<code>{fmt.esc(current_text)}</code>\n\n"
+            f"Yangi matnni yozing yoki /cancel bilan bekor qiling:"
+        )
+    await query.answer()
+
+
+async def _handle_edit_post_text(message: Message, text: str) -> None:
+    """E'lon matnini tahrirlash kiritildi (state=poster:editing_post)."""
+    if message.from_user is None:
+        return
+    state = await session.get(message.from_user.id)
+
+    if text in ("/cancel", "❌ Bekor qilish"):
+        await session.reset(message.from_user.id)
+        await session.update(message.from_user.id, tenant_id=state.tenant_id)
+        await message.answer(
+            "❌ Bekor qilindi.",
+            reply_markup=user_kb.poster_main_menu(rotation_active=False),
+        )
+        return
+
+    if len(text) > Limits.MAX_POST_TEXT_LEN:
+        await message.answer(
+            f"❌ Matn juda uzun (max {Limits.MAX_POST_TEXT_LEN} belgi)."
+        )
+        return
+    if len(text) < 5:
+        await message.answer("❌ Matn juda qisqa (min 5 belgi).")
+        return
+
+    post_id = int(state.data.get("edit_post_id", 0))
+    tenant_id = state.tenant_id
+    if not post_id or not tenant_id:
+        await session.reset(message.from_user.id)
+        return
+
+    post = await db.get_announcement(post_id, tenant_id=tenant_id)
+    if not post or post.get("user_id") != message.from_user.id:
+        await session.reset(message.from_user.id)
+        await message.answer("❌ E'lon topilmadi yoki sizniki emas.")
+        return
+
+    cat_code = post.get("category_code", "")
+    rendered = f"{get_category_label(cat_code)}\n\n{text}"
+
+    await db.update_announcement(
+        post_id, tenant_id,
+        raw_text=text,
+        rendered_text=rendered,
+    )
+
+    # Kanaldagi xabarni ham yangilash (publisher bor bo'lsa)
+    with contextlib.suppress(ImportError, AttributeError):
+        from services.publisher import refresh_post_in_channel
+        await refresh_post_in_channel(post_id, tenant_id)
+
+    await audit_log.log_action(
+        actor=await resolve_role(message.from_user.id, tenant_id=tenant_id),
+        action="post_edited",
+        target_type="announcement",
+        target_id=post_id,
+    )
+
+    await session.reset(message.from_user.id)
+    await session.update(message.from_user.id, tenant_id=tenant_id)
+
+    user = await db.get_user(tenant_id, message.from_user.id)
+    rotation_active = bool((user or {}).get("rotation_active", 0))
+
+    await message.answer(
+        f"✅ E'lon #{post_id} yangilandi!\n\n"
+        f"📌 Yangi matn saqlandi.",
+        reply_markup=user_kb.poster_main_menu(rotation_active=rotation_active),
+    )
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 12. LOGOUT (poster) — confirmation customer router'ida
+# ─────────────────────────────────────────────────────────────────────
+@router.message(F.text == Btn.LOGOUT)
+async def poster_cmd_logout(message: Message) -> None:
+    """
+    Poster — chiqish (tasdiqlash bilan).
+
+    confirm:yes:logout:* va confirm:no:logout:* — customer router'ida
+    bor, ikkala flow uchun ham ishlaydi (umumiy chiqish jarayoni).
+    """
+    if message.from_user is None:
+        return
+    text, kb = confirm_logout(message.from_user.id)
+    await message.answer(text, reply_markup=kb)
