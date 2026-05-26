@@ -99,41 +99,44 @@ class Tariff:
     ALL: Final[tuple[str, ...]] = (TRIAL, BRONZE, SILVER, GOLD)
 
 
-# Tarif boʻyicha limitlar (max qiymatlar)
-# V1 yangilanish: posterlar uchun erkinlik kengaytirildi
-# (foydalanuvchi: "cheklovlar koʻpayib ketmasligi kerak")
+# Tarif boʻyicha limitlar (max qiymatlar).
+#
+# MUHIM: ENGINEBOT'da PUL TIZIMI YO'Q!
+# To'lov og'zaki kelishuv asosida bo'ladi. Super admin tenant'ga
+# muddat belgilaydi (qancha kun ishlaydi). Muddat tugagach — pause.
+# `description` faqat UI'da ko'rsatish uchun.
 TARIFF_LIMITS: Final[dict[str, dict]] = {
     Tariff.TRIAL: {
+        "description": "🆓 Trial — sinov muddati",
         "max_channels": 1,
         "max_users": 50,
         "max_posts_per_day": 100,
         "max_active_posts_per_user": 5,
         "duration_days": 7,
-        "price_uzs": 0,
     },
     Tariff.BRONZE: {
+        "description": "🥉 Bronze — kichik guruh",
         "max_channels": 1,
         "max_users": 200,
         "max_posts_per_day": 200,
         "max_active_posts_per_user": 10,
         "duration_days": 30,
-        "price_uzs": 50_000,
     },
     Tariff.SILVER: {
+        "description": "🥈 Silver — o'rta guruh",
         "max_channels": 3,
         "max_users": 1000,
         "max_posts_per_day": 1000,
         "max_active_posts_per_user": 20,
         "duration_days": 30,
-        "price_uzs": 150_000,
     },
     Tariff.GOLD: {
+        "description": "🥇 Gold — katta guruh",
         "max_channels": 999,
         "max_users": 99999,
         "max_posts_per_day": 99999,
         "max_active_posts_per_user": 100,
         "duration_days": 30,
-        "price_uzs": 300_000,
     },
 }
 

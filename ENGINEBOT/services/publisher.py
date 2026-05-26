@@ -11,9 +11,10 @@ V1 yangiliklar:
 QULAY XUSUSIYATLARI:
 ────────────────────
 - Yangi e'lon → darhol kanalga (FIRST_POST_IMMEDIATE bo'lsa)
-- Telegram FloodWait — kutib qaytadan urinish
+- Telegram FloodWait — kutib qaytadan urinish (max 3 retry)
 - Kanal yo'q yoki bot admin emas → user va tenantga xabar
 - message_id DB'ga saqlanadi (rotation va o'chirish uchun)
+- refresh_post_in_channel — e'lon tahrirlanganda kanaldagi xabarni yangilash
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from aiogram.exceptions import (
@@ -29,7 +31,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
 )
 
-from config import PostStatus, Rotation
+from config import DEFAULT_TZ_OFFSET, PostStatus, Rotation
 from core import audit_log, database as db, notifier
 from core.categories import get_category_label
 from core.event_bus import Events, bus
@@ -41,6 +43,15 @@ logger = log_mod.get_logger("services.publisher")
 
 if TYPE_CHECKING:
     from aiogram import Bot
+
+
+# ─────────────────────────────────────────────────────────────────────
+# TZ cache (har chaqiruvda yangi obj yaratilmasligi uchun)
+# ─────────────────────────────────────────────────────────────────────
+_UZ_TZ = timezone(timedelta(hours=DEFAULT_TZ_OFFSET))
+
+# FloodWait retry limit — cheksiz retry qilmaslik uchun
+_MAX_FLOOD_RETRIES = 3
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -66,7 +77,11 @@ def _ensure_bot() -> "Bot":
 # ─────────────────────────────────────────────────────────────────────
 @bus.on(Events.POST_CREATED)
 async def on_post_created(data: dict) -> None:
-    """Yangi post — agar FIRST_POST_IMMEDIATE bo'lsa darhol kanalga."""
+    """Yangi post — agar FIRST_POST_IMMEDIATE bo'lsa darhol kanalga.
+
+    EventBus o'zi alohida task'da chaqiradi (fire-and-forget),
+    shuning uchun bu yerda yana create_task qilish shart emas.
+    """
     if not Rotation.FIRST_POST_IMMEDIATE:
         return  # scheduler chiqaradi
     post_id = data.get("post_id")
@@ -74,16 +89,28 @@ async def on_post_created(data: dict) -> None:
     if not post_id or not tenant_id:
         return
 
-    # Asosiy ish — alohida task'da
-    asyncio.create_task(publish_post(post_id, tenant_id, is_new=True))
+    # To'g'ridan-to'g'ri await — event_bus o'zi background'da ishlaydi
+    await publish_post(post_id, tenant_id, is_new=True)
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Asosiy publish funksiyasi
 # ─────────────────────────────────────────────────────────────────────
-async def publish_post(post_id: int, tenant_id: int, *, is_new: bool = False) -> bool:
+async def publish_post(
+    post_id: int,
+    tenant_id: int,
+    *,
+    is_new: bool = False,
+    _retry_count: int = 0,
+) -> bool:
     """
     Eʼlonni kanalga yuborish (yoki yangilash — rotation).
+
+    Args:
+        post_id      : DB'dagi e'lon ID
+        tenant_id    : tenant ID (izolyatsiya filtri uchun)
+        is_new       : True — yangi e'lon (FIRST_POST_IMMEDIATE)
+        _retry_count : ichki ishlatuvchi (FloodWait recursion limiti)
 
     Returns: True — muvaffaqiyatli, False — xato.
     """
@@ -156,11 +183,7 @@ async def publish_post(post_id: int, tenant_id: int, *, is_new: bool = False) ->
                 await bot.delete_message(channel_id, int(old_message_id))
 
         # DB yangilash
-        from datetime import datetime, timedelta, timezone
-        from config import DEFAULT_TZ_OFFSET
-        now_iso = datetime.now(
-            timezone(timedelta(hours=DEFAULT_TZ_OFFSET))
-        ).isoformat()
+        now_iso = datetime.now(_UZ_TZ).isoformat()
 
         await db.update_announcement(
             post_id, tenant_id,
@@ -204,7 +227,9 @@ async def publish_post(post_id: int, tenant_id: int, *, is_new: bool = False) ->
         return True
 
     except Exception as e:
-        return await _handle_publish_error(e, post_id, tenant_id, channel_id, is_new)
+        return await _handle_publish_error(
+            e, post_id, tenant_id, channel_id, is_new, _retry_count
+        )
 
 
 async def _send_with_photos(
@@ -241,9 +266,18 @@ async def _send_with_photos(
 
 
 async def _handle_publish_error(
-    e: Exception, post_id: int, tenant_id: int, channel_id: int, is_new: bool
+    e: Exception,
+    post_id: int,
+    tenant_id: int,
+    channel_id: int,
+    is_new: bool,
+    retry_count: int = 0,
 ) -> bool:
-    """Publish xato'larini boshqarish (FloodWait, Forbidden, va h.k.)."""
+    """Publish xato'larini boshqarish (FloodWait, Forbidden, va h.k.).
+
+    FloodWait holatida max _MAX_FLOOD_RETRIES marta urinib ko'radi —
+    cheksiz recursion oldini olish uchun.
+    """
     from aiogram.exceptions import (
         TelegramBadRequest,
         TelegramForbiddenError,
@@ -251,10 +285,26 @@ async def _handle_publish_error(
     )
 
     if isinstance(e, TelegramRetryAfter):
+        if retry_count >= _MAX_FLOOD_RETRIES:
+            logger.error(
+                f"FloodWait max retries ({_MAX_FLOOD_RETRIES}) reached for post #{post_id}"
+            )
+            await audit_log.log_system_event(
+                action="post_publish_failed",
+                tenant_id=tenant_id, target_id=post_id, level="error",
+                reason="flood_wait_max_retries",
+            )
+            return False
+
         wait = int(getattr(e, "retry_after", 30)) + 1
-        logger.warning(f"FloodWait {wait}s for post #{post_id}, retrying...")
+        logger.warning(
+            f"FloodWait {wait}s for post #{post_id}, "
+            f"retry {retry_count + 1}/{_MAX_FLOOD_RETRIES}..."
+        )
         await asyncio.sleep(wait)
-        return await publish_post(post_id, tenant_id, is_new=is_new)
+        return await publish_post(
+            post_id, tenant_id, is_new=is_new, _retry_count=retry_count + 1
+        )
 
     if isinstance(e, TelegramForbiddenError):
         logger.error(f"forbidden #{post_id}: {e}")
@@ -314,3 +364,40 @@ async def remove_post_from_channel(post_id: int, tenant_id: int) -> bool:
         post_id, tenant_id, status=PostStatus.DELETED, message_id=None
     )
     return True
+
+
+# ─────────────────────────────────────────────────────────────────────
+# E'lonni kanaldagi xabarni yangilash (post tahrirlanganda)
+# ─────────────────────────────────────────────────────────────────────
+async def refresh_post_in_channel(post_id: int, tenant_id: int) -> bool:
+    """
+    Tahrirlangan e'lonni kanalda yangilash.
+
+    Strategiya:
+    1. Eski xabar bor bo'lsa — uni o'chirib, yangisini yuborish
+       (Telegram media_group'da edit_message_caption ishlamaydi —
+       shuning uchun delete + send eng ishonchli yo'l).
+    2. Status ACTIVE bo'lmagan post — yangilanmaydi.
+    3. Yangi message_id DB'ga saqlanadi.
+
+    Returns: True — yangilandi, False — xato yoki status mos emas.
+    """
+    bot = _ensure_bot()
+    post = await db.get_announcement(post_id, tenant_id=tenant_id)
+    if not post:
+        return False
+
+    # Faqat aktiv yoki paused post'larni yangilaymiz
+    if post.get("status") not in (PostStatus.ACTIVE, PostStatus.PAUSED):
+        return False
+
+    channel_id = int(post["channel_id"])
+    old_message_id = post.get("message_id")
+
+    # Eski xabarni o'chirish
+    if old_message_id:
+        with contextlib.suppress(TelegramAPIError):
+            await bot.delete_message(channel_id, int(old_message_id))
+
+    # Yangisini yuborish (publish_post is_new=False — yangilangan deb belgilash)
+    return await publish_post(post_id, tenant_id, is_new=False)

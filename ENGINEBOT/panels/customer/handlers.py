@@ -503,62 +503,18 @@ async def _send_post_card(message: Message, post: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 5. Profil
+# 5. Profil — UMUMIY HANDLER'GA KO'CHIRILGAN
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text == Btn.MY_PROFILE)
-async def show_profile(message: Message) -> None:
-    if message.from_user is None:
-        return
-    state = await session.get(message.from_user.id)
-    tenant_id = state.tenant_id
-    if not tenant_id:
-        await message.answer("Avval guruh tanlang. /start")
-        return
+# `Btn.MY_PROFILE` tugmasi uchun handler endi
+# `panels/common_handlers.py` faylida (poster va customer uchun yagona).
 
-    user = await db.get_user(tenant_id, message.from_user.id)
-    if not user:
-        await message.answer("Profilingiz hali yaratilmagan. /start")
-        return
-
-    text = fmt.format_user_card(user)
-    if user.get("region"):
-        text += f"\n🌍 Viloyat: {fmt.esc(user['region'])}"
-    await message.answer(text)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 6. Logout
+# 6. Logout — UMUMIY HANDLER'GA KO'CHIRILGAN
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text == Btn.LOGOUT)
-async def cmd_logout(message: Message) -> None:
-    if message.from_user is None:
-        return
-    text, kb = confirm_logout(message.from_user.id)
-    await message.answer(text, reply_markup=kb)
-
-
-@router.callback_query(F.data.startswith("confirm:yes:logout:"))
-async def confirm_logout_yes(query: CallbackQuery) -> None:
-    if query.from_user is None:
-        return
-    await session.remove(query.from_user.id)
-    await audit_log.log_action(
-        actor_role="user", actor_id=query.from_user.id,
-        action="user_logged_out",
-    )
-    if query.message:
-        await query.message.answer(
-            "🚪 Tizimdan chiqdingiz. Qaytadan kirish: /start",
-            reply_markup=user_kb.role_selection_menu(),
-        )
-    await query.answer("Chiqdingiz.", show_alert=True)
-
-
-@router.callback_query(F.data.startswith("confirm:no:logout:"))
-async def confirm_logout_no(query: CallbackQuery) -> None:
-    if query.message:
-        await query.message.answer("✅ Bekor qilindi.")
-    await query.answer()
+# `Btn.LOGOUT` tugmasi va `confirm:yes/no:logout:*` callback'lari endi
+# `panels/common_handlers.py` faylida.
 
 
 

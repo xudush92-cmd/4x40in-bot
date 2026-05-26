@@ -121,11 +121,20 @@ class SessionStore:
         self._states[uid] = s
         return s
 
-    async def reset(self, uid: int) -> None:
-        """Userning state'ini tozalash."""
+    async def reset(self, uid: int, *, keep_tenant: bool = False) -> None:
+        """
+        Userning state'ini tozalash.
+
+        keep_tenant=True boʻlsa — tenant_id saqlanadi (foydalanuvchining
+        tanlangan guruh kontekstidan chiqib ketmasligi uchun).
+        """
         s = self._states.get(uid)
         if s:
+            saved_tenant = s.tenant_id if keep_tenant else None
             s.reset()
+            if saved_tenant is not None:
+                s.tenant_id = saved_tenant
+                s.touch()
         # Ehtiyojidan kelib chiqib, lock'ni saqlab qolamiz
 
     async def remove(self, uid: int) -> None:
