@@ -66,9 +66,9 @@ async def register_tenant(
     if existing is not None:
         return existing
 
-    tariff = Tariff.TRIAL if auto_trial else Tariff.TRIAL
+    # ENGINEBOT'da pul tizimi yo'q — yangi tenant doim TRIAL bilan boshlanadi
     tenant = await db.create_tenant(
-        tenant_id, name=name, username=username, tariff=tariff
+        tenant_id, name=name, username=username, tariff=Tariff.TRIAL
     )
 
     if auto_trial:
@@ -82,7 +82,7 @@ async def register_tenant(
         tenant_id=tenant_id,
         target_type="tenant",
         target_id=tenant_id,
-        details={"name": name, "username": username, "tariff": tariff},
+        details={"name": name, "username": username, "tariff": Tariff.TRIAL},
     )
     await bus.emit(Events.TENANT_CREATED, {"tenant_id": tenant_id, "name": name})
 
@@ -180,6 +180,73 @@ async def receive_payment(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Muddat uzaytirish (PULSIZ model — og'zaki kelishuv asosida)
+# ─────────────────────────────────────────────────────────────────────
+async def extend_subscription(
+    tenant_id: int,
+    tariff: str,
+    period_days: int,
+    approved_by: int,
+    note: str = "",
+) -> int:
+    """
+    Tenant tarif/muddatini uzaytirish — PULSIZ.
+
+    ENGINEBOT'da pul tizimi yo'q. Super admin og'zaki kelishuv asosida
+    "tarif tanlash + qancha kun" deydi va shu funksiya chaqiriladi.
+
+    `payments` jadvaliga yozadi (amount_uzs=0) — bu tarix uchun.
+    `tenants.paid_until` uzayadi (mavjud muddatga qo'shiladi yoki bugundan).
+
+    Returns: payment_id (tarix yozuvi ID)
+    """
+    if tariff not in Tariff.ALL:
+        raise ValueError(f"Nomaʼlum tarif: {tariff}")
+    if period_days < 1:
+        raise ValueError(f"Muddat 1 kundan kam bo'lmasin: {period_days}")
+
+    payment_id = await db.add_payment(
+        tenant_id=tenant_id,
+        amount_uzs=0,  # PULSIZ model
+        tariff=tariff,
+        period_days=period_days,
+        approved_by=approved_by,
+        note=note or "Og'zaki kelishuv asosida",
+    )
+
+    tenant = await db.get_tenant(tenant_id)
+    paid_until = (tenant or {}).get("paid_until", "")[:10]
+
+    await notifier.notify_tenant_approved(tenant_id, tariff, paid_until)
+    await audit_log.log_action(
+        actor_role="super_admin",
+        actor_id=approved_by,
+        action="subscription_extended",
+        tenant_id=tenant_id,
+        target_type="tenant",
+        target_id=tenant_id,
+        details={
+            "tariff": tariff,
+            "period_days": period_days,
+            "payment_id": payment_id,
+        },
+    )
+    await bus.emit(
+        Events.TENANT_PAYMENT_RECEIVED,
+        {
+            "tenant_id": tenant_id,
+            "tariff": tariff,
+            "period_days": period_days,
+        },
+    )
+    logger.info(
+        f"subscription extended: tenant={tenant_id} "
+        f"tariff={tariff} period={period_days}d"
+    )
+    return payment_id
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Bloklash va qayta tiklash
 # ─────────────────────────────────────────────────────────────────────
 async def block_tenant(
@@ -243,9 +310,9 @@ async def unblock_tenant(tenant_id: int, unblocked_by: int) -> None:
     )
 
 
-async def pause_tenant(tenant_id: int, reason: str = "Toʻlov muddati tugadi") -> None:
+async def pause_tenant(tenant_id: int, reason: str = "Muddat tugadi") -> None:
     """
-    Tenantni pause holatiga qoʻyish (toʻlov muddati tugaganda).
+    Tenantni pause holatiga qoʻyish (muddat tugaganda).
 
     Mavjud eʼlonlar saqlanadi, lekin yangilari qabul qilinmaydi va
     aylanish toʻxtaydi.
@@ -339,7 +406,7 @@ async def enforce_billing(tenant: dict) -> bool:
 
     if status_info["status"] == "overdue":
         if current_status != TenantStatus.PAUSED:
-            await pause_tenant(tenant_id, reason="Toʻlov muddati tugadi")
+            await pause_tenant(tenant_id, reason="Muddat tugadi")
             return True
         return False
 

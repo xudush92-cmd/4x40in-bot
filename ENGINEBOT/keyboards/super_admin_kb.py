@@ -12,9 +12,9 @@ def super_admin_main_menu():
     Super admin asosiy menyusi.
 
     👥 Tenantlar         📊 Global statistika
-    💰 To'lovlar         📨 Broadcast
+    📜 Muddat tarixi     📨 Broadcast
     📜 Global log        🛠 Tizim
-    ℹ️ Yordam            🏠 Bosh menyu
+    ℹ️ Yordam
     """
     return make_reply([
         [Btn.ALL_TENANTS, Btn.GLOBAL_STATS],
@@ -44,16 +44,15 @@ def tenants_filter():
 
 
 def tenant_actions(tenant_id: int, status: str = "active"):
-    """Bitta tenant ustida amallar."""
+    """Bitta tenant ustida amallar (PULSIZ model)."""
     items: list[tuple[str, str]] = [
         ("📊 Statistika", f"super:tenant:stats:{tenant_id}"),
         ("👥 Foydalanuvchilar", f"super:tenant:users:{tenant_id}"),
-        ("💰 Toʻlov tarixi", f"super:tenant:payments:{tenant_id}"),
+        ("📜 Muddat tarixi", f"super:tenant:payments:{tenant_id}"),
         ("📜 Audit log", f"super:tenant:audit:{tenant_id}"),
         ("📨 Xabar yuborish", f"super:tenant:message:{tenant_id}"),
     ]
-    items.append(("💳 Yangi toʻlov", f"super:tenant:add_payment:{tenant_id}"))
-    items.append(("📅 Muddat uzaytirish", f"super:tenant:extend:{tenant_id}"))
+    items.append(("📅 Tarif/muddat belgilash", f"super:tenant:extend:{tenant_id}"))
 
     if status == "pending":
         items.insert(0, ("✅ Tasdiqlash", f"super:tenant:approve:{tenant_id}"))
@@ -78,11 +77,17 @@ def tenant_actions(tenant_id: int, status: str = "active"):
 # Tarif tanlash (to'lov qabul qilish uchun)
 # ─────────────────────────────────────────────────────────────────────
 def tariff_picker(tenant_id: int):
+    """
+    Tarif tanlash — PULSIZ model.
+
+    Har tarif faqat cheklovlar bilan farqlanadi (kanal soni, user soni).
+    Pul kiritilmaydi — super admin og'zaki kelishuv asosida tarif beradi.
+    """
     items = [
-        ("🥉 Bronze (50,000 soʻm)", f"super:payment:tariff:{tenant_id}:bronze"),
-        ("🥈 Silver (150,000 soʻm)", f"super:payment:tariff:{tenant_id}:silver"),
-        ("🥇 Gold (300,000 soʻm)", f"super:payment:tariff:{tenant_id}:gold"),
-        ("🆓 Trial (uzaytirish)", f"super:payment:tariff:{tenant_id}:trial"),
+        ("🆓 Trial (sinov muddati)", f"super:payment:tariff:{tenant_id}:trial"),
+        ("🥉 Bronze (kichik guruh)", f"super:payment:tariff:{tenant_id}:bronze"),
+        ("🥈 Silver (o'rta guruh)", f"super:payment:tariff:{tenant_id}:silver"),
+        ("🥇 Gold (katta guruh)", f"super:payment:tariff:{tenant_id}:gold"),
     ]
     return inline_grid(
         items,
@@ -95,11 +100,15 @@ def tariff_picker(tenant_id: int):
 # Pending tenant tasdiqlash (notification ostida)
 # ─────────────────────────────────────────────────────────────────────
 def approve_tenant_inline(tenant_id: int):
-    """Yangi tenant tasdiqlash inline tugmalari."""
+    """Yangi tenant tasdiqlash inline tugmalari (PULSIZ model).
+
+    Trial — eng tezkor (default 7 kun).
+    Tarif berish — muddat tanlash bilan (og'zaki kelishuv).
+    """
     return inline_grid(
         [
             ("✅ Trial bilan aktivlashtirish", f"super:tenant:approve_trial:{tenant_id}"),
-            ("💰 Pulli aktivlashtirish", f"super:tenant:add_payment:{tenant_id}"),
+            ("📦 Tarif belgilash", f"super:tenant:add_payment:{tenant_id}"),
             ("❌ Rad etish", f"super:tenant:reject:{tenant_id}"),
         ],
         columns=1,

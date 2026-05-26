@@ -50,7 +50,7 @@ from utils.confirmation import (
     parse_confirmation,
 )
 from utils.session_state import session
-from utils.validators import validate_amount_uzs, validate_reason
+from utils.validators import validate_reason
 
 logger = log_mod.get_logger("panels.super_admin")
 router = Router(name="super_admin")
@@ -88,7 +88,6 @@ async def show_global_stats(message: Message) -> None:
             "Aktiv tenantlar": f"🟢 {stats['tenants_active']} ta",
             "Foydalanuvchilar": f"{stats['users_total']} ta",
             "Aktiv e'lonlar": f"📝 {stats['posts_active']} ta",
-            "Jami daromad": fmt.format_uzs(stats["total_revenue_uzs"]),
         },
     )
     await message.answer(text)
@@ -223,13 +222,14 @@ async def approve_tenant_trial(query: CallbackQuery) -> None:
 # ─────────────────────────────────────────────────────────────────────
 @router.callback_query(F.data.startswith("super:tenant:add_payment:"))
 async def start_add_payment(query: CallbackQuery) -> None:
+    """Yangi tenant tasdiqlash yoki muddat uzaytirish — tarif tanlash."""
     if query.from_user.id != SUPER_ADMIN_ID or not query.data:
         return await query.answer("🚫 Ruxsat yo'q.", show_alert=True)
 
     tenant_id = int(query.data.rsplit(":", 1)[1])
     if query.message:
         await query.message.answer(
-            f"💰 <b>Yangi to'lov</b>\n\n"
+            f"📅 <b>Tarif va muddat belgilash</b>\n\n"
             f"Tenant: <code>#{tenant_id}</code>\n\n"
             "Tarifni tanlang:",
             reply_markup=super_admin_kb.tariff_picker(tenant_id),
@@ -237,8 +237,19 @@ async def start_add_payment(query: CallbackQuery) -> None:
     await query.answer()
 
 
+@router.callback_query(F.data.startswith("super:tenant:extend:"))
+async def start_extend_subscription(query: CallbackQuery) -> None:
+    """'Muddat uzaytirish' tugmasi — add_payment bilan bir xil flow."""
+    await start_add_payment(query)
+
+
 @router.callback_query(F.data.startswith("super:payment:tariff:"))
 async def select_tariff(query: CallbackQuery) -> None:
+    """Tarif tanlandi — endi muddat (kun) so'raymiz.
+
+    PULSIZ MODEL: og'zaki kelishuv asosida super admin tarif va
+    muddatni o'zi belgilaydi. Pul kiritish flow'i olib tashlandi.
+    """
     if query.from_user.id != SUPER_ADMIN_ID or not query.data:
         return await query.answer("🚫 Ruxsat yo'q.", show_alert=True)
 
@@ -253,28 +264,29 @@ async def select_tariff(query: CallbackQuery) -> None:
         return
 
     limits = TARIFF_LIMITS[tariff]
-    default_amount = limits["price_uzs"]
-    period_days = limits["duration_days"]
+    default_days = limits["duration_days"]
+    description = limits.get("description", tariff.upper())
 
-    # Session'ga saqlaymiz, foydalanuvchi summa kiritsin
+    # Session'ga saqlaymiz — keyin kun kiritsin yoki default'ni tanlasin
     await session.update(
         query.from_user.id,
-        step="super:awaiting_payment_amount",
+        step="super:awaiting_period_days",
         data={
             "tenant_id": tenant_id,
             "tariff": tariff,
-            "period_days": period_days,
-            "default_amount": default_amount,
+            "default_days": default_days,
         },
     )
 
     text = (
-        f"💰 <b>To'lov miqdori</b>\n\n"
-        f"Tarif: <b>{tariff.upper()}</b>\n"
-        f"Standart narx: {fmt.format_uzs(default_amount)}\n"
-        f"Muddat: {period_days} kun\n\n"
-        "Iltimos, to'langan summani so'mda kiriting:\n"
-        f"(yoki standart qiymat uchun: <code>{default_amount}</code>)"
+        f"📅 <b>Muddat belgilash</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏢 Tenant: <code>#{tenant_id}</code>\n"
+        f"📦 Tarif: {description}\n"
+        f"📅 Default muddat: {default_days} kun\n\n"
+        f"Necha kunga aktivlashtirish kerak?\n"
+        f"Raqamni kiriting (masalan: <code>{default_days}</code>)\n\n"
+        f"<i>ENGINEBOT'da pul tizimi yo'q — bu og'zaki kelishuv asosidagi muddat.</i>"
     )
     if query.message:
         await query.message.answer(text)
@@ -282,51 +294,54 @@ async def select_tariff(query: CallbackQuery) -> None:
 
 
 @router.message(F.text.regexp(r"^\d+$"))
-async def receive_payment_amount(message: Message) -> None:
+async def receive_period_days(message: Message) -> None:
+    """Super admin muddat (kun) kiritdi — tasdiqlash so'raymiz."""
     if message.from_user is None or message.from_user.id != SUPER_ADMIN_ID:
         return
 
     state = await session.get(message.from_user.id)
-    if state.step != "super:awaiting_payment_amount":
-        return  # boshqa flow — tegma
+    if state.step != "super:awaiting_period_days":
+        return  # boshqa flow
 
-    ok, normalized, err = validate_amount_uzs(message.text or "")
-    if not ok:
-        await message.answer(err)
+    try:
+        days = int((message.text or "").strip())
+    except ValueError:
+        await message.answer("❌ Raqam kiriting (masalan: 30)")
         return
 
-    amount = int(normalized)
+    if days < 1 or days > 3650:
+        await message.answer("❌ 1 dan 3650 kun oralig'ida bo'lsin.")
+        return
+
     data = state.data
     tenant_id = int(data["tenant_id"])
     tariff = str(data["tariff"])
-    period_days = int(data["period_days"])
+    description = TARIFF_LIMITS.get(tariff, {}).get("description", tariff.upper())
 
-    # Tasdiqlash so'raymiz
     text, kb = build_confirmation(
-        action_id=f"super:confirm_payment:{tenant_id}",
-        title="To'lovni qabul qilish",
-        question=f"Tenant <code>#{tenant_id}</code> uchun to'lov:",
+        action_id=f"super:confirm_extend:{tenant_id}",
+        title="Muddat uzaytirish",
+        question=f"Tenant <code>#{tenant_id}</code> uchun:",
         details=[
-            f"📦 Tarif: <b>{tariff.upper()}</b>",
-            f"💰 Miqdor: {fmt.format_uzs(amount)}",
-            f"📅 Muddat: {period_days} kun",
+            f"📦 Tarif: {description}",
+            f"📅 Muddat: <b>{days} kun</b>",
         ],
         warning="✅ Tasdiqlasangiz tenant darhol aktivlashadi.",
     )
-    # Saqlab qo'yamiz
-    state.data["amount_uzs"] = amount
-    state.step = "super:confirm_payment_pending"
+    state.data["period_days"] = days
+    state.step = "super:confirm_extend_pending"
     await session.set(message.from_user.id, state)
     await message.answer(text, reply_markup=kb)
 
 
-@router.callback_query(F.data.startswith("confirm:yes:super:confirm_payment:"))
-async def confirm_payment_yes(query: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("confirm:yes:super:confirm_extend:"))
+async def confirm_extend_yes(query: CallbackQuery) -> None:
+    """Muddat uzaytirish tasdiqlandi — extend_subscription chaqirish."""
     if query.from_user.id != SUPER_ADMIN_ID or not query.data:
         return await query.answer("🚫", show_alert=True)
 
     state = await session.get(query.from_user.id)
-    if state.step != "super:confirm_payment_pending":
+    if state.step != "super:confirm_extend_pending":
         await query.answer("Sessiya muddati o'tib ketdi.", show_alert=True)
         return
 
@@ -334,39 +349,52 @@ async def confirm_payment_yes(query: CallbackQuery) -> None:
     tenant_id = int(data["tenant_id"])
     tariff = str(data["tariff"])
     period_days = int(data["period_days"])
-    amount = int(data["amount_uzs"])
 
-    payment_id = await tenant_manager.receive_payment(
+    payment_id = await tenant_manager.extend_subscription(
         tenant_id=tenant_id,
         tariff=tariff,
-        amount_uzs=amount,
         period_days=period_days,
         approved_by=query.from_user.id,
-        note="Manually approved by super admin",
+        note="Og'zaki kelishuv asosida — super admin tomonidan",
     )
 
     await session.reset(query.from_user.id)
 
     if query.message:
         await query.message.answer(
-            f"✅ To'lov qabul qilindi!\n\n"
-            f"📋 Payment ID: #{payment_id}\n"
+            f"✅ Muddat uzaytirildi!\n\n"
+            f"📋 Yozuv ID: #{payment_id}\n"
             f"🏢 Tenant: #{tenant_id}\n"
-            f"💰 {fmt.format_uzs(amount)}\n"
             f"📦 {tariff.upper()}\n"
             f"📅 {period_days} kun"
         )
     await query.answer("✅ Tasdiqlandi", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("confirm:no:super:confirm_payment:"))
-async def confirm_payment_no(query: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("confirm:no:super:confirm_extend:"))
+async def confirm_extend_no(query: CallbackQuery) -> None:
+    """Muddat uzaytirish bekor qilindi."""
     if query.from_user.id != SUPER_ADMIN_ID:
         return
     await session.reset(query.from_user.id)
     if query.message:
-        await query.message.answer("❌ To'lov bekor qilindi.")
+        await query.message.answer("❌ Bekor qilindi.")
     await query.answer()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Eski to'lov tasdiqlash callback'lari (backward compat)
+# ─────────────────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("confirm:yes:super:confirm_payment:"))
+async def confirm_payment_yes(query: CallbackQuery) -> None:
+    """Eski to'lov tasdiqlash — endi extend bilan bir xil."""
+    await confirm_extend_yes(query)
+
+
+@router.callback_query(F.data.startswith("confirm:no:super:confirm_payment:"))
+async def confirm_payment_no(query: CallbackQuery) -> None:
+    """Eski bekor qilish — endi extend no bilan bir xil."""
+    await confirm_extend_no(query)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -473,7 +501,6 @@ async def system_status(query: CallbackQuery) -> None:
             "Aktiv": stats["tenants_active"],
             "Userlar": stats["users_total"],
             "Aktiv eʼlonlar": stats["posts_active"],
-            "Daromad": fmt.format_uzs(stats["total_revenue_uzs"]),
         },
     )
     if query.message:

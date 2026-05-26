@@ -276,8 +276,7 @@ def format_tenant_card(tenant: Mapping[str, Any], stats: Mapping[str, Any] | Non
     if tenant.get("paid_until"):
         lines.append(f"📅 Muddat: {format_date(tenant['paid_until'])}")
 
-    if tenant.get("total_paid_uzs"):
-        lines.append(f"💰 Jami toʻlagan: {format_uzs(tenant['total_paid_uzs'])}")
+    # PULSIZ model — total_paid_uzs ko'rsatilmaydi (faqat audit/tarix uchun bor).
 
     if tenant.get("blocked_reason"):
         lines.append(f"🚫 Block sababi: {esc(tenant['blocked_reason'])}")

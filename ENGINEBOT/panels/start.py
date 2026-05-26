@@ -254,12 +254,10 @@ async def cmd_cancel(message: Message) -> None:
     if message.from_user is None:
         return
 
-    # Session reset (lekin tenant_id'ni saqlaymiz)
+    # Session reset (lekin tenant_id'ni saqlaymiz — keep_tenant=True)
     state = await session.get(message.from_user.id)
     tenant_id = state.tenant_id
-    await session.reset(message.from_user.id)
-    if tenant_id:
-        await session.update(message.from_user.id, tenant_id=tenant_id)
+    await session.reset(message.from_user.id, keep_tenant=True)
 
     # Bosh menyuga qaytaramiz
     name = message.from_user.full_name or "doʻst"

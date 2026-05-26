@@ -30,7 +30,7 @@ from utils import formatters as fmt
 from utils import logger as log_mod
 from utils.confirmation import build_confirmation
 from utils.session_state import session
-from utils.validators import validate_channel, validate_interval, validate_reason
+from utils.validators import validate_channel, validate_interval, validate_phone, validate_reason
 
 logger = log_mod.get_logger("panels.tenant")
 router = Router(name="tenant")
@@ -160,7 +160,20 @@ async def toggle_setting(query: CallbackQuery) -> None:
     await audit_log.log_tenant_event(
         ctx, action=action_log, tenant_id=ctx.user_id, new_value=new_val
     )
-    await query.answer(f"✅ {'🟢 ON' if new_val else '🔴 OFF'}", show_alert=True)
+
+    # Panel'ni yangilash — yangi holat bilan KB qayta chizish
+    new_settings = await db.get_settings(ctx.user_id)
+    new_kb = tenant_kb.settings_panel(
+        bot_active=bool(new_settings["bot_active"]),
+        post_intake_active=bool(new_settings["post_intake_active"]),
+        require_approval=bool(new_settings.get("require_approval", True)),
+        min_interval_min=int(new_settings["rotation_interval_min"]),
+    )
+    if query.message:
+        with contextlib.suppress(Exception):
+            await query.message.edit_reply_markup(reply_markup=new_kb)
+
+    await query.answer(f"✅ {'🟢 ON' if new_val else '🔴 OFF'}", show_alert=False)
 
 
 @router.callback_query(F.data == "tenant:set_min_interval")
@@ -620,6 +633,48 @@ async def tenant_text_router(message: Message) -> None:
             f"⚠️ Ogohlantirish berildi.\n"
             f"User #{target_uid} | {warns}/{Limits.MAX_WARNINGS_BEFORE_BLOCK}"
         )
+        return
+
+    # 4) Profile edit (name / phone / description)
+    if state.step.startswith("tenant:edit_profile:"):
+        field = state.step.rsplit(":", 1)[1]
+        if not text:
+            await message.answer("❌ Bo'sh kiritish ruxsat etilmaydi.")
+            return
+
+        if field == "name":
+            if len(text) > 100:
+                await message.answer("❌ Ism juda uzun (max 100 belgi).")
+                return
+            await db.update_tenant(ctx.user_id, name=text)
+            msg = f"✅ Ism yangilandi: <b>{fmt.esc(text)}</b>"
+
+        elif field == "phone":
+            ok, phone, err = validate_phone(text)
+            if not ok:
+                await message.answer(err)
+                return
+            await db.update_tenant(ctx.user_id, phone=phone)
+            msg = f"✅ Telefon yangilandi: <code>{fmt.esc(phone)}</code>"
+
+        elif field == "description":
+            if len(text) > 500:
+                await message.answer("❌ Tavsif juda uzun (max 500 belgi).")
+                return
+            await db.update_tenant(ctx.user_id, description=text)
+            msg = "✅ Tavsif yangilandi."
+
+        else:
+            await message.answer("❌ Nomaʼlum maydon.")
+            return
+
+        await audit_log.log_action(
+            actor=ctx,
+            action="tenant_profile_updated",
+            details={"field": field},
+        )
+        await session.reset(message.from_user.id, keep_tenant=True)
+        await message.answer(msg, reply_markup=tenant_kb.tenant_main_menu())
         return
 
 
@@ -1302,7 +1357,6 @@ async def show_tenant_profile(message: Message) -> None:
     description = tenant.get("description") or "—"
     paid_until = (tenant.get("paid_until") or "")[:10] or "—"
     tariff = tenant.get("tariff", "?").upper()
-    total_paid = int(tenant.get("total_paid_uzs", 0) or 0)
 
     text = (
         f"👤 <b>Sizning profilingiz</b>\n"
@@ -1312,8 +1366,7 @@ async def show_tenant_profile(message: Message) -> None:
         f"📱 Telefon: <code>{fmt.esc(phone)}</code>\n"
         f"📝 Tavsif: {fmt.esc(description)}\n\n"
         f"📦 Tarif: <b>{tariff}</b>\n"
-        f"📅 Muddat: {paid_until}\n"
-        f"💰 Jami to'langan: {total_paid:,} so'm\n\n"
+        f"📅 Muddat: {paid_until}\n\n"
         f"<i>Quyida ma'lumotlarni tahrirlashingiz mumkin:</i>"
     )
     await message.answer(text, reply_markup=tenant_kb.profile_edit_panel())
@@ -1363,61 +1416,6 @@ async def profile_back_cb(query: CallbackQuery) -> None:
             await query.message.delete()
 
 
-# tenant_text_router'ga edit_profile step'i tushadi.
-# Filter: state.step.startswith("tenant:") — ishlaydi.
-# Ammo asl tenant_text_router edit_profile branchini bilmaydi —
-# qo'shamiz quyidagi alohida handler'da:
-@router.message(F.text)
-async def tenant_profile_edit_handler(message: Message) -> None:
-    """Tenant profile maydonini saqlash."""
-    if message.from_user is None:
-        return
-    state = await session.get(message.from_user.id)
-    if not state.step.startswith("tenant:edit_profile:"):
-        return
-
-    field = state.step.rsplit(":", 1)[1]
-    text = (message.text or "").strip()
-
-    if not text:
-        await message.answer("❌ Bo'sh kiritish ruxsat etilmaydi.")
-        return
-
-    ctx = await resolve_role(message.from_user.id)
-    if ctx.role != Role.TENANT:
-        return
-
-    if field == "name":
-        if len(text) > 100:
-            await message.answer("❌ Ism juda uzun (max 100 belgi).")
-            return
-        await db.update_tenant(ctx.user_id, name=text)
-        msg = f"✅ Ism yangilandi: <b>{fmt.esc(text)}</b>"
-
-    elif field == "phone":
-        from utils.validators import validate_phone
-        ok, phone, err = validate_phone(text)
-        if not ok:
-            await message.answer(err)
-            return
-        await db.update_tenant(ctx.user_id, phone=phone)
-        msg = f"✅ Telefon yangilandi: <code>{fmt.esc(phone)}</code>"
-
-    elif field == "description":
-        if len(text) > 500:
-            await message.answer("❌ Tavsif juda uzun (max 500 belgi).")
-            return
-        await db.update_tenant(ctx.user_id, description=text)
-        msg = f"✅ Tavsif yangilandi."
-
-    else:
-        await message.answer("❌ Nomaʼlum maydon.")
-        return
-
-    await audit_log.log_action(
-        actor=ctx,
-        action="tenant_profile_updated",
-        details={"field": field},
-    )
-    await session.reset(message.from_user.id)
-    await message.answer(msg, reply_markup=tenant_kb.tenant_main_menu())
+# tenant_text_router edit_profile step'ini ham qayta ishlaydi (yuqorida).
+# Alohida F.text handler — bu router'da KO'P EMAS — duplicate handler
+# muammosini oldini olamiz.
