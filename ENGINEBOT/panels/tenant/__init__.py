@@ -1,0 +1,1 @@
+"""Tenant (guruh egasi) paneli."""
