@@ -113,7 +113,7 @@ def _register_routers() -> None:
 # ─────────────────────────────────────────────────────────────────────
 async def _start_services(stop_event: asyncio.Event) -> list[asyncio.Task]:
     """Background tasklarni ishga tushirish."""
-    from services import publisher, scheduler, cleaner, billing_checker
+    from services import publisher, scheduler, cleaner, billing_checker, notifier_service
     from utils.session_state import session
 
     publisher.set_bot(bot)
@@ -124,6 +124,11 @@ async def _start_services(stop_event: asyncio.Event) -> list[asyncio.Task]:
     tasks.append(asyncio.create_task(cleaner.start_cleaner(), name="cleaner"))
     tasks.append(
         asyncio.create_task(billing_checker.start_billing_checker(), name="billing")
+    )
+    tasks.append(
+        asyncio.create_task(
+            notifier_service.start_notifier_service(), name="notifier"
+        )
     )
 
     logger.info(f"🛠 {len(tasks)} ta background servis ishga tushdi")

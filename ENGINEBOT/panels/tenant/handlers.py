@@ -75,7 +75,8 @@ async def i_am_tenant(message: Message) -> None:
     # Super adminga xabar
     from config import SUPER_ADMIN_ID
     from keyboards.super_admin_kb import approve_tenant_inline
-    with contextlib.suppress(Exception):
+    from aiogram.exceptions import TelegramAPIError
+    with contextlib.suppress(TelegramAPIError):
         from main import bot
         username_str = ('@' + fmt.esc(username)) if username else 'username yoʻq'
         await bot.send_message(
@@ -230,6 +231,14 @@ async def show_channels(message: Message) -> None:
 async def start_add_channel(message: Message) -> None:
     if message.from_user is None:
         return
+
+    # Rate limiter — kanal qo'shish (modify action)
+    from core.rate_limiter import limiter, get_block_message
+    if not limiter.is_allowed(message.from_user.id, "modify"):
+        msg = get_block_message(message.from_user.id, "modify")
+        if msg:
+            await message.answer(msg)
+        return
     ctx = await _ensure_tenant(message.from_user.id)
 
     # Tarif limit tekshirish
@@ -248,11 +257,12 @@ async def start_add_channel(message: Message) -> None:
     await message.answer(
         "➕ <b>Kanal ulash</b>\n\n"
         "1️⃣ Avval botni o'z kanalingizga <b>admin</b> qilib qo'shing\n"
-        "2️⃣ Keyin kanal ID yoki @username ni shu yerga yuboring\n\n"
+        "2️⃣ Keyin kanal @username yoki ID ni shu yerga yuboring\n\n"
         "Misol:\n"
         "<code>@toshkent_xizmatlar</code>\n"
         "yoki\n"
-        "<code>-1001234567890</code>"
+        "<code>-1001234567890</code>\n\n"
+        "<i>Bot get_chat() orqali kanalni avtomatik aniqlaydi.</i>"
     )
 
 
@@ -442,7 +452,15 @@ async def show_audit(message: Message) -> None:
 # ─────────────────────────────────────────────────────────────────────
 # Matn handlerlari (state'ga qarab)
 # ─────────────────────────────────────────────────────────────────────
-@router.message(F.text)
+async def _in_tenant_flow(message: Message) -> bool:
+    """Filter: faqat tenant flow state'ida ishlaydi."""
+    if message.from_user is None:
+        return False
+    state = await session.get(message.from_user.id)
+    return state.step.startswith("tenant:")
+
+
+@router.message(F.text, _in_tenant_flow)
 async def tenant_text_router(message: Message) -> None:
     if message.from_user is None:
         return
@@ -460,22 +478,62 @@ async def tenant_text_router(message: Message) -> None:
         if not ok:
             await message.answer(err)
             return
-        try:
-            channel_id = int(normalized) if normalized.lstrip("-").isdigit() else 0
-        except ValueError:
-            channel_id = 0
+
+        # Channel ID aniqlash: numeric yoki @username
+        channel_id = 0
+        channel_username = ""
+        channel_title = ""
+
+        if normalized.lstrip("-").isdigit():
+            # Numeric ID
+            try:
+                channel_id = int(normalized)
+            except ValueError:
+                channel_id = 0
+        elif normalized.startswith("@"):
+            # @username — bot.get_chat() orqali aniqlash
+            try:
+                from main import bot
+                from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+                try:
+                    chat = await bot.get_chat(normalized)
+                    channel_id = int(chat.id)
+                    channel_username = normalized
+                    channel_title = chat.title or ""
+                except TelegramForbiddenError:
+                    await message.answer(
+                        "🚫 <b>Bot kanal admini emas.</b>\n\n"
+                        "Iltimos:\n"
+                        "1️⃣ Botni kanalingizga admin qilib qoʻshing\n"
+                        "2️⃣ Keyin qaytadan urinib koʻring"
+                    )
+                    return
+                except TelegramBadRequest as e:
+                    await message.answer(
+                        f"❌ Kanal topilmadi yoki ID notoʻgʻri.\n\n"
+                        f"Sababi: {fmt.esc(str(e))}\n\n"
+                        f"Tekshiring: <code>{fmt.esc(normalized)}</code>"
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"@username channel resolve xato: {type(e).__name__}: {e}")
+                await message.answer(
+                    "⚠️ Kanal ma'lumotini olib bo'lmadi. Numeric ID bilan urinib ko'ring."
+                )
+                return
 
         if not channel_id:
             await message.answer(
-                "⚠️ Hozircha faqat numeric Channel ID qabul qilinadi (-1001234567890).\n"
-                "@username uchun kelajakda qoʻshamiz."
+                "❌ Channel ID aniqlanmadi.\n"
+                "Numeric ID (-1001234567890) yoki @username kiriting."
             )
             return
 
         ok, status = await db.add_channel(
             tenant_id=ctx.user_id,
             channel_id=channel_id,
-            channel_username=normalized if normalized.startswith("@") else "",
+            channel_username=channel_username,
+            title=channel_title,
         )
         if not ok and status == "duplicate":
             await message.answer("ℹ️ Bu kanal allaqachon ulangan.")
@@ -485,10 +543,15 @@ async def tenant_text_router(message: Message) -> None:
                 action="channel_added",
                 target_type="channel",
                 target_id=channel_id,
+                details={"username": channel_username, "title": channel_title},
             )
+            label = channel_username or f"#{channel_id}"
+            title_str = f"\n📌 Nomi: <b>{fmt.esc(channel_title)}</b>" if channel_title else ""
             await message.answer(
                 f"✅ Kanal ulandi!\n\n"
-                f"📺 <code>{channel_id}</code>"
+                f"📺 {label}\n"
+                f"🆔 <code>{channel_id}</code>"
+                f"{title_str}"
             )
         await session.reset(message.from_user.id)
         return
@@ -974,3 +1037,387 @@ async def show_detailed_stats(message: Message) -> None:
         f"🏆 <b>Top kategoriyalar</b>\n{top_cats_str}"
     )
     await message.answer(text)
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 📺 KANAL TOGGLE/REMOVE
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data.startswith("tenant:channel:toggle:"))
+async def channel_toggle_cb(query: CallbackQuery) -> None:
+    """Kanalni vaqtincha o'chirish/yoqish."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    try:
+        channel_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    channel = await db.get_channel(ctx.user_id, channel_id)
+    if not channel:
+        return await query.answer("Kanal topilmadi.", show_alert=True)
+
+    new_state = not bool(channel.get("is_active"))
+    await db.update_channel_active(ctx.user_id, channel_id, is_active=new_state)
+
+    await audit_log.log_action(
+        actor=ctx,
+        action="channel_toggled",
+        target_type="channel",
+        target_id=channel_id,
+        details={"is_active": new_state},
+    )
+    msg = "🟢 yoqildi" if new_state else "🔴 toʻxtatildi"
+    await query.answer(
+        f"✅ Kanal {msg}",
+        show_alert=True,
+    )
+
+
+@router.callback_query(F.data.startswith("tenant:channel:remove:"))
+async def channel_remove_cb(query: CallbackQuery) -> None:
+    """Kanalni butunlay olib tashlash (tasdiqlash bilan)."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    try:
+        channel_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    # Tasdiqlash so'raymiz
+    confirm_text, kb = build_confirmation(
+        action_id=f"tenant:channel_remove:{channel_id}",
+        title="Kanalni olib tashlash",
+        question=f"Kanal #{channel_id} ni butunlay olib tashlaymizmi?",
+        details=[
+            "📌 Bu kanaldagi e'lonlar to'xtaydi",
+            "📌 Kanalni qaytadan ulash mumkin",
+        ],
+    )
+    if query.message:
+        await query.message.answer(confirm_text, reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("confirm:yes:tenant:channel_remove:"))
+async def channel_remove_confirm(query: CallbackQuery) -> None:
+    """Kanalni o'chirish — tasdiqlangandan so'ng."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    try:
+        channel_id = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    ok = await db.remove_channel(ctx.user_id, channel_id)
+    if not ok:
+        return await query.answer("Kanal topilmadi.", show_alert=True)
+
+    await audit_log.log_action(
+        actor=ctx,
+        action="channel_removed",
+        target_type="channel",
+        target_id=channel_id,
+    )
+    await query.answer("🗑 Kanal olib tashlandi.", show_alert=True)
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+@router.callback_query(F.data.startswith("confirm:no:tenant:channel_remove:"))
+async def channel_remove_cancel(query: CallbackQuery) -> None:
+    if query.message:
+        await query.message.answer("✅ Bekor qilindi.")
+    await query.answer()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 👥 FOYDALANUVCHILAR FILTRI
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data.startswith("tenant:users:filter:"))
+async def users_filter_cb(query: CallbackQuery) -> None:
+    """Foydalanuvchilarni status bo'yicha filtrlash."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+
+    filter_val = query.data.rsplit(":", 1)[1]
+    status_map = {
+        "all": None,
+        "active": UserStatus.ACTIVE,
+        "pending": UserStatus.PENDING,
+        "blocked": UserStatus.BLOCKED,
+    }
+    status = status_map.get(filter_val)
+
+    users = await db.list_users(ctx.user_id, status=status, limit=15)
+    if not users:
+        await query.answer(f"📭 {filter_val.upper()} foydalanuvchi yo'q.", show_alert=True)
+        return
+
+    from core.categories import get_category_label
+    label = {
+        "all": "👥 Hammasi",
+        "active": "🟢 Aktiv",
+        "pending": "🟡 Kutilayotgan",
+        "blocked": "🔴 Bloklangan",
+    }.get(filter_val, "👥")
+
+    lines = [f"{label} <b>({len(users)} ta)</b>", ""]
+    for i, u in enumerate(users[:10], 1):
+        emoji = {"active": "🟢", "pending": "🟡", "blocked": "🔴"}.get(
+            u.get("status", ""), "❓"
+        )
+        role = u.get("user_role", "")
+        role_emoji = {"poster": "📝", "customer": "🔍", "both": "🔄"}.get(role, "")
+        cat = u.get("category_code", "")
+        cat_str = get_category_label(cat) if cat else ""
+        lines.append(
+            f"{i}. {emoji}{role_emoji} {fmt.esc(u.get('full_name') or '?')} "
+            f"<code>#{u.get('user_id')}</code> {cat_str}"
+        )
+
+    items = [
+        (
+            f"#{u['user_id']} {(u.get('full_name') or '?')[:20]}",
+            f"tenant:user:show:{u['user_id']}",
+        )
+        for u in users[:10]
+    ]
+    kb = inline_grid(
+        items, columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:users:back")]],
+    )
+    if query.message:
+        await query.message.answer("\n".join(lines), reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data == "tenant:users:back")
+async def users_back_cb(query: CallbackQuery) -> None:
+    await query.answer()
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 👤 FOYDALANUVCHI E'LONLARI VA AUDIT
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data.startswith("tenant:user:posts:"))
+async def user_posts_cb(query: CallbackQuery) -> None:
+    """Foydalanuvchining e'lonlari (tenant ko'rib chiqishi)."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    try:
+        target_uid = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    posts = await db.list_user_announcements(ctx.user_id, target_uid)
+    if not posts:
+        return await query.answer("📭 Bu foydalanuvchining e'loni yo'q.", show_alert=True)
+
+    from core.categories import get_category_label
+    lines = [f"📋 <b>User #{target_uid} eʼlonlari ({len(posts)} ta)</b>", ""]
+    for p in posts[:10]:
+        emoji = {
+            "active": "🟢", "draft": "📝", "queued": "🟡",
+            "paused": "⏸", "expired": "⏰", "deleted": "🗑",
+        }.get(p.get("status", ""), "❓")
+        cat = get_category_label(p.get("category_code", ""))
+        text_preview = (p.get("raw_text") or "")[:50]
+        lines.append(
+            f"{emoji} #{p['id']} {cat} — {fmt.esc(text_preview)}"
+        )
+
+    items = [
+        (f"#{p['id']} {(p.get('raw_text') or '?')[:20]}", f"tenant:post:show:{p['id']}")
+        for p in posts[:8]
+    ]
+    kb = inline_grid(
+        items, columns=1,
+        extra_rows=[[(Btn.BACK, "tenant:users:back")]],
+    )
+    if query.message:
+        await query.message.answer("\n".join(lines), reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("tenant:user:audit:"))
+async def user_audit_cb(query: CallbackQuery) -> None:
+    """Foydalanuvchining audit tarixi."""
+    if query.from_user is None or not query.data:
+        return
+    ctx = await _ensure_tenant(query.from_user.id)
+    try:
+        target_uid = int(query.data.rsplit(":", 1)[1])
+    except ValueError:
+        return await query.answer("Notoʻgʻri ID.", show_alert=True)
+
+    logs = await db.list_audit(actor_id=target_uid, limit=15)
+    # Faqat shu tenant kontekstidagi
+    logs = [e for e in logs if e.get("tenant_id") == ctx.user_id]
+
+    if not logs:
+        return await query.answer("📭 Tarix bo'sh.", show_alert=True)
+
+    lines = [f"📜 <b>User #{target_uid} tarix (oxirgi {len(logs)} ta)</b>", ""]
+    for entry in logs[:15]:
+        ts = (entry.get("ts") or "")[:19]
+        action = entry.get("action", "?")
+        lines.append(f"<code>{ts}</code> → {fmt.esc(action)}")
+
+    if query.message:
+        await query.message.answer("\n".join(lines))
+    await query.answer()
+
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 👤 TENANT PROFILE (ko'rish va tahrirlash)
+# ═════════════════════════════════════════════════════════════════════
+@router.message(F.text == Btn.MY_PROFILE)
+async def show_tenant_profile(message: Message) -> None:
+    """Tenant — o'z profilini ko'rish va tahrirlash."""
+    if message.from_user is None:
+        return
+    ctx = await _ensure_tenant(message.from_user.id)
+
+    tenant = await db.get_tenant(ctx.user_id)
+    if not tenant:
+        await message.answer("❌ Profil topilmadi.")
+        return
+
+    name = tenant.get("name") or "—"
+    username = tenant.get("username") or "—"
+    phone = tenant.get("phone") or "—"
+    description = tenant.get("description") or "—"
+    paid_until = (tenant.get("paid_until") or "")[:10] or "—"
+    tariff = tenant.get("tariff", "?").upper()
+    total_paid = int(tenant.get("total_paid_uzs", 0) or 0)
+
+    text = (
+        f"👤 <b>Sizning profilingiz</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Ism: <b>{fmt.esc(name)}</b>\n"
+        f"📎 Username: @{fmt.esc(username) if username != '—' else '—'}\n"
+        f"📱 Telefon: <code>{fmt.esc(phone)}</code>\n"
+        f"📝 Tavsif: {fmt.esc(description)}\n\n"
+        f"📦 Tarif: <b>{tariff}</b>\n"
+        f"📅 Muddat: {paid_until}\n"
+        f"💰 Jami to'langan: {total_paid:,} so'm\n\n"
+        f"<i>Quyida ma'lumotlarni tahrirlashingiz mumkin:</i>"
+    )
+    await message.answer(text, reply_markup=tenant_kb.profile_edit_panel())
+
+
+@router.callback_query(F.data.startswith("tenant:profile:edit:"))
+async def start_profile_edit(query: CallbackQuery) -> None:
+    """Tenant profilini tahrirlash boshlash."""
+    if query.from_user is None or not query.data:
+        return
+    field = query.data.rsplit(":", 1)[1]
+    if field not in {"name", "phone", "description"}:
+        return await query.answer("Nomaʼlum maydon.", show_alert=True)
+
+    await session.update(
+        query.from_user.id,
+        step=f"tenant:edit_profile:{field}",
+    )
+
+    prompts = {
+        "name": "✏️ Yangi ismingizni yozing (max 100 belgi):",
+        "phone": (
+            "📱 Yangi telefon raqamni yozing.\n"
+            "Format: +998 90 123 45 67"
+        ),
+        "description": (
+            "📝 Tavsifni yozing (max 500 belgi).\n"
+            "Bu — siz bilan bog'lanish uchun foydali ma'lumot:\n"
+            "• Faoliyat soha\n"
+            "• Ish vaqti\n"
+            "• Murojaat shartlari va h.k."
+        ),
+    }
+    if query.message:
+        await query.message.answer(prompts[field])
+    await query.answer()
+
+
+@router.callback_query(F.data == "tenant:profile:back")
+async def profile_back_cb(query: CallbackQuery) -> None:
+    if query.from_user:
+        await session.reset(query.from_user.id)
+    await query.answer()
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+# tenant_text_router'ga edit_profile step'i tushadi.
+# Filter: state.step.startswith("tenant:") — ishlaydi.
+# Ammo asl tenant_text_router edit_profile branchini bilmaydi —
+# qo'shamiz quyidagi alohida handler'da:
+@router.message(F.text)
+async def tenant_profile_edit_handler(message: Message) -> None:
+    """Tenant profile maydonini saqlash."""
+    if message.from_user is None:
+        return
+    state = await session.get(message.from_user.id)
+    if not state.step.startswith("tenant:edit_profile:"):
+        return
+
+    field = state.step.rsplit(":", 1)[1]
+    text = (message.text or "").strip()
+
+    if not text:
+        await message.answer("❌ Bo'sh kiritish ruxsat etilmaydi.")
+        return
+
+    ctx = await resolve_role(message.from_user.id)
+    if ctx.role != Role.TENANT:
+        return
+
+    if field == "name":
+        if len(text) > 100:
+            await message.answer("❌ Ism juda uzun (max 100 belgi).")
+            return
+        await db.update_tenant(ctx.user_id, name=text)
+        msg = f"✅ Ism yangilandi: <b>{fmt.esc(text)}</b>"
+
+    elif field == "phone":
+        from utils.validators import validate_phone
+        ok, phone, err = validate_phone(text)
+        if not ok:
+            await message.answer(err)
+            return
+        await db.update_tenant(ctx.user_id, phone=phone)
+        msg = f"✅ Telefon yangilandi: <code>{fmt.esc(phone)}</code>"
+
+    elif field == "description":
+        if len(text) > 500:
+            await message.answer("❌ Tavsif juda uzun (max 500 belgi).")
+            return
+        await db.update_tenant(ctx.user_id, description=text)
+        msg = f"✅ Tavsif yangilandi."
+
+    else:
+        await message.answer("❌ Nomaʼlum maydon.")
+        return
+
+    await audit_log.log_action(
+        actor=ctx,
+        action="tenant_profile_updated",
+        details={"field": field},
+    )
+    await session.reset(message.from_user.id)
+    await message.answer(msg, reply_markup=tenant_kb.tenant_main_menu())

@@ -23,6 +23,12 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+)
+
 from config import PostStatus, Rotation
 from core import audit_log, database as db, notifier
 from core.categories import get_category_label
@@ -95,7 +101,7 @@ async def publish_post(post_id: int, tenant_id: int, *, is_new: bool = False) ->
     raw_text = post.get("raw_text") or ""
     photos = post.get("photos") or []
     if isinstance(photos, str):
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
             photos = json.loads(photos)
     if not isinstance(photos, list):
         photos = []
@@ -146,7 +152,7 @@ async def publish_post(post_id: int, tenant_id: int, *, is_new: bool = False) ->
 
         # Eski message'ni o'chirish (rotation bo'lsa)
         if old_message_id and not is_new:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(TelegramAPIError):
                 await bot.delete_message(channel_id, int(old_message_id))
 
         # DB yangilash
@@ -301,7 +307,7 @@ async def remove_post_from_channel(post_id: int, tenant_id: int) -> bool:
     message_id = post.get("message_id")
 
     if message_id:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(TelegramAPIError):
             await bot.delete_message(channel_id, int(message_id))
 
     await db.update_announcement(
