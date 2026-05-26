@@ -36,7 +36,7 @@ router = Router(name="start")
 
 
 # ─────────────────────────────────────────────────────────────────────
-# /start
+# /start (deep-link support: /start join_<tenant_id>)
 # ─────────────────────────────────────────────────────────────────────
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
@@ -46,7 +46,38 @@ async def cmd_start(message: Message) -> None:
     uid = message.from_user.id
     name = message.from_user.full_name or "doʻst"
 
-    # Session'dan tenant_id (agar oldin tanlangan bo'lsa)
+    # ── Deep-link parametr parser ────────────────────────────────────
+    # Format: /start join_<tenant_id>
+    # Foydalanuvchi tenant'ning deep-link'ini bosgan bo'lsa,
+    # avtomatik o'sha tenant'ga bog'lanadi.
+    deep_link_param = ""
+    if message.text and len(message.text.split()) > 1:
+        deep_link_param = message.text.split(maxsplit=1)[1].strip()
+
+    if deep_link_param.startswith("join_"):
+        target_tenant_id = None
+        try:
+            target_tenant_id = int(deep_link_param[5:])
+        except (ValueError, IndexError):
+            pass
+
+        if target_tenant_id:
+            # Tenant mavjudligini tekshirish
+            tenant = await db.get_tenant(target_tenant_id)
+            if tenant and tenant.get("status") in ("active", "pending"):
+                # Session'ga tenant_id ni saqlaymiz
+                await session.update(uid, tenant_id=target_tenant_id)
+                logger.info(
+                    f"Deep-link: user #{uid} → tenant #{target_tenant_id}"
+                )
+            else:
+                await message.answer(
+                    "⚠️ Bu guruh hozirda aktiv emas yoki topilmadi.\n"
+                    "Qaytadan urinib ko'ring yoki /start bosing."
+                )
+                return
+
+    # Session'dan tenant_id (agar oldin tanlangan yoki deep-link bo'lsa)
     state = await session.get(uid)
     tenant_id = state.tenant_id
 
@@ -55,7 +86,11 @@ async def cmd_start(message: Message) -> None:
     await audit_log.log_action(
         actor=ctx,
         action="start_command",
-        details={"name": name, "username": message.from_user.username or ""},
+        details={
+            "name": name,
+            "username": message.from_user.username or "",
+            "deep_link": deep_link_param or None,
+        },
     )
 
     # Marshrut

@@ -305,3 +305,90 @@ def render_notification(notif: dict) -> str:
     if title:
         return f"{emoji} <b>{title}</b>\n━━━━━━━━━━━━━━━━━━\n{message}"
     return f"{emoji} {message}"
+
+
+
+# ─────────────────────────────────────────────────────────────────────
+# V1.1 yangi bildirishnomalar
+# ─────────────────────────────────────────────────────────────────────
+async def notify_post_action(
+    user_id: int,
+    tenant_id: int,
+    post_id: int,
+    action: str,
+    reason: str = "",
+) -> int:
+    """
+    Poster'ga e'loni ustida amal bajarilgani haqida xabar.
+
+    action: "paused", "deleted", "resumed"
+    """
+    action_labels = {
+        "paused": "⏸ pauzaga olindi",
+        "deleted": "🗑 o'chirildi",
+        "resumed": "▶️ davom ettirildi",
+    }
+    label = action_labels.get(action, action)
+    msg = (
+        f"📋 Sizning eʼloningiz #{post_id} {label}.\n"
+    )
+    if reason:
+        msg += f"\n📌 Sabab: {reason}"
+
+    return await notify_warning(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        title=f"E'lon {label}",
+        message=msg,
+        payload={"post_id": post_id, "action": action},
+    )
+
+
+async def notify_tenant_poster_warnings(
+    tenant_id: int,
+    poster_id: int,
+    poster_name: str,
+    warnings_count: int,
+) -> int:
+    """
+    Tenant'ga xabar: poster ko'p ogohlantirish oldi (kuzatuv uchun).
+
+    Bu — tenant'ga keladi, poster'ga emas.
+    """
+    return await notify_info(
+        user_id=tenant_id,
+        tenant_id=tenant_id,
+        title="Poster ko'p ogohlantirish oldi",
+        message=(
+            f"⚠️ <b>{poster_name}</b> (#{poster_id}) — "
+            f"{warnings_count} ogohlantirish oldi.\n\n"
+            "Iltimos, foydalanuvchilar bo'limida tekshiring.\n"
+            "3 ogohlantirish = avtomatik blok."
+        ),
+        payload={"poster_id": poster_id, "warnings_count": warnings_count},
+    )
+
+
+async def notify_new_user_registered(
+    tenant_id: int,
+    user_id: int,
+    user_name: str,
+    user_role: str,
+) -> int:
+    """
+    Tenant'ga yangi foydalanuvchi ro'yxatdan o'tgani haqida xabar.
+
+    Auto-approve'da ham keladi — monitoring uchun.
+    """
+    role_emoji = {"poster": "📝", "customer": "🔍", "both": "🔄"}.get(user_role, "👤")
+    return await notify_info(
+        user_id=tenant_id,
+        tenant_id=tenant_id,
+        title="Yangi foydalanuvchi",
+        message=(
+            f"🔔 Yangi foydalanuvchi ro'yxatdan o'tdi:\n\n"
+            f"{role_emoji} <b>{user_name}</b> (#{user_id})\n"
+            f"📌 Rol: {user_role}"
+        ),
+        payload={"new_user_id": user_id, "user_role": user_role},
+    )
