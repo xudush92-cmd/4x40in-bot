@@ -1,9 +1,14 @@
 """
 keyboards/common_kb.py — barcha panellar uchun umumiy tugmalar.
 
+V1 yangilanish:
+- Yangi rollar: I_AM_POSTER, I_AM_CUSTOMER (ROLA_TANLASH menyusida)
+- Poster uchun: NEW_POST, MY_POSTS, INTERVAL, START_ROTATION, STOP_ROTATION
+- Customer uchun: SEARCH, BROWSE_FEED, MY_BOOKMARKS
+
 QOIDALAR:
 ─────────
-- Hamma callback_data: "cmd:<role>:<action>:<arg>" formatida
+- Hamma callback_data: "<scope>:<action>:<arg>" formatida
 - "Bekor qilish" har joyda — qaytib ketish
 - Reply keyboard: doimiy menyu (asosiy)
 - Inline keyboard: kontekstga bogʻliq amallar
@@ -39,37 +44,49 @@ except ImportError:  # pragma: no cover
 class Btn:
     """Reply keyboard tugma matnlari (asosiy menyular uchun)."""
 
-    # Universal
+    # ─── Universal ───────────────────────────────────────────────────
     BACK = "⬅️ Orqaga"
     CANCEL = "❌ Bekor qilish"
     HELP = "ℹ️ Yordam"
     HOME = "🏠 Bosh menyu"
 
-    # Foydalanuvchi rolini tanlash
+    # ─── Rol tanlash (/start menyusida) ──────────────────────────────
     I_AM_TENANT = "🏢 Men guruh adminiman"
-    I_AM_USER = "📝 Men eʼlon beraman"
-    I_AM_SEARCHER = "🔍 Men eʼlon izlayman"
+    I_AM_POSTER = "📝 Men eʼlon beraman"
+    I_AM_CUSTOMER = "🔍 Men mijozman"
 
-    # User panel
-    NEW_POST = "📝 Yangi eʼlon"
+    # ─── POSTER paneli ───────────────────────────────────────────────
+    NEW_POST = "➕ Yangi eʼlon"
     MY_POSTS = "📋 Mening eʼlonlarim"
-    MY_PROFILE = "👤 Mening profilim"
+    POSTER_START = "▶️ Auto-post YOQISH"
+    POSTER_STOP = "⛔ Auto-post TOʻXTATISH"
+    POSTER_INTERVAL = "⏱ Interval"
+    POSTER_STATS = "📊 Statistika"
+    CHANGE_CATEGORY = "🔄 Soha oʻzgartirish"
+
+    # ─── CUSTOMER paneli ─────────────────────────────────────────────
+    SEARCH = "🔍 Qidirish"
+    BROWSE_FEED = "📰 Yangi eʼlonlar"
+    MY_BOOKMARKS = "⭐ Saqlanganlar"
+    SEARCH_HISTORY = "📋 Qidiruv tarixi"
+
+    # ─── User umumiy ─────────────────────────────────────────────────
+    MY_PROFILE = "👤 Profilim"
     EDIT_PROFILE = "✏️ Profilni tahrirlash"
     LOGOUT = "🚪 Chiqish"
 
-    # Tenant panel
+    # ─── TENANT paneli ───────────────────────────────────────────────
     MY_CHANNELS = "📺 Kanallarim"
     ADD_CHANNEL = "➕ Kanal ulash"
     MANAGE_USERS = "👥 Foydalanuvchilar"
     MANAGE_POSTS = "📋 Eʼlonlar"
-    ROTATION_SETTINGS = "🔄 Aylanish"
     BOT_SETTINGS = "⚙️ Sozlamalar"
     STATS = "📊 Statistika"
     AUDIT_LOG = "📜 Tarix (log)"
     MODERATORS = "👮 Moderatorlar"
     BILLING = "💰 Toʻlov"
 
-    # Super admin panel
+    # ─── SUPER ADMIN paneli ──────────────────────────────────────────
     ALL_TENANTS = "👥 Tenantlar"
     GLOBAL_STATS = "📊 Global statistika"
     GLOBAL_AUDIT = "📜 Global log"
@@ -93,13 +110,10 @@ def make_reply(rows: list[list[str]], *, resize: bool = True):
         ])
     """
     if not _AIOGRAM_AVAILABLE:
-        return {"keyboard": [[{"text": t} for t in row] for row in rows], "resize_keyboard": resize}
-    builder = ReplyKeyboardBuilder()
-    for row in rows:
-        for t in row:
-            builder.button(text=t)
-        builder.adjust(*[len(r) for r in rows], repeat=False)
-    # Yana sodda yondashuv:
+        return {
+            "keyboard": [[{"text": t} for t in row] for row in rows],
+            "resize_keyboard": resize,
+        }
     kb = ReplyKeyboardBuilder()
     for row in rows:
         kb.row(*[KeyboardButton(text=t) for t in row])
@@ -183,7 +197,7 @@ def inline_cancel(callback_data: str = "cancel"):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# ON/OFF toggle (tenant sozlamalari uchun)
+# ON/OFF toggle (sozlamalar uchun)
 # ─────────────────────────────────────────────────────────────────────
 def toggle_label(on: bool, label: str) -> str:
     """ON yoki OFF holatdagi label."""
@@ -197,7 +211,10 @@ def request_contact(text: str = "📱 Telefon raqamni yuborish"):
     """Telegram'ning 'request_contact' tugmasi (telefon avtomatik)."""
     if not _AIOGRAM_AVAILABLE:
         return {
-            "keyboard": [[{"text": text, "request_contact": True}], [{"text": Btn.CANCEL}]],
+            "keyboard": [
+                [{"text": text, "request_contact": True}],
+                [{"text": Btn.CANCEL}],
+            ],
             "resize_keyboard": True,
         }
     kb = ReplyKeyboardBuilder()
