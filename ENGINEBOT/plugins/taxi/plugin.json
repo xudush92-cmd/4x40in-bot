@@ -1,0 +1,52 @@
+{
+  "name": "Taxi Service",
+  "code": "taxi",
+  "version": "1.0.0",
+  "author": "ENGINEBOT Team",
+  "description": "Shaharlararo taxi e'lonlari (taksist va yo'lovchi uchun)",
+  "category": "transport",
+  "icon": "🚖",
+  "fields": [
+    {
+      "name": "from_region",
+      "type": "region_picker",
+      "label": "Qayerdan",
+      "required": true
+    },
+    {
+      "name": "to_region",
+      "type": "region_picker",
+      "label": "Qayerga",
+      "required": true,
+      "exclude_field": "from_region"
+    },
+    {
+      "name": "departure_time",
+      "type": "time_picker",
+      "label": "Qachon",
+      "required": true
+    },
+    {
+      "name": "seats",
+      "type": "number",
+      "label": "Bo'sh joy",
+      "min": 1,
+      "max": 7,
+      "required": true
+    },
+    {
+      "name": "price_type",
+      "type": "choice",
+      "label": "Narx",
+      "options": ["negotiable", "fixed"],
+      "required": true
+    }
+  ],
+  "user_profile_fields": [
+    {"name": "car_model", "label": "Mashina markasi", "type": "text", "required": true},
+    {"name": "car_color", "label": "Rangi", "type": "color_picker", "required": true},
+    {"name": "car_plate", "label": "Davlat raqami", "type": "car_plate", "required": true}
+  ],
+  "permissions": ["create_post", "view_posts", "edit_post", "delete_post"],
+  "depends_on": ["core"]
+}

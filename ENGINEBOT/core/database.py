@@ -1,0 +1,1219 @@
+"""
+core/database.py — SQLite asosidagi storage + per-tenant izolyatsiya.
+
+ASOSIY PRINSIPLAR:
+─────────────────
+1. PER-TENANT IZOLYATSIYA
+   Har bir jadvalda `tenant_id` ustuni bor. Barcha soʻrovlar
+   `WHERE tenant_id=?` filtri bilan bajariladi. Ikki tenant bir-birini
+   koʻra olmaydi — bu ENGINEBOT'ning eng muhim xavfsizlik printsipi.
+
+2. ATOMIC OPERATSIYALAR
+   Limit va INSERT'lar `BEGIN IMMEDIATE` transaction ichida bajariladi.
+   Race condition yoʻq — ikki user bir vaqtda eʼlon bersa ham
+   limit aniq saqlanadi.
+
+3. WAL MODE
+   Concurrent oʻqish/yozish xavfsiz. Bir vaqtda koʻp foydalanuvchi
+   ishlasa ham DB blokirovka boʻlmaydi.
+
+4. INDEKSLAR
+   Har asosiy ustun (tenant_id, user_id, status) boʻyicha indeks bor —
+   1000+ tenantda ham tez ishlaydi.
+
+5. FOREIGN KEYS + CASCADE
+   Tenant oʻchirilganda — barcha unga tegishli maʼlumot ham oʻchadi.
+   Maʼlumot etim qolmaydi.
+
+JADVALLAR:
+──────────
+- tenants         — kanal egalari (sizning mijozlaringiz)
+- channels        — ulangan kanallar
+- users           — foydalanuvchilar (per-tenant)
+- announcements   — eʼlonlar
+- moderators      — tenant yordamchilari
+- audit_log       — har bir amal yoziladi
+- notifications   — bildirishnomalar
+- payments        — toʻlovlar tarixi
+- warnings        — ogohlantirishlar
+- tenant_settings — tenant boʻyicha sozlamalar (rotation, schedule)
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, AsyncIterator
+
+import aiosqlite
+
+from config import (
+    DB_PATH,
+    DEFAULT_TZ_OFFSET,
+    PostStatus,
+    Rotation,
+    TenantStatus,
+    UserStatus,
+)
+
+logger = logging.getLogger("enginebot.db")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Connection helper
+# ─────────────────────────────────────────────────────────────────────
+@contextlib.asynccontextmanager
+async def _conn() -> AsyncIterator[aiosqlite.Connection]:
+    """
+    SQLite ulanish konteksti.
+
+    Har soʻrov uchun yangi ulanish ochiladi va avtomatik yopiladi.
+    Bu — koʻp tenantli muhitda eng xavfsiz pattern (long-living
+    connections — race riskini oshiradi).
+    """
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    db = await aiosqlite.connect(DB_PATH)
+    try:
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA foreign_keys=ON")
+        db.row_factory = aiosqlite.Row
+        yield db
+    finally:
+        await db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# init_db — barcha jadvallarni yaratish
+# ─────────────────────────────────────────────────────────────────────
+async def init_db() -> None:
+    """
+    Bazani yaratish va sozlash.
+
+    Idempotent — agar jadvallar mavjud boʻlsa hech narsa qilmaydi.
+    Birinchi ishga tushirishda chaqiriladi (main.py'da).
+    """
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # WAL — concurrent access uchun
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA foreign_keys=ON")
+
+        # ─── tenants ─────────────────────────────────────────────────
+        # Asosiy jadval — har bir kanal egasi shu yerda.
+        # tenant_id = Telegram user ID (tabiiy unique key).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tenants (
+                tenant_id        INTEGER PRIMARY KEY,
+                name             TEXT DEFAULT '',
+                username         TEXT DEFAULT '',
+                phone            TEXT DEFAULT '',
+                email            TEXT DEFAULT '',
+                tariff           TEXT DEFAULT 'trial',
+                status           TEXT DEFAULT 'pending',
+                paid_until       TEXT,
+                total_paid_uzs   INTEGER DEFAULT 0,
+                blocked_reason   TEXT,
+                blocked_at       TEXT,
+                created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # ─── tenant_settings ─────────────────────────────────────────
+        # Tenant'ning ON/OFF holatlari va rotation sozlamalari.
+        # Alohida jadvalda — tez-tez oʻzgaradi, tenants jadvalini
+        # bezovta qilmaydi.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tenant_settings (
+                tenant_id            INTEGER PRIMARY KEY,
+                bot_active           INTEGER DEFAULT 1,
+                post_intake_active   INTEGER DEFAULT 1,
+                rotation_active      INTEGER DEFAULT 0,
+                rotation_interval_min INTEGER DEFAULT 30,
+                post_lifetime_hours  INTEGER DEFAULT 24,
+                active_from          TEXT DEFAULT '06:00',
+                active_to            TEXT DEFAULT '23:00',
+                require_approval     INTEGER DEFAULT 1,
+                updated_at           TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── channels ────────────────────────────────────────────────
+        # Tenant ulagan kanallar. Bot kanal admini boʻlishi shart.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS channels (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id       INTEGER NOT NULL,
+                channel_id      INTEGER NOT NULL,
+                channel_username TEXT,
+                title           TEXT DEFAULT '',
+                category        TEXT DEFAULT 'general',
+                is_active       INTEGER DEFAULT 1,
+                added_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, channel_id),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── users ───────────────────────────────────────────────────
+        # Foydalanuvchilar (taksist, sotuvchi va h.k.).
+        # MUHIM: bitta Telegram user bir nechta tenantda alohida user'dir!
+        # Shuning uchun PRIMARY KEY = (tenant_id, user_id).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id       INTEGER NOT NULL,
+                user_id         INTEGER NOT NULL,
+                full_name       TEXT DEFAULT '',
+                username        TEXT DEFAULT '',
+                phone           TEXT DEFAULT '',
+                profile_data    TEXT DEFAULT '{}',
+                status          TEXT DEFAULT 'pending',
+                approved_by     INTEGER,
+                approved_at     TEXT,
+                rating          REAL DEFAULT 5.0,
+                warnings_count  INTEGER DEFAULT 0,
+                created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_active_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, user_id),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── announcements ───────────────────────────────────────────
+        # Eʼlonlar. content_data = JSON (plugin'ga bogʻliq strukturada).
+        # message_id — kanaldagi post ID (yangilash/oʻchirish uchun).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS announcements (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id       INTEGER NOT NULL,
+                user_id         INTEGER NOT NULL,
+                channel_id      INTEGER NOT NULL,
+                plugin          TEXT DEFAULT 'taxi',
+                content_data    TEXT DEFAULT '{}',
+                rendered_text   TEXT DEFAULT '',
+                message_id      INTEGER,
+                status          TEXT DEFAULT 'draft',
+                views_count     INTEGER DEFAULT 0,
+                contacts_count  INTEGER DEFAULT 0,
+                rotation_count  INTEGER DEFAULT 0,
+                last_rotated_at TEXT,
+                created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at      TEXT,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── moderators ──────────────────────────────────────────────
+        # Tenant yordamchilari. permissions = JSON (qaysi amallarga ruxsat).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS moderators (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id   INTEGER NOT NULL,
+                user_id     INTEGER NOT NULL,
+                permissions TEXT DEFAULT '[]',
+                added_by    INTEGER,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, user_id),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── audit_log ───────────────────────────────────────────────
+        # HAR BIR muhim amal shu yerga yoziladi. Tergov, statistika,
+        # xavfsizlik audit uchun.
+        # tenant_id NULL boʻlishi mumkin (super admin global amallari).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts          TEXT DEFAULT CURRENT_TIMESTAMP,
+                level       TEXT DEFAULT 'info',
+                actor_role  TEXT NOT NULL,
+                actor_id    INTEGER NOT NULL,
+                tenant_id   INTEGER,
+                action      TEXT NOT NULL,
+                target_type TEXT,
+                target_id   INTEGER,
+                details     TEXT DEFAULT '{}'
+            )
+        """)
+
+        # ─── notifications ───────────────────────────────────────────
+        # Foydalanuvchilarga yuborilgan bildirishnomalar tarixi.
+        # is_read — Telegram'dan tashqari ichki kuzatish uchun.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS notifications (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id   INTEGER,
+                user_id     INTEGER NOT NULL,
+                type        TEXT DEFAULT 'info',
+                title       TEXT DEFAULT '',
+                message     TEXT NOT NULL,
+                payload     TEXT DEFAULT '{}',
+                is_sent     INTEGER DEFAULT 0,
+                sent_at     TEXT,
+                is_read     INTEGER DEFAULT 0,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # ─── payments ────────────────────────────────────────────────
+        # Toʻlovlar tarixi. Super admin qoʻlda kiritadi (ogʻzaki kelishuv).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id    INTEGER NOT NULL,
+                amount_uzs   INTEGER NOT NULL,
+                tariff       TEXT NOT NULL,
+                period_days  INTEGER NOT NULL,
+                paid_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                approved_by  INTEGER NOT NULL,
+                note         TEXT DEFAULT '',
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── warnings ────────────────────────────────────────────────
+        # Foydalanuvchiga berilgan ogohlantirishlar.
+        # MAX_WARNINGS_BEFORE_BLOCK ga yetganida user avtomatik bloklanadi.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS warnings (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id   INTEGER NOT NULL,
+                user_id     INTEGER NOT NULL,
+                issued_by   INTEGER NOT NULL,
+                reason      TEXT NOT NULL,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
+        # ─── INDEKSLAR ───────────────────────────────────────────────
+        # Tezlik uchun (1000+ tenant, 100k+ eʼlon stsenariysida)
+        for stmt in [
+            "CREATE INDEX IF NOT EXISTS idx_users_tenant       ON users(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_users_status       ON users(tenant_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_channels_tenant    ON channels(tenant_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ann_tenant_status  ON announcements(tenant_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_ann_user           ON announcements(tenant_id, user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ann_expires        ON announcements(status, expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_ts           ON audit_log(ts DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_tenant       ON audit_log(tenant_id, ts DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_actor        ON audit_log(actor_id, ts DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_notif_user         ON notifications(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_tenant    ON payments(tenant_id, paid_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_warnings_tenant_u  ON warnings(tenant_id, user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_mods_tenant        ON moderators(tenant_id)",
+        ]:
+            await db.execute(stmt)
+
+        await db.commit()
+        logger.info(f"DB tayyor: {DB_PATH}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Yordamchilar
+# ─────────────────────────────────────────────────────────────────────
+def _now_iso() -> str:
+    """Hozirgi vaqt ISO formatda (timezone bilan)."""
+    return datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET))).isoformat()
+
+
+def _row_to_dict(row: aiosqlite.Row | None) -> dict | None:
+    return dict(row) if row else None
+
+
+def _rows_to_list(rows) -> list[dict]:
+    return [dict(r) for r in rows]
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TENANTS — kanal egalari (sizning mijozlaringiz)
+# ═════════════════════════════════════════════════════════════════════
+async def create_tenant(
+    tenant_id: int,
+    name: str = "",
+    username: str = "",
+    tariff: str = "trial",
+) -> dict:
+    """
+    Yangi tenantni yaratish (yoki mavjud boʻlsa qaytarish).
+
+    Idempotent — bir necha marta chaqirish xavfsiz.
+    """
+    async with _conn() as db:
+        await db.execute(
+            """INSERT OR IGNORE INTO tenants
+               (tenant_id, name, username, tariff, status)
+               VALUES (?, ?, ?, ?, ?)""",
+            (tenant_id, name, username, tariff, TenantStatus.PENDING),
+        )
+        # Default settings ham yaratamiz
+        await db.execute(
+            "INSERT OR IGNORE INTO tenant_settings (tenant_id) VALUES (?)",
+            (tenant_id,),
+        )
+        await db.commit()
+
+    tenant = await get_tenant(tenant_id)
+    assert tenant is not None  # endi albatta bor
+    return tenant
+
+
+async def get_tenant(tenant_id: int) -> dict | None:
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT * FROM tenants WHERE tenant_id=?", (tenant_id,)
+        ) as cur:
+            return _row_to_dict(await cur.fetchone())
+
+
+async def update_tenant(tenant_id: int, **fields) -> None:
+    """Tenant'ning ixtiyoriy ustunlarini yangilash."""
+    if not fields:
+        return
+    fields["updated_at"] = _now_iso()
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [tenant_id]
+    async with _conn() as db:
+        await db.execute(f"UPDATE tenants SET {sets} WHERE tenant_id=?", vals)
+        await db.commit()
+
+
+async def list_tenants(status: str | None = None, limit: int = 100) -> list[dict]:
+    """Barcha tenantlar (status filtri bilan)."""
+    async with _conn() as db:
+        if status:
+            cur = await db.execute(
+                "SELECT * FROM tenants WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM tenants ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def count_tenants(status: str | None = None) -> int:
+    async with _conn() as db:
+        if status:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM tenants WHERE status=?", (status,)
+            )
+        else:
+            cur = await db.execute("SELECT COUNT(*) FROM tenants")
+        row = await cur.fetchone()
+        await cur.close()
+        return int(row[0]) if row else 0
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TENANT SETTINGS — sozlamalar (ON/OFF, rotation, schedule)
+# ═════════════════════════════════════════════════════════════════════
+async def get_settings(tenant_id: int) -> dict:
+    """Tenant sozlamalarini olish (yoki default yaratish)."""
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT * FROM tenant_settings WHERE tenant_id=?", (tenant_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            await db.execute(
+                "INSERT INTO tenant_settings (tenant_id) VALUES (?)", (tenant_id,)
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT * FROM tenant_settings WHERE tenant_id=?", (tenant_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return dict(row) if row else {}
+
+
+async def update_settings(tenant_id: int, **fields) -> None:
+    """
+    Tenant sozlamalarini yangilash.
+
+    Boolean qiymatlar avtomatik 0/1 ga aylantiriladi.
+    """
+    if not fields:
+        return
+    # bool → int (SQLite tushunmaydi True/False)
+    fields = {k: (int(v) if isinstance(v, bool) else v) for k, v in fields.items()}
+    fields["updated_at"] = _now_iso()
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [tenant_id]
+    async with _conn() as db:
+        # Settings boʻlmasligi mumkin — avval yaratamiz
+        await db.execute(
+            "INSERT OR IGNORE INTO tenant_settings (tenant_id) VALUES (?)", (tenant_id,)
+        )
+        await db.execute(f"UPDATE tenant_settings SET {sets} WHERE tenant_id=?", vals)
+        await db.commit()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# CHANNELS — ulangan kanallar
+# ═════════════════════════════════════════════════════════════════════
+async def add_channel(
+    tenant_id: int,
+    channel_id: int,
+    channel_username: str = "",
+    title: str = "",
+    category: str = "general",
+) -> tuple[bool, str]:
+    """
+    Kanal qoʻshish (atomic).
+
+    Returns: (ok, status)
+        (True, "ok")        — qoʻshildi
+        (False, "duplicate") — allaqachon mavjud
+    """
+    async with _conn() as db:
+        try:
+            await db.execute(
+                """INSERT INTO channels (tenant_id, channel_id, channel_username, title, category)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (tenant_id, channel_id, channel_username, title, category),
+            )
+            await db.commit()
+            return True, "ok"
+        except aiosqlite.IntegrityError:
+            return False, "duplicate"
+
+
+async def list_channels(tenant_id: int, only_active: bool = True) -> list[dict]:
+    """Tenant kanallarini olish (faqat oʻzi)."""
+    async with _conn() as db:
+        if only_active:
+            cur = await db.execute(
+                "SELECT * FROM channels WHERE tenant_id=? AND is_active=1 ORDER BY id",
+                (tenant_id,),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM channels WHERE tenant_id=? ORDER BY id",
+                (tenant_id,),
+            )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def get_channel(tenant_id: int, channel_id: int) -> dict | None:
+    """Maʼlum bir kanalni olish (tenant filtri bilan!)."""
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT * FROM channels WHERE tenant_id=? AND channel_id=?",
+            (tenant_id, channel_id),
+        ) as cur:
+            return _row_to_dict(await cur.fetchone())
+
+
+async def remove_channel(tenant_id: int, channel_id: int) -> bool:
+    """Kanalni oʻchirish (faqat oʻz tenantnikini)."""
+    async with _conn() as db:
+        cur = await db.execute(
+            "DELETE FROM channels WHERE tenant_id=? AND channel_id=?",
+            (tenant_id, channel_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+# ═════════════════════════════════════════════════════════════════════
+# USERS — foydalanuvchilar (per-tenant)
+# ═════════════════════════════════════════════════════════════════════
+async def upsert_user(
+    tenant_id: int,
+    user_id: int,
+    full_name: str = "",
+    username: str = "",
+    phone: str = "",
+    profile_data: dict | None = None,
+) -> dict:
+    """
+    Foydalanuvchini yaratish yoki yangilash (per-tenant).
+
+    Returns: yangilangan foydalanuvchi dict.
+    """
+    profile_json = json.dumps(profile_data or {}, ensure_ascii=False)
+    async with _conn() as db:
+        # Avval mavjudligini tekshiramiz
+        async with db.execute(
+            "SELECT id FROM users WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        ) as cur:
+            existing = await cur.fetchone()
+
+        if existing:
+            await db.execute(
+                """UPDATE users SET
+                       full_name=COALESCE(NULLIF(?,''), full_name),
+                       username=COALESCE(NULLIF(?,''), username),
+                       phone=COALESCE(NULLIF(?,''), phone),
+                       profile_data=?,
+                       last_active_at=?
+                   WHERE tenant_id=? AND user_id=?""",
+                (full_name, username, phone, profile_json, _now_iso(), tenant_id, user_id),
+            )
+        else:
+            await db.execute(
+                """INSERT INTO users
+                   (tenant_id, user_id, full_name, username, phone, profile_data, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (tenant_id, user_id, full_name, username, phone, profile_json, UserStatus.PENDING),
+            )
+        await db.commit()
+
+        async with db.execute(
+            "SELECT * FROM users WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        ) as cur:
+            return _row_to_dict(await cur.fetchone())  # type: ignore[return-value]
+
+
+async def get_user(tenant_id: int, user_id: int) -> dict | None:
+    """Foydalanuvchini olish (tenant filtri bilan)."""
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT * FROM users WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        ) as cur:
+            row = _row_to_dict(await cur.fetchone())
+            if row and row.get("profile_data"):
+                with contextlib.suppress(Exception):
+                    row["profile_data"] = json.loads(row["profile_data"])
+            return row
+
+
+async def list_users(
+    tenant_id: int,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Tenant foydalanuvchilari roʻyxati (faqat oʻz tenantida)."""
+    async with _conn() as db:
+        if status:
+            cur = await db.execute(
+                """SELECT * FROM users
+                   WHERE tenant_id=? AND status=?
+                   ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+                (tenant_id, status, limit, offset),
+            )
+        else:
+            cur = await db.execute(
+                """SELECT * FROM users
+                   WHERE tenant_id=?
+                   ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+                (tenant_id, limit, offset),
+            )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def count_users(tenant_id: int, status: str | None = None) -> int:
+    async with _conn() as db:
+        if status:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM users WHERE tenant_id=? AND status=?",
+                (tenant_id, status),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM users WHERE tenant_id=?", (tenant_id,)
+            )
+        row = await cur.fetchone()
+        await cur.close()
+        return int(row[0]) if row else 0
+
+
+async def update_user(tenant_id: int, user_id: int, **fields) -> None:
+    """User maydonlarini yangilash. profile_data dict boʻlsa JSON ga aylanadi."""
+    if not fields:
+        return
+    if "profile_data" in fields and isinstance(fields["profile_data"], dict):
+        fields["profile_data"] = json.dumps(fields["profile_data"], ensure_ascii=False)
+    if isinstance(fields.get("warnings_count"), bool):
+        fields["warnings_count"] = int(fields["warnings_count"])
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [tenant_id, user_id]
+    async with _conn() as db:
+        await db.execute(
+            f"UPDATE users SET {sets} WHERE tenant_id=? AND user_id=?", vals
+        )
+        await db.commit()
+
+
+async def set_user_status(
+    tenant_id: int, user_id: int, status: str, approved_by: int | None = None
+) -> None:
+    """User statusini oʻzgartirish (approved_by — kim tasdiqlagan)."""
+    fields: dict[str, Any] = {"status": status}
+    if status == UserStatus.ACTIVE and approved_by is not None:
+        fields["approved_by"] = approved_by
+        fields["approved_at"] = _now_iso()
+    await update_user(tenant_id, user_id, **fields)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# ANNOUNCEMENTS — eʼlonlar
+# ═════════════════════════════════════════════════════════════════════
+async def create_announcement(
+    tenant_id: int,
+    user_id: int,
+    channel_id: int,
+    plugin: str,
+    content_data: dict,
+    rendered_text: str,
+    lifetime_hours: int = Rotation.DEFAULT_LIFETIME_HOURS,
+    max_active_per_user: int | None = None,
+) -> tuple[bool, str, int | None]:
+    """
+    Yangi eʼlon yaratish (atomic, race-safe).
+
+    Limit tekshirish + INSERT bitta transactionda.
+    Boshqa user bir vaqtda urinsa ham limit aniq saqlanadi.
+
+    Returns:
+        (True, "ok", post_id)        — yaratildi
+        (False, "limit", None)       — user limitiga yetdi
+        (False, "channel_inactive", None) — kanal yoʻq yoki nofaol
+    """
+    expires_at = (
+        datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
+        + timedelta(hours=lifetime_hours)
+    ).isoformat()
+
+    async with _conn() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            # 1. Kanal aktivmi?
+            async with db.execute(
+                """SELECT 1 FROM channels
+                   WHERE tenant_id=? AND channel_id=? AND is_active=1""",
+                (tenant_id, channel_id),
+            ) as cur:
+                if not await cur.fetchone():
+                    await db.rollback()
+                    return False, "channel_inactive", None
+
+            # 2. Limit tekshirish
+            if max_active_per_user is not None:
+                async with db.execute(
+                    """SELECT COUNT(*) FROM announcements
+                       WHERE tenant_id=? AND user_id=? AND status=?""",
+                    (tenant_id, user_id, PostStatus.ACTIVE),
+                ) as cur:
+                    row = await cur.fetchone()
+                    cnt = int(row[0]) if row else 0
+                if cnt >= max_active_per_user:
+                    await db.rollback()
+                    return False, "limit", None
+
+            # 3. INSERT
+            cur = await db.execute(
+                """INSERT INTO announcements
+                   (tenant_id, user_id, channel_id, plugin,
+                    content_data, rendered_text, status, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    tenant_id, user_id, channel_id, plugin,
+                    json.dumps(content_data, ensure_ascii=False),
+                    rendered_text,
+                    PostStatus.DRAFT,
+                    expires_at,
+                ),
+            )
+            post_id = cur.lastrowid
+            await db.commit()
+            return True, "ok", post_id
+
+        except Exception:
+            with contextlib.suppress(Exception):
+                await db.rollback()
+            raise
+
+
+async def get_announcement(post_id: int, tenant_id: int | None = None) -> dict | None:
+    """
+    Eʼlonni ID boʻyicha olish.
+
+    Agar tenant_id berilsa — qoʻshimcha izolyatsiya filtri qoʻshiladi
+    (tenant boshqa tenantning postini koʻra olmaydi).
+    """
+    async with _conn() as db:
+        if tenant_id is not None:
+            cur = await db.execute(
+                "SELECT * FROM announcements WHERE id=? AND tenant_id=?",
+                (post_id, tenant_id),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM announcements WHERE id=?", (post_id,)
+            )
+        row = _row_to_dict(await cur.fetchone())
+        await cur.close()
+        if row and row.get("content_data"):
+            with contextlib.suppress(Exception):
+                row["content_data"] = json.loads(row["content_data"])
+        return row
+
+
+async def update_announcement(post_id: int, tenant_id: int, **fields) -> None:
+    """Eʼlonni yangilash (tenant filtri bilan)."""
+    if not fields:
+        return
+    if "content_data" in fields and isinstance(fields["content_data"], dict):
+        fields["content_data"] = json.dumps(fields["content_data"], ensure_ascii=False)
+    fields["updated_at"] = _now_iso()
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [post_id, tenant_id]
+    async with _conn() as db:
+        await db.execute(
+            f"UPDATE announcements SET {sets} WHERE id=? AND tenant_id=?", vals
+        )
+        await db.commit()
+
+
+async def list_user_announcements(
+    tenant_id: int,
+    user_id: int,
+    status: str | None = None,
+) -> list[dict]:
+    """Foydalanuvchining eʼlonlari (oʻz tenantida)."""
+    async with _conn() as db:
+        if status:
+            cur = await db.execute(
+                """SELECT * FROM announcements
+                   WHERE tenant_id=? AND user_id=? AND status=?
+                   ORDER BY created_at DESC""",
+                (tenant_id, user_id, status),
+            )
+        else:
+            cur = await db.execute(
+                """SELECT * FROM announcements
+                   WHERE tenant_id=? AND user_id=?
+                   ORDER BY created_at DESC""",
+                (tenant_id, user_id),
+            )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def list_active_announcements(
+    tenant_id: int | None = None,
+    channel_id: int | None = None,
+) -> list[dict]:
+    """
+    Aktiv eʼlonlar roʻyxati (rotation va publishing uchun).
+
+    tenant_id berilsa — faqat oʻsha tenantning. Aks holda hammasi
+    (faqat super admin yoki global service uchun).
+    """
+    async with _conn() as db:
+        clauses = ["status=?"]
+        params: list[Any] = [PostStatus.ACTIVE]
+        if tenant_id is not None:
+            clauses.append("tenant_id=?")
+            params.append(tenant_id)
+        if channel_id is not None:
+            clauses.append("channel_id=?")
+            params.append(channel_id)
+        where = " AND ".join(clauses)
+        cur = await db.execute(
+            f"SELECT * FROM announcements WHERE {where} ORDER BY last_rotated_at ASC NULLS FIRST, created_at ASC",
+            params,
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def list_expired_announcements() -> list[dict]:
+    """Vaqti tugagan, lekin hali active boʻlgan eʼlonlar (cleaner uchun)."""
+    async with _conn() as db:
+        cur = await db.execute(
+            """SELECT * FROM announcements
+               WHERE status=? AND expires_at IS NOT NULL AND expires_at < ?""",
+            (PostStatus.ACTIVE, _now_iso()),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+async def increment_announcement_counter(
+    post_id: int, tenant_id: int, field: str
+) -> None:
+    """views_count / contacts_count / rotation_count ni +1."""
+    if field not in ("views_count", "contacts_count", "rotation_count"):
+        raise ValueError(f"Noruxsat ustun: {field}")
+    async with _conn() as db:
+        await db.execute(
+            f"UPDATE announcements SET {field}={field}+1 WHERE id=? AND tenant_id=?",
+            (post_id, tenant_id),
+        )
+        await db.commit()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# MODERATORS
+# ═════════════════════════════════════════════════════════════════════
+async def add_moderator(
+    tenant_id: int, user_id: int, permissions: list[str], added_by: int
+) -> bool:
+    """Moderator qoʻshish."""
+    async with _conn() as db:
+        try:
+            await db.execute(
+                """INSERT INTO moderators (tenant_id, user_id, permissions, added_by)
+                   VALUES (?, ?, ?, ?)""",
+                (tenant_id, user_id, json.dumps(permissions), added_by),
+            )
+            await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+
+async def remove_moderator(tenant_id: int, user_id: int) -> bool:
+    async with _conn() as db:
+        cur = await db.execute(
+            "DELETE FROM moderators WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def is_moderator(tenant_id: int, user_id: int) -> bool:
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT 1 FROM moderators WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        ) as cur:
+            return (await cur.fetchone()) is not None
+
+
+async def get_moderator(tenant_id: int, user_id: int) -> dict | None:
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT * FROM moderators WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        ) as cur:
+            row = _row_to_dict(await cur.fetchone())
+            if row and row.get("permissions"):
+                with contextlib.suppress(Exception):
+                    row["permissions"] = json.loads(row["permissions"])
+            return row
+
+
+async def list_moderators(tenant_id: int) -> list[dict]:
+    async with _conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM moderators WHERE tenant_id=? ORDER BY created_at",
+            (tenant_id,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# AUDIT LOG
+# ═════════════════════════════════════════════════════════════════════
+async def write_audit(
+    actor_role: str,
+    actor_id: int,
+    action: str,
+    tenant_id: int | None = None,
+    target_type: str | None = None,
+    target_id: int | None = None,
+    details: dict | None = None,
+    level: str = "info",
+) -> None:
+    """Bitta audit yozuvi qoʻshish (har bir muhim amalda)."""
+    async with _conn() as db:
+        await db.execute(
+            """INSERT INTO audit_log
+               (level, actor_role, actor_id, tenant_id, action,
+                target_type, target_id, details)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                level, actor_role, actor_id, tenant_id, action,
+                target_type, target_id,
+                json.dumps(details or {}, ensure_ascii=False),
+            ),
+        )
+        await db.commit()
+
+
+async def list_audit(
+    tenant_id: int | None = None,
+    actor_id: int | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Audit log oʻqish (filtr bilan)."""
+    async with _conn() as db:
+        clauses = []
+        params: list[Any] = []
+        if tenant_id is not None:
+            clauses.append("tenant_id=?")
+            params.append(tenant_id)
+        if actor_id is not None:
+            clauses.append("actor_id=?")
+            params.append(actor_id)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.extend([limit, offset])
+        cur = await db.execute(
+            f"SELECT * FROM audit_log {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            params,
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# NOTIFICATIONS
+# ═════════════════════════════════════════════════════════════════════
+async def add_notification(
+    user_id: int,
+    message: str,
+    title: str = "",
+    type_: str = "info",
+    tenant_id: int | None = None,
+    payload: dict | None = None,
+) -> int:
+    """Yangi bildirishnoma yozish (yuborilgunicha is_sent=0)."""
+    async with _conn() as db:
+        cur = await db.execute(
+            """INSERT INTO notifications
+               (tenant_id, user_id, type, title, message, payload)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                tenant_id, user_id, type_, title, message,
+                json.dumps(payload or {}, ensure_ascii=False),
+            ),
+        )
+        nid = cur.lastrowid
+        await db.commit()
+        return nid
+
+
+async def mark_notification_sent(notif_id: int) -> None:
+    async with _conn() as db:
+        await db.execute(
+            "UPDATE notifications SET is_sent=1, sent_at=? WHERE id=?",
+            (_now_iso(), notif_id),
+        )
+        await db.commit()
+
+
+async def list_pending_notifications(limit: int = 100) -> list[dict]:
+    """Hali yuborilmagan bildirishnomalar (notifier service uchun)."""
+    async with _conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM notifications WHERE is_sent=0 ORDER BY created_at LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# PAYMENTS
+# ═════════════════════════════════════════════════════════════════════
+async def add_payment(
+    tenant_id: int,
+    amount_uzs: int,
+    tariff: str,
+    period_days: int,
+    approved_by: int,
+    note: str = "",
+) -> int:
+    """
+    Yangi toʻlov yozuvi.
+
+    paid_until ni avtomatik uzaytiradi (mavjud muddatga period_days qoʻshiladi,
+    yoki bugundan boshlab).
+    """
+    now = datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
+    async with _conn() as db:
+        # 1. Toʻlov yozuvi
+        cur = await db.execute(
+            """INSERT INTO payments
+               (tenant_id, amount_uzs, tariff, period_days, approved_by, note)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (tenant_id, amount_uzs, tariff, period_days, approved_by, note),
+        )
+        payment_id = cur.lastrowid
+
+        # 2. paid_until ni uzaytirish
+        async with db.execute(
+            "SELECT paid_until, total_paid_uzs FROM tenants WHERE tenant_id=?",
+            (tenant_id,),
+        ) as cur2:
+            row = await cur2.fetchone()
+        current_until = None
+        total_paid = 0
+        if row:
+            if row[0]:
+                with contextlib.suppress(Exception):
+                    current_until = datetime.fromisoformat(row[0])
+            total_paid = int(row[1] or 0)
+
+        base = current_until if current_until and current_until > now else now
+        new_until = (base + timedelta(days=period_days)).isoformat()
+
+        await db.execute(
+            """UPDATE tenants SET
+                   paid_until=?,
+                   total_paid_uzs=?,
+                   tariff=?,
+                   status=?,
+                   updated_at=?
+               WHERE tenant_id=?""",
+            (
+                new_until,
+                total_paid + amount_uzs,
+                tariff,
+                TenantStatus.ACTIVE,
+                _now_iso(),
+                tenant_id,
+            ),
+        )
+        await db.commit()
+        return payment_id
+
+
+async def list_payments(tenant_id: int, limit: int = 50) -> list[dict]:
+    async with _conn() as db:
+        cur = await db.execute(
+            "SELECT * FROM payments WHERE tenant_id=? ORDER BY paid_at DESC LIMIT ?",
+            (tenant_id, limit),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# WARNINGS
+# ═════════════════════════════════════════════════════════════════════
+async def add_warning(
+    tenant_id: int, user_id: int, issued_by: int, reason: str
+) -> int:
+    """
+    Foydalanuvchiga ogohlantirish yozish.
+
+    user.warnings_count avtomatik +1 boʻladi.
+    Chaqiruvchi MAX_WARNINGS_BEFORE_BLOCK ga yetganligini oʻzi tekshiradi.
+    """
+    async with _conn() as db:
+        cur = await db.execute(
+            """INSERT INTO warnings (tenant_id, user_id, issued_by, reason)
+               VALUES (?, ?, ?, ?)""",
+            (tenant_id, user_id, issued_by, reason),
+        )
+        wid = cur.lastrowid
+        await db.execute(
+            """UPDATE users
+               SET warnings_count = warnings_count + 1
+               WHERE tenant_id=? AND user_id=?""",
+            (tenant_id, user_id),
+        )
+        await db.commit()
+        return wid
+
+
+async def list_warnings(tenant_id: int, user_id: int) -> list[dict]:
+    async with _conn() as db:
+        cur = await db.execute(
+            """SELECT * FROM warnings
+               WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC""",
+            (tenant_id, user_id),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Statistika (tenant darajasida)
+# ═════════════════════════════════════════════════════════════════════
+async def tenant_stats(tenant_id: int) -> dict:
+    """Tenant uchun qisqa statistika."""
+    async with _conn() as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=?", (tenant_id,)
+        ) as cur:
+            users_total = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE tenant_id=? AND status=?",
+            (tenant_id, UserStatus.ACTIVE),
+        ) as cur:
+            users_active = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM announcements WHERE tenant_id=? AND status=?",
+            (tenant_id, PostStatus.ACTIVE),
+        ) as cur:
+            posts_active = (await cur.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM channels WHERE tenant_id=? AND is_active=1",
+            (tenant_id,),
+        ) as cur:
+            channels_active = (await cur.fetchone())[0]
+
+        return {
+            "users_total": users_total,
+            "users_active": users_active,
+            "posts_active": posts_active,
+            "channels_active": channels_active,
+        }
+
+
+async def global_stats() -> dict:
+    """Global statistika (super admin uchun)."""
+    async with _conn() as db:
+        async with db.execute("SELECT COUNT(*) FROM tenants") as cur:
+            tenants_total = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM tenants WHERE status=?", (TenantStatus.ACTIVE,)
+        ) as cur:
+            tenants_active = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            users_total = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM announcements WHERE status=?", (PostStatus.ACTIVE,)
+        ) as cur:
+            posts_active = (await cur.fetchone())[0]
+        async with db.execute("SELECT COALESCE(SUM(amount_uzs),0) FROM payments") as cur:
+            total_revenue = (await cur.fetchone())[0]
+
+        return {
+            "tenants_total": tenants_total,
+            "tenants_active": tenants_active,
+            "users_total": users_total,
+            "posts_active": posts_active,
+            "total_revenue_uzs": int(total_revenue or 0),
+        }
