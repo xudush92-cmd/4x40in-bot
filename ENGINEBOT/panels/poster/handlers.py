@@ -44,7 +44,7 @@ from keyboards import user_kb
 from keyboards.common_kb import Btn, inline_grid, request_contact
 from utils import formatters as fmt
 from utils import logger as log_mod
-from utils.confirmation import build_confirmation, confirm_logout
+from utils.confirmation import build_confirmation
 from utils.session_state import session
 from utils.validators import validate_interval, validate_name, validate_phone
 
@@ -780,6 +780,31 @@ async def show_post_detail(query: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("poster:post:delete:"))
 async def delete_post(query: CallbackQuery) -> None:
+    """E'lonni o'chirish — TASDIQLASH so'raymiz."""
+    if query.from_user is None or not query.data:
+        return
+    post_id = int(query.data.rsplit(":", 1)[1])
+    state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+
+    post = await db.get_announcement(post_id, tenant_id=tenant_id)
+    if not post or post.get("user_id") != query.from_user.id:
+        return await query.answer("Topilmadi.", show_alert=True)
+
+    text, kb = build_confirmation(
+        action_id=f"poster:post_delete:{post_id}",
+        title="Eʼlonni o'chirish",
+        question=f"E'lon <code>#{post_id}</code> ni o'chirishni tasdiqlaysizmi?",
+        warning="⚠️ Bu amalni ortga qaytarib bo'lmaydi.\nE'lon kanaldan ham o'chiriladi.",
+    )
+    if query.message:
+        await query.message.answer(text, reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("confirm:yes:poster:post_delete:"))
+async def delete_post_confirm(query: CallbackQuery) -> None:
+    """E'lonni o'chirish — TASDIQLANGAN."""
     if query.from_user is None or not query.data:
         return
     post_id = int(query.data.rsplit(":", 1)[1])
@@ -806,6 +831,17 @@ async def delete_post(query: CallbackQuery) -> None:
         target_id=post_id,
     )
     await query.answer("🗑 O'chirildi", show_alert=True)
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+@router.callback_query(F.data.startswith("confirm:no:poster:post_delete:"))
+async def delete_post_cancel(query: CallbackQuery) -> None:
+    if query.message:
+        await query.message.answer("✅ Bekor qilindi.")
+    await query.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────

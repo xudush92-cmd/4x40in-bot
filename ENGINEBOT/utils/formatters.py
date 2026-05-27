@@ -177,16 +177,6 @@ def format_relative(dt: datetime | str | None) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Pul (so'm) formatlash
-# ─────────────────────────────────────────────────────────────────────
-def format_uzs(amount: int | None) -> str:
-    """1234567 → "1 234 567 soʻm"""
-    if amount is None or amount == 0:
-        return "—"
-    return f"{amount:,}".replace(",", " ") + " soʻm"
-
-
-# ─────────────────────────────────────────────────────────────────────
 # Statistika kartochka
 # ─────────────────────────────────────────────────────────────────────
 def format_stats_card(title: str, items: Dict[str, Any]) -> str:

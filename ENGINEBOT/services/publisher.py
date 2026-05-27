@@ -101,6 +101,7 @@ async def publish_post(
     tenant_id: int,
     *,
     is_new: bool = False,
+    is_edit: bool = False,
     _retry_count: int = 0,
 ) -> bool:
     """
@@ -110,6 +111,8 @@ async def publish_post(
         post_id      : DB'dagi e'lon ID
         tenant_id    : tenant ID (izolyatsiya filtri uchun)
         is_new       : True — yangi e'lon (FIRST_POST_IMMEDIATE)
+        is_edit      : True — tahrir natijasi (rotation_count yangilanmaydi,
+                       "Aylandi" badge ko'rsatilmaydi)
         _retry_count : ichki ishlatuvchi (FloodWait recursion limiti)
 
     Returns: True — muvaffaqiyatli, False — xato.
@@ -156,7 +159,7 @@ async def publish_post(
     full_text = wrap_announcement(
         body,
         is_new=is_new,
-        is_rotated=not is_new,
+        is_rotated=(not is_new) and (not is_edit),
         rotation_count=rotation_count,
     )
 
@@ -192,18 +195,19 @@ async def publish_post(
             status=PostStatus.ACTIVE,
         )
 
-        if not is_new:
+        if not is_new and not is_edit:
             await db.increment_announcement_counter(
                 post_id, tenant_id, "rotation_count"
             )
 
         await audit_log.log_system_event(
-            action="post_published",
+            action="post_edited_in_channel" if is_edit else "post_published",
             tenant_id=tenant_id,
             target_type="announcement",
             target_id=post_id,
             channel_id=channel_id,
             is_new=is_new,
+            is_edit=is_edit,
             message_id=new_message_id,
         )
 
@@ -222,13 +226,13 @@ async def publish_post(
 
         logger.info(
             f"published #{post_id} → channel {channel_id} mid={new_message_id} "
-            f"(new={is_new}, rot={rotation_count}, photos={len(photos)})"
+            f"(new={is_new}, edit={is_edit}, rot={rotation_count}, photos={len(photos)})"
         )
         return True
 
     except Exception as e:
         return await _handle_publish_error(
-            e, post_id, tenant_id, channel_id, is_new, _retry_count
+            e, post_id, tenant_id, channel_id, is_new, is_edit, _retry_count
         )
 
 
@@ -271,6 +275,7 @@ async def _handle_publish_error(
     tenant_id: int,
     channel_id: int,
     is_new: bool,
+    is_edit: bool = False,
     retry_count: int = 0,
 ) -> bool:
     """Publish xato'larini boshqarish (FloodWait, Forbidden, va h.k.).
@@ -303,7 +308,7 @@ async def _handle_publish_error(
         )
         await asyncio.sleep(wait)
         return await publish_post(
-            post_id, tenant_id, is_new=is_new, _retry_count=retry_count + 1
+            post_id, tenant_id, is_new=is_new, is_edit=is_edit, _retry_count=retry_count + 1
         )
 
     if isinstance(e, TelegramForbiddenError):
@@ -399,5 +404,5 @@ async def refresh_post_in_channel(post_id: int, tenant_id: int) -> bool:
         with contextlib.suppress(TelegramAPIError):
             await bot.delete_message(channel_id, int(old_message_id))
 
-    # Yangisini yuborish (publish_post is_new=False — yangilangan deb belgilash)
-    return await publish_post(post_id, tenant_id, is_new=False)
+    # Yangisini yuborish (publish_post is_edit=True — tahrir, rotation EMAS)
+    return await publish_post(post_id, tenant_id, is_new=False, is_edit=True)

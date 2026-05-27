@@ -218,7 +218,29 @@ async def notify_post_expired(user_id: int, tenant_id: int, post_id: int) -> int
 async def notify_tenant_payment_reminder(
     tenant_id: int, days_left: int, paid_until: str
 ) -> int:
-    """Tenant'ga muddati yaqinlashayotganini eslatish (PULSIZ model)."""
+    """Tenant'ga muddati yaqinlashayotganini eslatish (PULSIZ model).
+
+    IDEMPOTENT: bir kunda bir martadan ko'p yuborilmaydi (DB tekshirish).
+    """
+    # Idempotency: bugun shu tenantga "muddat yaqin" yuborilganmi?
+    from core.database import _conn
+    async with _conn() as conn:
+        cur = await conn.execute(
+            """SELECT id FROM notifications
+               WHERE user_id = ? AND tenant_id = ?
+                 AND title LIKE 'Muddat yaqin%'
+                 AND date(created_at) = date('now')
+               LIMIT 1""",
+            (tenant_id, tenant_id),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+    if row is not None:
+        logger.debug(
+            f"payment_reminder skipped (already sent today): tenant={tenant_id}"
+        )
+        return int(row[0])
+
     return await notify_warning(
         user_id=tenant_id,
         tenant_id=tenant_id,

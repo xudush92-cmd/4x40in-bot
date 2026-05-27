@@ -277,29 +277,6 @@ def validate_car_plate(text: str) -> ValidationResult:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Pul miqdori (so'm)
-# ─────────────────────────────────────────────────────────────────────
-def validate_amount_uzs(text: str) -> ValidationResult:
-    """Pul miqdori so'mda (faqat musbat butun son)."""
-    if not text:
-        return False, "", "💰 Miqdor kiritilmagan."
-
-    cleaned = re.sub(r"[\s,_]", "", text.strip())
-    try:
-        n = int(cleaned)
-    except ValueError:
-        return False, "", "💰 Miqdor butun son boʻlishi kerak."
-
-    if n <= 0:
-        return False, "", "💰 Miqdor musbat boʻlishi kerak."
-
-    if n > 1_000_000_000:
-        return False, "", "💰 Miqdor juda katta."
-
-    return True, str(n), ""
-
-
-# ─────────────────────────────────────────────────────────────────────
 # Sabab matni (warning, block uchun)
 # ─────────────────────────────────────────────────────────────────────
 def validate_reason(text: str, min_len: int = 3, max_len: int = 500) -> ValidationResult:

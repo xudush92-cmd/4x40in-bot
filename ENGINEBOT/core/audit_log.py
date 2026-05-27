@@ -154,29 +154,6 @@ async def log_post_event(
     )
 
 
-async def log_payment_event(
-    actor: RoleContext,
-    tenant_id: int,
-    amount_uzs: int,
-    tariff: str,
-    period_days: int,
-) -> None:
-    """Toʻlov amalini yozish (eng muhim — moliyaviy)."""
-    await log_action(
-        actor=actor,
-        action="payment_received",
-        tenant_id=tenant_id,
-        target_type="tenant",
-        target_id=tenant_id,
-        details={
-            "amount_uzs": amount_uzs,
-            "tariff": tariff,
-            "period_days": period_days,
-        },
-        level="info",
-    )
-
-
 async def log_security_event(
     actor: RoleContext | None,
     action: str,
