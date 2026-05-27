@@ -378,6 +378,7 @@ async def init_db() -> None:
         ])
         await _ensure_columns(db, "tenants", [
             ("description", "TEXT DEFAULT ''"),
+            ("admin_note", "TEXT DEFAULT ''"),
         ])
 
         await db.commit()
@@ -506,6 +507,17 @@ async def count_tenants(status: str | None = None) -> int:
         row = await cur.fetchone()
         await cur.close()
         return int(row[0]) if row else 0
+
+
+async def set_admin_note(tenant_id: int, note: str) -> None:
+    """
+    Super admin uchun tenant izohi (shaxsiy eslatma).
+
+    Og'zaki kelishuv modelida — kim bilan, qancha, qanday shartlarda
+    kelishilganini eslab qolish uchun. Faqat super admin koʻradi.
+    """
+    note = (note or "").strip()[:500]  # Max 500 belgi
+    await update_tenant(tenant_id, admin_note=note)
 
 
 # ═════════════════════════════════════════════════════════════════════

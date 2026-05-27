@@ -52,7 +52,9 @@ def tenant_actions(tenant_id: int, status: str = "active"):
         ("📜 Audit log", f"super:tenant:audit:{tenant_id}"),
         ("📨 Xabar yuborish", f"super:tenant:message:{tenant_id}"),
     ]
+    items.append(("⚡ Tezkor uzaytirish", f"super:tenant:quick_extend:{tenant_id}"))
     items.append(("📅 Tarif/muddat belgilash", f"super:tenant:extend:{tenant_id}"))
+    items.append(("📝 Izoh tahrirlash", f"super:tenant:note_edit:{tenant_id}"))
 
     if status == "pending":
         items.insert(0, ("✅ Tasdiqlash", f"super:tenant:approve:{tenant_id}"))
@@ -70,6 +72,31 @@ def tenant_actions(tenant_id: int, status: str = "active"):
         items,
         columns=1,
         extra_rows=[[(Btn.BACK, "super:tenants:list")]],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Tezkor uzaytirish (og'zaki kelishuv asosida)
+# ─────────────────────────────────────────────────────────────────────
+def quick_extend_picker(tenant_id: int):
+    """
+    Tezkor uzaytirish tugmalari.
+
+    Super admin og'zaki kelishuv asosida bir tugma bilan muddatni
+    uzaytira oladi. Joriy tarif saqlanadi (faqat paid_until uzayadi).
+    """
+    items = [
+        ("➕ 7 kun", f"super:tenant:quick_extend:{tenant_id}:7"),
+        ("➕ 15 kun", f"super:tenant:quick_extend:{tenant_id}:15"),
+        ("➕ 30 kun", f"super:tenant:quick_extend:{tenant_id}:30"),
+        ("➕ 60 kun", f"super:tenant:quick_extend:{tenant_id}:60"),
+        ("➕ 90 kun", f"super:tenant:quick_extend:{tenant_id}:90"),
+        ("✏️ Qo'lda kiritish", f"super:tenant:extend:{tenant_id}"),
+    ]
+    return inline_grid(
+        items,
+        columns=2,
+        extra_rows=[[(Btn.BACK, f"super:tenant:show:{tenant_id}")]],
     )
 
 

@@ -71,6 +71,59 @@ async def _ensure_super(uid: int) -> RoleContext:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# 📝 Admin note (izoh) — state filter bilan, barcha boshqa message
+# handlerlardan OLDIN registratsiya qilinadi (raqam yoki matn farqi yo'q).
+# ─────────────────────────────────────────────────────────────────────
+async def _is_admin_note_state(message: Message) -> bool:
+    """Filter: super admin izoh matnini kutmoqdami?"""
+    if message.from_user is None or message.from_user.id != SUPER_ADMIN_ID:
+        return False
+    state = await session.get(message.from_user.id)
+    return state.step == "super:awaiting_admin_note"
+
+
+@router.message(_is_admin_note_state, F.text & ~F.text.startswith("/"))
+async def receive_admin_note(message: Message) -> None:
+    """
+    Super admin izoh matnini kiritdi.
+
+    State filter sababli faqat awaiting_admin_note holatida ishlaydi —
+    boshqa message handlerlardan OLDIN registratsiya qilinganligi uchun
+    raqamli matnni ham to'g'ri qabul qiladi.
+    """
+    state = await session.get(message.from_user.id)
+    tenant_id = int(state.data.get("tenant_id", 0))
+    if not tenant_id:
+        await session.reset(message.from_user.id)
+        return
+
+    note = (message.text or "").strip()
+    if len(note) > 500:
+        await message.answer("❌ Matn juda uzun (max 500 belgi). Qisqartiring.")
+        return
+
+    await db.set_admin_note(tenant_id, note)
+    await audit_log.log_action(
+        actor_role="super_admin",
+        actor_id=message.from_user.id,
+        action="tenant_note_updated",
+        tenant_id=tenant_id,
+        target_type="tenant",
+        target_id=tenant_id,
+        details={"note_length": len(note)},
+    )
+    await session.reset(message.from_user.id)
+
+    if not note:
+        await message.answer(f"🗑 Izoh o'chirildi (tenant #{tenant_id}).")
+    else:
+        await message.answer(
+            f"✅ Izoh saqlandi (tenant #{tenant_id}).\n\n"
+            f"📝 <i>{fmt.esc(note[:200])}{'...' if len(note) > 200 else ''}</i>"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # 📊 Global statistika
 # ─────────────────────────────────────────────────────────────────────
 @router.message(F.text == Btn.GLOBAL_STATS)
@@ -404,6 +457,162 @@ async def confirm_extend_no(query: CallbackQuery) -> None:
     await session.reset(query.from_user.id)
     if query.message:
         await query.message.answer("❌ Bekor qilindi.")
+    await query.answer()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ⚡ Tezkor uzaytirish (og'zaki kelishuv asosida bir tugma bilan)
+# ─────────────────────────────────────────────────────────────────────
+@router.callback_query(F.data.regexp(r"^super:tenant:quick_extend:\d+$"))
+async def show_quick_extend_picker(query: CallbackQuery) -> None:
+    """Tezkor uzaytirish tugmalarini ko'rsatish."""
+    if query.from_user.id != SUPER_ADMIN_ID or not query.data:
+        return await query.answer("🚫 Ruxsat yo'q.", show_alert=True)
+
+    tenant_id = int(query.data.rsplit(":", 1)[1])
+    tenant = await db.get_tenant(tenant_id)
+    if not tenant:
+        await query.answer("Tenant topilmadi.", show_alert=True)
+        return
+
+    name = (tenant.get("name") or "?")[:30]
+    paid_until = tenant.get("paid_until", "")[:10] or "—"
+    tariff = (tenant.get("tariff") or "?").upper()
+
+    text = (
+        f"⚡ <b>Tezkor uzaytirish</b>\n\n"
+        f"🏢 Tenant: <code>#{tenant_id}</code> {fmt.esc(name)}\n"
+        f"📦 Tarif: <b>{tariff}</b>\n"
+        f"📅 Joriy muddat: {paid_until}\n\n"
+        "Qancha kunga uzaytirasiz?"
+    )
+    if query.message:
+        await query.message.answer(
+            text, reply_markup=super_admin_kb.quick_extend_picker(tenant_id)
+        )
+    await query.answer()
+
+
+@router.callback_query(F.data.regexp(r"^super:tenant:quick_extend:\d+:\d+$"))
+async def apply_quick_extend(query: CallbackQuery) -> None:
+    """Tezkor uzaytirish: tasdiqlash so'rash."""
+    if query.from_user.id != SUPER_ADMIN_ID or not query.data:
+        return await query.answer("🚫 Ruxsat yo'q.", show_alert=True)
+
+    parts = query.data.split(":")
+    tenant_id = int(parts[3])
+    days = int(parts[4])
+
+    if days < 1 or days > 3650:
+        await query.answer("❌ Notoʻgʻri muddat", show_alert=True)
+        return
+
+    tenant = await db.get_tenant(tenant_id)
+    if not tenant:
+        await query.answer("Tenant topilmadi.", show_alert=True)
+        return
+
+    # Joriy tarifni saqlaymiz (yoki tariff bo'lmasa — TRIAL)
+    current_tariff = tenant.get("tariff") or Tariff.TRIAL
+
+    text, kb = build_confirmation(
+        action_id=f"super:quick_extend:{tenant_id}:{days}",
+        title="Tezkor uzaytirish",
+        question=f"Tenant <code>#{tenant_id}</code> muddatini uzaytirasizmi?",
+        details=[
+            f"📦 Tarif: <b>{current_tariff.upper()}</b> (saqlanadi)",
+            f"⏰ Qo'shiladi: <b>+{days} kun</b>",
+        ],
+        warning="✅ Tasdiqlasangiz tenant darhol aktivlashadi.",
+    )
+    if query.message:
+        await query.message.answer(text, reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.regexp(r"^confirm:yes:super:quick_extend:\d+:\d+$"))
+async def confirm_quick_extend_yes(query: CallbackQuery) -> None:
+    """Tezkor uzaytirish tasdiqlandi — extend_subscription chaqirish."""
+    if query.from_user.id != SUPER_ADMIN_ID or not query.data:
+        return await query.answer("🚫", show_alert=True)
+
+    parts = query.data.split(":")
+    tenant_id = int(parts[4])
+    days = int(parts[5])
+
+    tenant = await db.get_tenant(tenant_id)
+    if not tenant:
+        await query.answer("Tenant topilmadi.", show_alert=True)
+        return
+
+    current_tariff = tenant.get("tariff") or Tariff.TRIAL
+
+    payment_id = await tenant_manager.extend_subscription(
+        tenant_id=tenant_id,
+        tariff=current_tariff,
+        period_days=days,
+        approved_by=query.from_user.id,
+        note=f"Tezkor uzaytirish (+{days} kun) — og'zaki kelishuv",
+    )
+
+    if query.message:
+        await query.message.answer(
+            f"✅ Muddat uzaytirildi!\n\n"
+            f"🏢 Tenant: <code>#{tenant_id}</code>\n"
+            f"📦 {current_tariff.upper()}\n"
+            f"⏰ +{days} kun qo'shildi\n"
+            f"📋 Yozuv: #{payment_id}"
+        )
+    await query.answer("✅ Tasdiqlandi", show_alert=True)
+
+
+@router.callback_query(F.data.regexp(r"^confirm:no:super:quick_extend:\d+:\d+$"))
+async def confirm_quick_extend_no(query: CallbackQuery) -> None:
+    """Tezkor uzaytirish bekor qilindi."""
+    if query.from_user.id != SUPER_ADMIN_ID:
+        return
+    if query.message:
+        await query.message.answer("❌ Bekor qilindi.")
+    await query.answer()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 📝 Tenant izohi (admin_note) — shaxsiy eslatma
+# ─────────────────────────────────────────────────────────────────────
+@router.callback_query(F.data.startswith("super:tenant:note_edit:"))
+async def start_note_edit(query: CallbackQuery) -> None:
+    """Izoh tahrirlash — matn so'raymiz."""
+    if query.from_user.id != SUPER_ADMIN_ID or not query.data:
+        return await query.answer("🚫 Ruxsat yo'q.", show_alert=True)
+
+    tenant_id = int(query.data.rsplit(":", 1)[1])
+    tenant = await db.get_tenant(tenant_id)
+    if not tenant:
+        await query.answer("Tenant topilmadi.", show_alert=True)
+        return
+
+    current = tenant.get("admin_note") or ""
+    name = (tenant.get("name") or "?")[:30]
+
+    text_parts = [
+        f"📝 <b>Tenant izohi</b>\n",
+        f"🏢 <code>#{tenant_id}</code> {fmt.esc(name)}",
+    ]
+    if current:
+        text_parts.append(f"\n📌 Joriy izoh:\n<i>{fmt.esc(current)}</i>")
+    text_parts.append(
+        "\nYangi izoh matnini yuboring (max 500 belgi).\n"
+        "Bo'sh xabar yuborsangiz — izoh o'chiriladi.\n\n"
+        "<i>Bekor qilish uchun /cancel</i>"
+    )
+
+    await session.update(
+        query.from_user.id,
+        step="super:awaiting_admin_note",
+        data={"tenant_id": tenant_id},
+    )
+    if query.message:
+        await query.message.answer("\n".join(text_parts))
     await query.answer()
 
 

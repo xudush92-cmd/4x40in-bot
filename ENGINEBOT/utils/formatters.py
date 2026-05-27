@@ -274,6 +274,11 @@ def format_tenant_card(tenant: Mapping[str, Any], stats: Mapping[str, Any] | Non
     if tenant.get("created_at"):
         lines.append(f"🕐 Qoʻshilgan: {format_date(tenant['created_at'])}")
 
+    # Super admin shaxsiy izohi (og'zaki kelishuv eslatmasi)
+    if tenant.get("admin_note"):
+        lines.append("")
+        lines.append(f"📝 <b>Izoh:</b> {esc(tenant['admin_note'])}")
+
     if stats:
         lines.append("")
         lines.append("📊 <b>Statistika:</b>")

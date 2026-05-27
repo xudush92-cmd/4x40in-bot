@@ -13,7 +13,7 @@ ENGINEBOT — bu Telegram kanal va guruh egalariga moʻljallangan universal eʼl
 1. [Maqsad va g'oya](#-maqsad-va-goya)
 2. [v1.1 Yangiliklar](#-v11-yangiliklar)
 3. [Mijozlar](#-mijozlar)
-4. [Daromad modeli](#-daromad-modeli)
+4. [Foydalanish tartibi](#-foydalanish-tartibi)
 5. [3+1 darajali nazorat](#-31-darajali-nazorat-tizimi)
 6. [Asosiy funksiyalar](#-asosiy-funksiyalar)
 7. [Per-poster rotation](#-per-poster-rotation)
@@ -83,24 +83,33 @@ ENGINEBOT — bitta bot, koʻp kanal, koʻp tenant.
 
 ---
 
-## 💰 Daromad modeli
+## 💬 Foydalanish tartibi
 
-### Tarif rejasi (taklif)
+### Og'zaki kelishuv modeli
+ENGINEBOT'da **pul tizimi yo'q**. Hammasi **og'zaki kelishuv** asosida ishlaydi:
 
-| Tarif | Aktiv e'lon | Cheklov | Narx (oyiga) |
-|-------|-------------|---------|--------------|
-| 🆓 **Trial** | 5 | 1 kanal, 7 kun | Bepul sinov |
-| 🥉 **Bronze** | 10 | 1 kanal, 200 user | 50,000 soʻm |
-| 🥈 **Silver** | 20 | 3 kanal, 1000 user | 150,000 soʻm |
-| 🥇 **Gold** | 100 | Cheksiz | 300,000 soʻm |
+1. 💬 **Aloqa** — foydalanuvchi bot egasi (Super Admin) bilan gaplashadi
+2. ⏰ **Muddat** — Super Admin shaxsiy belgilaydi (qancha kun ishlaydi)
+3. ✅ **Tasdiq** — Super Admin tasdiqlagandan so'ng tenant **ACTIVE** holatiga o'tadi
+4. ⏸ **Muddat tugadi** — avtomatik **PAUSE** (kutish rejimi)
+5. 🔄 **Qayta tasdiq** — yangi muddat berilsa, qayta **ACTIVE** bo'ladi
 
-### Toʻlov tartibi
-- ⚠️ **Toʻlov OG'ZAKI kelishuv asosida** boshqariladi (v1.1 qoidasi)
-- Karta orqali oʻtkazma
-- **Faqat siz (Super Admin)** tasdiqlaganingizdan keyin tenant aktivlashadi
-- Trial muddati tugagach — avtomatik **Pause** holatiga oʻtadi
-  (eʼlonlar saqlanadi, lekin yangilari qabul qilinmaydi)
-- Eslatma: tugashga 3 kun qolganda foydalanuvchiga avto-xabar
+### Tarif rejalari (faqat limitlar)
+
+Tariflar **faqat texnik cheklovlar** uchun (narx yo'q):
+
+| Tarif | Aktiv e'lon | Kanal | Foydalanuvchi | Muddat |
+|-------|-------------|-------|----------------|--------|
+| 🆓 **Trial** | 5 | 1 | 50 | 7 kun |
+| 🥉 **Bronze** | 10 | 1 | 200 | Kelishuv |
+| 🥈 **Silver** | 20 | 3 | 1000 | Kelishuv |
+| 🥇 **Gold** | 100 | Cheksiz | Cheksiz | Kelishuv |
+
+### Pause/Active mantiq
+- ⏸ **PAUSE holatida**: e'lonlar saqlanadi, lekin yangilari qabul qilinmaydi
+- ✅ **ACTIVE holatida**: hamma funksiyalar ishlaydi
+- 📅 **Eslatma**: muddat tugashiga 3 kun qolganda foydalanuvchiga avto-xabar
+- 🚨 **Muddat tugadi**: avtomatik PAUSE + Super Admin'ga bildirishnoma
 
 ---
 
@@ -110,7 +119,7 @@ ENGINEBOT — bitta bot, koʻp kanal, koʻp tenant.
 ┌──────────────────────────────────┐
 │ 1. SUPER ADMIN (siz)             │  ← Hammasi sizda
 │    • Tenantlar boshqaruvi        │
-│    • Toʻlovlar (qoʻlda)          │
+│    • Muddat boshqaruvi (qo'lda) │
 │    • Global statistika           │
 │    • Audit log (global)          │
 └──────────────────────────────────┘
@@ -179,7 +188,8 @@ ENGINEBOT — bitta bot, koʻp kanal, koʻp tenant.
 
 ### 👑 Super Admin uchun
 - 👥 **Tenantlar** — ro'yxat, ON/OFF, blok
-- 💰 **Toʻlovlar** — tarif uzaytirish (qoʻlda)
+- ⏰ **Muddat boshqaruvi** — tezkor uzaytirish (+7/+15/+30/+60/+90 kun)
+- 📝 **Tenant izohlari** — har tenant uchun shaxsiy eslatma
 - 📊 **Global statistika** — tizim bo'yicha
 - 📨 **Broadcast** — barcha foydalanuvchilarga xabar
 - 📜 **Audit log** — global
