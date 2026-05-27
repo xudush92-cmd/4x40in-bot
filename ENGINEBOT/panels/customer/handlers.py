@@ -29,7 +29,6 @@ from keyboards import user_kb
 from keyboards.common_kb import Btn, inline_grid, request_contact
 from utils import formatters as fmt
 from utils import logger as log_mod
-from utils.confirmation import confirm_logout
 from utils.session_state import session
 from utils.validators import validate_name, validate_phone
 

@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from config import DEFAULT_TZ_OFFSET, PostStatus, Rotation
+from config import DEFAULT_TZ_OFFSET, Rotation
 from core import database as db
 from core.error_handler import safe_loop
 from utils import logger as log_mod
@@ -134,7 +134,8 @@ async def _process_poster(poster: dict, now: datetime) -> bool:
 
     # Publisher orqali chiqaramiz (publisher set_bot allaqachon main.py'da chaqirilgan)
     from services.publisher import publish_post
-    is_first = candidate.get("status") == PostStatus.DRAFT
+    # is_first: post hali kanalga chiqmagan bo'lsa (message_id YO'Q)
+    is_first = not candidate.get("message_id")
     success = await publish_post(post_id, tenant_id, is_new=is_first)
 
     if not success:

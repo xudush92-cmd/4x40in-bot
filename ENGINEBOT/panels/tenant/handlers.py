@@ -420,6 +420,24 @@ async def start_warn_user_cb(query: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("tenant:user:unblock:"))
 async def unblock_user_cb(query: CallbackQuery) -> None:
+    """User'ni tiklash — confirmation so'raymiz."""
+    if query.from_user is None or not query.data:
+        return
+    await _ensure_tenant(query.from_user.id)
+    target_uid = int(query.data.rsplit(":", 1)[1])
+
+    text, kb = build_confirmation(
+        action_id=f"tenant:user_unblock:{target_uid}",
+        title="Foydalanuvchini tiklash",
+        question=f"User <code>#{target_uid}</code> ni qayta aktivlashtiramizmi?",
+    )
+    if query.message:
+        await query.message.answer(text, reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("confirm:yes:tenant:user_unblock:"))
+async def unblock_user_yes(query: CallbackQuery) -> None:
     if query.from_user is None or not query.data:
         return
     ctx = await _ensure_tenant(query.from_user.id)
@@ -430,6 +448,13 @@ async def unblock_user_cb(query: CallbackQuery) -> None:
         ctx, action="user_unblocked", target_user_id=target_uid
     )
     await query.answer("✅ Tiklandi", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("confirm:no:tenant:user_unblock:"))
+async def unblock_user_no(query: CallbackQuery) -> None:
+    if query.message:
+        await query.message.answer("✅ Bekor qilindi.")
+    await query.answer()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -837,7 +862,26 @@ async def resume_post_cb(query: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("tenant:post:delete:"))
 async def delete_post_cb(query: CallbackQuery) -> None:
-    """E'lonni o'chirish (status=deleted)."""
+    """E'lonni o'chirish — TASDIQLASH so'raymiz."""
+    if query.from_user is None or not query.data:
+        return
+    await _ensure_tenant(query.from_user.id)
+    post_id = int(query.data.rsplit(":", 1)[1])
+
+    text, kb = build_confirmation(
+        action_id=f"tenant:post_delete:{post_id}",
+        title="E'lonni o'chirish",
+        question=f"E'lon <code>#{post_id}</code> ni o'chirishni tasdiqlaysizmi?",
+        warning="⚠️ Bu amalni ortga qaytarib bo'lmaydi.\nE'lon kanaldan ham o'chiriladi.",
+    )
+    if query.message:
+        await query.message.answer(text, reply_markup=kb)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("confirm:yes:tenant:post_delete:"))
+async def delete_post_confirm(query: CallbackQuery) -> None:
+    """E'lonni o'chirish — TASDIQLANGAN."""
     if query.from_user is None or not query.data:
         return
     ctx = await _ensure_tenant(query.from_user.id)
@@ -849,6 +893,10 @@ async def delete_post_cb(query: CallbackQuery) -> None:
         actor=ctx, action="post_deleted",
         target_type="announcement", target_id=post_id,
     )
+    # Kanaldan ham o'chirish
+    with contextlib.suppress(Exception):
+        from services.publisher import remove_post_from_channel
+        await remove_post_from_channel(post_id, ctx.user_id)
     # Poster'ga xabar
     post = await db.get_announcement(post_id)
     if post:
@@ -860,6 +908,17 @@ async def delete_post_cb(query: CallbackQuery) -> None:
             reason="Guruh admini tomonidan o'chirildi",
         )
     await query.answer("🗑 E'lon o'chirildi.", show_alert=True)
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+@router.callback_query(F.data.startswith("confirm:no:tenant:post_delete:"))
+async def delete_post_cancel(query: CallbackQuery) -> None:
+    if query.message:
+        await query.message.answer("✅ Bekor qilindi.")
+    await query.answer()
 
 
 @router.callback_query(F.data.startswith("tenant:post:warn_owner:"))
@@ -1419,3 +1478,41 @@ async def profile_back_cb(query: CallbackQuery) -> None:
 # tenant_text_router edit_profile step'ini ham qayta ishlaydi (yuqorida).
 # Alohida F.text handler — bu router'da KO'P EMAS — duplicate handler
 # muammosini oldini olamiz.
+
+
+# ═════════════════════════════════════════════════════════════════════
+# ⬅️ Universal "Orqaga" handlerlar (settings/channels/posts back)
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data == "tenant:settings:back")
+async def settings_back_cb(query: CallbackQuery) -> None:
+    """Sozlamalar panelidan orqaga."""
+    await query.answer()
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+@router.callback_query(F.data == "tenant:channels:back")
+async def channels_back_cb(query: CallbackQuery) -> None:
+    """Kanal panelidan orqaga."""
+    await query.answer()
+    if query.message:
+        from aiogram.exceptions import TelegramAPIError
+        with contextlib.suppress(TelegramAPIError):
+            await query.message.delete()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 👁 POST VIEW (alias to show)
+# ═════════════════════════════════════════════════════════════════════
+@router.callback_query(F.data.startswith("tenant:post:view:"))
+async def post_view_alias(query: CallbackQuery) -> None:
+    """tenant:post:view — show bilan bir xil (alias)."""
+    await show_post_detail(query)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# ❌ User REJECT (approve_user_inline'da ishlatiladi)
+# ═════════════════════════════════════════════════════════════════════
+# `reject_user_cb` allaqachon yuqorida bor — bu blok placeholder izoh.
