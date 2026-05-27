@@ -1,136 +1,129 @@
-# ENGINEBOT loyihasi — kontekst va qoidalar
+# ENGINEBOT — Loyiha konteksti va holati
 
-> Bu fayl `.kiro/steering/` ichida joylashgan va har bir chat sessiyasida
-> avtomatik yuklanadi. Yangi suhbatda Kiro shu kontekstni biladi.
+## 📌 Loyiha haqida
+Telegram kanal/guruh egalari uchun universal e'lon boshqaruv tizimi.
+- **Repo:** `xudush92-cmd/4x40in-bot`, papka `ENGINEBOT/`
+- **Texnologiyalar:** Python 3.11+, aiogram 3.x, aiosqlite (WAL mode)
+- **Arxitektura:** 4 darajali (SUPER_ADMIN > TENANT > MODERATOR > USER)
+- **Model:** PULSIZ (og'zaki kelishuv asosida tarif/muddat belgilanadi)
 
-## 🎯 Loyiha haqida
+## 🔀 Branch'lar va PR'lar holati (2025-05-27)
 
-**ENGINEBOT** — Telegram kanal va guruh egalari uchun universal e'lon
-boshqaruv tizimi. Loyiha `4x40in-bot` repo'sida `ENGINEBOT/` papkasida
-joylashgan.
+| PR | Branch | Maqsad | Holat |
+|----|--------|--------|-------|
+| #6 | `feature/enginebot-v1-redesign` | V1 to'liq redesign | Ochiq |
+| #7 | `fix/enginebot-cleanup-pulsiz` | Pulsiz model + kritik fixlar | Ochiq |
+| #8 | `fix/enginebot-dead-handlers-and-bugs` | Dead button handlerlar + buglar | Ochiq ✅ |
 
-**Brend:** ENGINE + BOT (foydalanuvchi tomonidan tanlangan)
-**Tagline:** "E'lonlar mexanizmi"
-**Owner:** @xudush92-cmd
-**Version:** 1.0.0-mvp
+**Tavsiya:** #6 → #7 → #8 tartibida main'ga merge qilish.
 
-## 📋 Asosiy g'oyalar va biznes-model
+## ✅ Oxirgi sessiyada bajarilgan ishlar (PR #8)
 
-- Telegram kanal/guruh egalari (tenants) uchun **pulli xizmat**
-- Tenantlar bot orqali e'lon qabul qiladi va kanaliga avtomatik joylashtiradi
-- E'lonlar belgilangan intervalda (min 10 daqiqa) **aylanib** turadi
-- Universal: faqat taxi emas, har qanday soha uchun (taxi, mulk, ish, bozor)
-- To'lov: og'zaki kelishuv asosida, super admin (loyiha egasi) tasdiqlaydi
-- Tariflar: Trial (bepul), Bronze 50K, Silver 150K, Gold 300K so'm/oy
+### Kritik buglar tuzatildi:
+1. `publisher.py` — `refresh_post_in_channel` endi `is_edit=True` bilan chaqiriladi (rotation_count oshirilmaydi, "Aylandi" badge ko'rsatilmaydi)
+2. `scheduler.py` — `is_first` mantiqi: `PostStatus.DRAFT` emas, `message_id=NULL` bilan tekshirish
+3. `_handle_publish_error` — FloodWait retry'da `is_edit` uzatiladi
 
-## 🏗 Arxitektura
+### Dead button handlerlar yozildi (~30 ta):
+- **Super admin:** `super:tenant:stats/users/payments/audit/message/reject/delete`, `super:tenants:filter:*`, `super:system:backup/cleanup_logs/restart_services`, `Btn.PAYMENTS`, `super:menu`
+- **Tenant:** `tenant:post:view/warn_owner`, `tenant:channel:toggle/remove`, `tenant:users:filter:*`, `tenant:user:posts/audit`, `tenant:profile:edit:*`, `tenant:deeplink:copy`, `tenant:cat_toggle/cat_save`, `Btn.STATS/DEEP_LINK/CATEGORY_RESTRICTION`, orqaga tugmalari
 
-### 4 darajali boshqaruv:
-1. **SUPER_ADMIN** (siz, @xudush92-cmd) — global nazorat
-2. **TENANT** (kanal egasi) — o'z guruhi
-3. **MODERATOR** (tenant yordamchisi) — cheklangan huquq
-4. **USER** (taksist/sotuvchi) — faqat o'zi
+### Xavfsizlik — confirmation qo'shildi:
+- `tenant:post:delete` → tasdiqlash + kanaldan o'chirish
+- `poster:post:delete` → tasdiqlash
+- `super:tenant:approve_trial` → tasdiqlash
+- `super:tenant:pause` → tasdiqlash
+- `super:tenant:unblock` → tasdiqlash
+- `super:tenant:delete` → DOUBLE confirmation + CASCADE warning
+- `tenant:user:unblock` → tasdiqlash
 
-### Papka tuzilishi (ENGINEBOT/ ichida):
+### Notification/Throttle:
+- `notify_tenant_payment_reminder` — IDEMPOTENT (bir kunda 1 ta, DB tekshirish)
+- `broadcast` — `asyncio.Semaphore(25)` (FloodWait oldini olish)
+- `super:awaiting_message_to_tenant` state qo'shildi (shaxsiy xabar yuborish)
+
+### Dead code tozalandi:
+- `tenant_manager.receive_payment()` — 60 qator (chaqirilmas edi)
+- `audit_log.log_payment_event()` — chaqirilmas edi
+- `formatters.format_uzs()` — chaqirilmas edi
+- `validators.validate_amount_uzs()` — chaqirilmas edi
+- `confirm_logout` import (poster/customer) — ishlatilmas edi
+- `parse_confirmation` import (super_admin) — ishlatilmas edi
+
+## ⚠️ HALI QOLGAN MUAMMOLAR (keyingi sessiya uchun)
+
+### 🟡 O'rtacha muhimlik:
+1. **`max_users` tarif limit** — DB'da bor, lekin hech qaerda tekshirilmaydi (yangi user registratsiyada)
+2. **`max_posts_per_day` tarif limit** — tekshirilmaydi
+3. **Moderator panel** — `panels/moderator/handlers.py` deyarli bo'sh (v1.5 uchun)
+4. **`tenant_detailed_stats`** — DB funksiyasi mavjudligini tekshirish kerak (PR #8 da ishlatilgan, lekin database.py'da bu funksiya PR #6 da yozilgan)
+5. **`db.list_audit(actor_id=...)`** — DB funksiyasi parametri tekshirish kerak
+6. **`db.get_allowed_categories`** / `db.set_allowed_categories` — DB funksiyasi mavjudligini tekshirish
+7. **`db.tenant_detailed_stats`** — DB funksiyasi mavjudligini tekshirish
+
+### 🟢 Past muhimlik:
+- `Btn.MODERATORS` / `Btn.EDIT_PROFILE` class'da bor lekin hech qaerda ishlatilmaydi
+- `tenant:post:pause/resume` — confirmation yo'q (lekin tez qaytariladigan amal)
+- `format_uzs` funksiya olib tashlandi — agar kelajakda pul model kerak bo'lsa qayta yozish kerak
+
+## 🚨 KEYINGI SESSIYADA BIRINCHI NAVBAT:
+
+1. **SINOV** — Bot'ni ishga tushirib PR #8 handlerlarini haqiqiy test qilish
+2. **DB funksiyalar tekshiruvi** — `tenant_detailed_stats`, `list_audit(actor_id=)`, `get_allowed_categories`, `set_allowed_categories`, `search_announcements`, `get_recent_announcements`, `list_bookmarks`, `is_bookmarked`, `add_bookmark`, `remove_bookmark` — hammasi `database.py` da bormi?
+3. **3 ta PR ni merge qilish** (yoki birlashtirib 1 taga aylantirish)
+4. **Deploy** — Replit/VPS'ga chiqarish
+
+## 📂 Asosiy fayl tuzilishi (52 fayl)
+
 ```
-core/        - 8 modul (database, permissions, tenant_manager, event_bus,
-               audit_log, rate_limiter, notifier, error_handler)
-panels/      - 4 panel (super_admin, tenant, moderator, user) + start.py
-plugins/     - kengaytirish (taxi MVP)
-services/    - publisher, scheduler, cleaner, billing_checker
-keyboards/   - common, routes (14 viloyat), 4 panel KB
-utils/       - session_state, confirmation, validators, formatters, logger
-data/        - SQLite baza (gitignore)
-logs/        - rotation logs (gitignore)
+ENGINEBOT/
+├── main.py                    — entry point, router registration
+├── config.py                  — env, constants, tariff limits
+├── core/
+│   ├── database.py            — SQLite CRUD (1780 qator)
+│   ├── permissions.py         — 4-darajali RBAC
+│   ├── tenant_manager.py      — tenant lifecycle
+│   ├── notifier.py            — notification queue
+│   ├── audit_log.py           — audit logging
+│   ├── middleware.py          — global error handler
+│   ├── error_handler.py       — safe_loop, ErrorBoundary
+│   ├── categories.py          — soha kodlari
+│   ├── event_bus.py           — async events
+│   └── rate_limiter.py        — anti-flood
+├── panels/
+│   ├── start.py               — /start, /cancel, /help
+│   ├── common_handlers.py     — Btn.MY_PROFILE, Btn.LOGOUT (umumiy)
+│   ├── super_admin/handlers.py — 30+ callback handler (PR #8)
+│   ├── tenant/handlers.py     — 40+ handler (kanal, users, posts, profile, stats)
+│   ├── poster/handlers.py     — registration + CRUD + rotation
+│   ├── customer/handlers.py   — registration + search + feed
+│   ├── moderator/handlers.py  — stub (v1.5)
+│   └── user/handlers.py       — legacy stub
+├── keyboards/
+│   ├── common_kb.py           — Btn class, inline_grid, make_reply
+│   ├── super_admin_kb.py      — SA menyulari
+│   ├── tenant_kb.py           — tenant menyulari
+│   ├── user_kb.py             — poster/customer menyulari
+│   └── routes.py              — REGIONS list
+├── services/
+│   ├── publisher.py           — kanalga publish + refresh
+│   ├── scheduler.py           — per-poster rotation loop
+│   ├── cleaner.py             — expired post cleanup
+│   ├── billing_checker.py     — muddat tekshiruv
+│   └── notifier_service.py    — notification yuborish
+└── utils/
+    ├── session_state.py       — per-user conversation state
+    ├── confirmation.py        — build_confirmation + confirm_logout
+    ├── formatters.py          — HTML escape, wrap_announcement
+    ├── validators.py          — phone, name, channel, interval
+    └── logger.py              — logging setup
 ```
 
-### DB jadvallar (10 ta):
-tenants, tenant_settings, channels, users, announcements, moderators,
-audit_log, notifications, payments, warnings
+## 🛑 QOIDALAR (har sessiyada amal qilish)
 
-## 🔐 QAT'IY QOIDALAR (foydalanuvchi tomonidan o'rnatilgan)
-
-1. **AVTO_BOT'ga tegmaslik!** — `4x40in-bot/AVTO_BOT/` papkasi alohida
-   loyiha, ishlab turibdi. Hech qachon tegmaslik kerak.
-   `polish/login-janitor-and-rollback` PR #3 — AVTO_BOT'niki.
-
-2. **Kodga o'zgartirish kiritishdan oldin foydalanuvchi ruxsati shart!**
-   Avval muammoni tahlil qilish, yechimni taklif qilish, va FAQAT
-   foydalanuvchi "ha" yoki "ruxsat beraman" degandan keyin kod yozish.
-
-3. **Izolyatsiya** — har bir tenant alohida, DB darajasida `tenant_id`
-   filtri orqali. Cross-tenant access PermissionDenied'ga olib keladi.
-
-4. **Tasdiqlash** — har bir muhim amalda foydalanuvchidan tasdiq olish
-   (utils/confirmation.py orqali).
-
-5. **Aylanish** — default OFF, min 10 daqiqa, faqat tenant yoqsa ishlaydi.
-
-6. **Bildirishnoma va ogohlantirish** — har muhim amalda yuboriladi
-   (core/notifier.py).
-
-7. **Crash isolation** — bittasi crash bo'lsa boshqasi davom etadi
-   (safe_loop, ErrorBoundary).
-
-## 🎨 Til va uslub
-
-- **Asosiy til:** O'zbekcha (latin yozuvi)
-- **Kod sharhlari:** O'zbekcha (kelajakda RU/EN qo'shilishi mumkin)
-- **Tugma matnlari:** O'zbekcha + emoji
-- **Foydalanuvchi xabarlari:** Hurmatli, do'stona uslubda
-
-## 🛠 Texnik stack
-
-- **Python 3.11+** (lekin kod 3.9 bilan ham mos qilingan)
-- **aiogram 3.x** — bot framework
-- **aiosqlite** — async SQLite (WAL mode)
-- **aiohttp** — HTTP server (health endpoint, kelajakda)
-- **python-dotenv** — env management
-
-## 📍 Hozirgi holat (May 2026)
-
-- ✅ MVP yaratildi: 39 ta Python fayl, hammasi compile o'tdi
-- ✅ PR #5 ochildi: https://github.com/xudush92-cmd/4x40in-bot/pull/5
-- ✅ Branch: `feature/enginebot-init`
-- ⏳ Test/deploy: foydalanuvchi tomonidan ko'rib chiqilmoqda
-
-## 🚀 Keyingi rivojlanish bosqichlari
-
-### v1.5 (kelajak)
-- @username orqali kanal ulash (bot.get_chat)
-- Yo'lovchi izlash funksiyasi (search)
-- Real estate, jobs, marketplace pluginlari
-- Reyting tizimi
-- Eksport (Excel, PDF)
-
-### v2.0 (Pro)
-- Click/Payme avto-to'lov integratsiyasi
-- VIP e'lonlar
-- Push notification
-- Web admin panel (FastAPI/Flask)
-- Telegram WebApp
-
-### v3.0 (Ekosistema)
-- REST API
-- Mobile app (iOS, Android)
-- Multi-language (UZ/RU/EN)
-- AI yordamchi
-- Public plugin marketplace
-
-## 💬 Foydalanuvchi haqida
-
-- @xudush92-cmd — loyiha egasi
-- O'zbekistondan
-- Telegram bot ishlab chiqaradi
-- Hozirda AVTO_BOT'i bor (alohida loyiha)
-- ENGINEBOT'ni biznes sifatida qurmoqchi (pulli xizmat)
-- Texnik tushunchaga ega, lekin kod yozishni Kiro'ga ishonib topshiradi
-- Har qadamda tasdiqlash so'raydi — ehtiyotkor ishlaydi
-
-## 📞 Hisobot va davom etish
-
-Yangi suhbat boshlanganda foydalanuvchi:
-- "ENGINEBOT haqida" deb so'rasa → bu kontekst yordam beradi
-- "Loyihani davom ettiraylik" desa → PR #5 holatini tekshirish kerak
-- "Yangi funksiya qo'shing" desa → arxitektura va plugin tizimini eslash kerak
-- AVTO_BOT haqida so'rasa → ENGINEBOT'dan butunlay alohida ekanligini eslash
+1. **KODGA TEGISHDAN OLDIN RUXSAT OLISH** — har sessiyada
+2. **MAVJUD KODNI QAYTA YOZMASLIK** — faqat str_replace, nuqtaviy edit
+3. **AVTO_BOT papkasiga TEGMASLIK** — alohida loyiha
+4. **Har muhim amalda CONFIRMATION** — bot egasining qat'iy talabi
+5. **Audit log MAJBURIY** — har handler'da
+6. **Bildirishnoma MAJBURIY** — block, warn, approve, delete
