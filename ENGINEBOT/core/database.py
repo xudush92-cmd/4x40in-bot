@@ -314,6 +314,23 @@ async def init_db() -> None:
             )
         """)
 
+        # ─── search_history ──────────────────────────────────────────
+        # Mijoz qidiruv tarixi (max 20 ta oxirgi qidiruv).
+        # category_code, keyword, region filtrlar saqlanadi.
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS search_history (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id       INTEGER NOT NULL,
+                user_id         INTEGER NOT NULL,
+                category_code   TEXT DEFAULT '',
+                keyword         TEXT DEFAULT '',
+                region          TEXT DEFAULT '',
+                results_count   INTEGER DEFAULT 0,
+                created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+            )
+        """)
+
         # ─── bookmarks ───────────────────────────────────────────────
         # Mijoz saqlagan e'lonlar (yulduzcha qilingan).
         # UNIQUE (tenant_id, user_id, post_id) — bir e'lonni 2 marta saqlash yo'q.
@@ -351,6 +368,7 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_warnings_tenant_u  ON warnings(tenant_id, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_mods_tenant        ON moderators(tenant_id)",
             "CREATE INDEX IF NOT EXISTS idx_bookmarks_user     ON bookmarks(tenant_id, user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_search_hist_user   ON search_history(tenant_id, user_id, created_at DESC)",
         ]:
             await db.execute(stmt)
 
@@ -1393,6 +1411,7 @@ async def search_announcements(
     *,
     category_code: str | None = None,
     keyword: str | None = None,
+    region: str | None = None,
     limit: int = 30,
 ) -> list[dict]:
     """
@@ -1400,32 +1419,109 @@ async def search_announcements(
 
     Filter: status=active, faqat shu tenantning.
     keyword bo'lsa — raw_text'da LIKE qidiruv.
+    region bo'lsa — poster'ning viloyati bo'yicha JOIN filtr.
     """
-    clauses = ["tenant_id = ?", "status = ?"]
     params: list = [tenant_id, PostStatus.ACTIVE]
 
-    if category_code:
-        clauses.append("category_code = ?")
-        params.append(category_code)
+    if region:
+        # region filtri uchun users jadvaliga JOIN kerak
+        q = """SELECT a.* FROM announcements a
+               JOIN users u ON u.tenant_id = a.tenant_id
+                           AND u.user_id   = a.user_id
+               WHERE a.tenant_id = ? AND a.status = ?"""
+        if category_code:
+            q += " AND a.category_code = ?"
+            params.append(category_code)
+        if keyword:
+            q += " AND a.raw_text LIKE ?"
+            params.append(f"%{keyword}%")
+        q += " AND u.region = ?"
+        params.append(region)
+        q += " ORDER BY a.last_rotated_at DESC, a.created_at DESC LIMIT ?"
+    else:
+        clauses = ["tenant_id = ?", "status = ?"]
+        if category_code:
+            clauses.append("category_code = ?")
+            params.append(category_code)
+        if keyword:
+            clauses.append("raw_text LIKE ?")
+            params.append(f"%{keyword}%")
+        where = " AND ".join(clauses)
+        q = (f"SELECT * FROM announcements WHERE {where}"
+             " ORDER BY last_rotated_at DESC, created_at DESC LIMIT ?")
 
-    if keyword:
-        clauses.append("raw_text LIKE ?")
-        params.append(f"%{keyword}%")
-
-    where = " AND ".join(clauses)
     params.append(limit)
+    async with _conn() as db:
+        cur = await db.execute(q, params)
+        rows = await cur.fetchall()
+        await cur.close()
+        return _rows_to_list(rows)
 
+
+# ─────────────────────────────────────────────────────────────────────
+# SEARCH HISTORY — mijoz qidiruv tarixi
+# ─────────────────────────────────────────────────────────────────────
+async def add_search_history(
+    tenant_id: int,
+    user_id: int,
+    *,
+    category_code: str | None = None,
+    keyword: str | None = None,
+    region: str | None = None,
+    results_count: int = 0,
+) -> None:
+    """
+    Mijozning qidiruv tarixini saqlash (max 20 ta oxirgi).
+
+    Yangi qidiruv qo'shilganda eng eski yozuv avtomatik o'chadi.
+    """
+    async with _conn() as db:
+        await db.execute(
+            """INSERT INTO search_history
+               (tenant_id, user_id, category_code, keyword, region, results_count)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (tenant_id, user_id,
+             category_code or "", keyword or "", region or "",
+             results_count),
+        )
+        # Max 20 ta: eski yozuvlarni tozalash
+        await db.execute(
+            """DELETE FROM search_history
+               WHERE tenant_id=? AND user_id=?
+                 AND id NOT IN (
+                     SELECT id FROM search_history
+                     WHERE tenant_id=? AND user_id=?
+                     ORDER BY created_at DESC LIMIT 20
+                 )""",
+            (tenant_id, user_id, tenant_id, user_id),
+        )
+        await db.commit()
+
+
+async def get_search_history(
+    tenant_id: int, user_id: int, limit: int = 10
+) -> list[dict]:
+    """Mijozning oxirgi qidiruv tarixi (eng yangisi birinchi)."""
     async with _conn() as db:
         cur = await db.execute(
-            f"""SELECT * FROM announcements
-                WHERE {where}
-                ORDER BY last_rotated_at DESC NULLS LAST, created_at DESC
-                LIMIT ?""",
-            params,
+            """SELECT * FROM search_history
+               WHERE tenant_id=? AND user_id=?
+               ORDER BY created_at DESC LIMIT ?""",
+            (tenant_id, user_id, limit),
         )
         rows = await cur.fetchall()
         await cur.close()
         return _rows_to_list(rows)
+
+
+async def clear_search_history(tenant_id: int, user_id: int) -> None:
+    """Mijozning barcha qidiruv tarixini o'chirish."""
+    async with _conn() as db:
+        await db.execute(
+            "DELETE FROM search_history WHERE tenant_id=? AND user_id=?",
+            (tenant_id, user_id),
+        )
+        await db.commit()
 
 
 async def get_recent_announcements(

@@ -198,6 +198,10 @@ async def customer_text_router(message: Message) -> None:
         await _ask_region(message)
         return
 
+    if state.step == "customer:awaiting_keyword":
+        await _handle_keyword_search(message, text)
+        return
+
 
 # Telefon contact button orqali kelishi
 @router.message(F.contact)
@@ -393,43 +397,183 @@ async def show_search_menu(message: Message) -> None:
 
 @router.callback_query(F.data.startswith("customer:search:category:"))
 async def search_by_category(query: CallbackQuery) -> None:
+    """Kategoriya tanlandi — qo'shimcha filtr menyusini ko'rsatish."""
     if query.from_user is None or not query.data:
         return
 
-    # Rate limiter — qidiruv abuse'ga qarshi
+    code = query.data.rsplit(":", 1)[1]
+    cat_filter = None if code == "all" else code
+
+    if query.message:
+        cat_label = get_category_label(cat_filter) if cat_filter else "🔍 Hammasi"
+        await query.message.answer(
+            f"📌 Kategoriya: <b>{cat_label}</b>\n\n"
+            "Qanday qidirasiz?",
+            reply_markup=user_kb.search_options_menu(cat_filter),
+        )
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("customer:search:go:") | F.data == "customer:search:go:all")
+async def search_go(query: CallbackQuery) -> None:
+    """Filtrsiz — hoziroq ko'rish."""
+    if query.from_user is None or not query.data:
+        return
+
     from core.rate_limiter import limiter, get_block_message
     if not limiter.is_allowed(query.from_user.id, "command"):
         msg = get_block_message(query.from_user.id, "command")
         return await query.answer(msg or "⏳ Juda koʻp soʻrov.", show_alert=True)
+
     state = await session.get(query.from_user.id)
     tenant_id = state.tenant_id
     if not tenant_id:
         return await query.answer("Tenant tanlanmagan.", show_alert=True)
 
-    code = query.data.rsplit(":", 1)[1]
+    # customer:search:go:taxi yoki customer:search:go:all
+    parts = query.data.split(":")
+    code = parts[-1] if len(parts) > 3 else "all"
     cat_filter = None if code == "all" else code
 
     posts = await db.search_announcements(
         tenant_id=tenant_id, category_code=cat_filter, limit=15
     )
 
+    # Qidiruv tarixiga yozish
+    await db.add_search_history(
+        tenant_id, query.from_user.id,
+        category_code=cat_filter,
+        results_count=len(posts),
+    )
+
     if not posts:
-        text = (
-            f"📭 <b>{get_category_label(cat_filter) if cat_filter else 'Hammasi'}</b> — "
-            "hozircha eʼlonlar yo'q."
-        )
+        cat_label = get_category_label(cat_filter) if cat_filter else "Hammasi"
         if query.message:
-            await query.message.answer(text)
+            await query.message.answer(
+                f"📭 <b>{cat_label}</b> — hozircha eʼlonlar yo'q."
+            )
         await query.answer()
         return
 
     if query.message:
         cat_label = get_category_label(cat_filter) if cat_filter else "🔍 Hammasidan"
         await query.message.answer(
-            f"🔍 <b>{cat_label}</b> — {len(posts)} ta natija topildi:\n"
+            f"🔍 <b>{cat_label}</b> — {len(posts)} ta natija:\n"
         )
         for post in posts:
             await _send_post_card(query.message, post)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("customer:search:by_region:") | F.data == "customer:search:by_region:all")
+async def search_by_region_menu(query: CallbackQuery) -> None:
+    """Viloyat bo'yicha filtr — viloyat tanlash menyusini ko'rsat."""
+    if query.from_user is None or not query.data:
+        return
+
+    # Tanlangan kategoriyani saqlash uchun session'ga yozamiz
+    parts = query.data.split(":")
+    code = parts[-1] if len(parts) > 4 else "all"
+    state = await session.get(query.from_user.id)
+    state.data["search_category"] = code
+    await session.set(query.from_user.id, state)
+
+    if query.message:
+        await query.message.answer(
+            "🌍 <b>Viloyat tanlang:</b>",
+            reply_markup=user_kb.customer_search_regions(),
+        )
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("customer:search:region:"))
+async def search_with_region(query: CallbackQuery) -> None:
+    """Viloyat tanlandi — natijalarni ko'rsat."""
+    if query.from_user is None or not query.data:
+        return
+
+    from core.rate_limiter import limiter, get_block_message
+    if not limiter.is_allowed(query.from_user.id, "command"):
+        msg = get_block_message(query.from_user.id, "command")
+        return await query.answer(msg or "⏳ Juda koʻp soʻrov.", show_alert=True)
+
+    state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        return await query.answer("Tenant tanlanmagan.", show_alert=True)
+
+    region_code = query.data.rsplit(":", 1)[1]
+    region_filter = None if region_code == "all" else region_code
+    cat_code = state.data.get("search_category")
+    cat_filter = None if not cat_code or cat_code == "all" else cat_code
+
+    posts = await db.search_announcements(
+        tenant_id=tenant_id,
+        category_code=cat_filter,
+        region=region_filter,
+        limit=15,
+    )
+
+    # Qidiruv tarixiga yozish
+    await db.add_search_history(
+        tenant_id, query.from_user.id,
+        category_code=cat_filter,
+        region=region_filter,
+        results_count=len(posts),
+    )
+
+    if not posts:
+        if query.message:
+            await query.message.answer("📭 Bu viloyatda hozircha eʼlonlar yo'q.")
+        await query.answer()
+        return
+
+    if query.message:
+        region_names = {
+            "tashkent_city": "🏛 Toshkent sh.",
+            "tashkent_region": "🌆 Toshkent v.",
+            "samarkand": "🕌 Samarqand",
+            "bukhara": "🌹 Buxoro",
+            "andijan": "🌄 Andijon",
+            "fergana": "🌳 Farg'ona",
+            "namangan": "🌻 Namangan",
+            "khorezm": "🐫 Xorazm",
+            "qashqadaryo": "⛰ Qashqadaryo",
+            "surxondaryo": "🏔 Surxondaryo",
+            "sirdaryo": "🌾 Sirdaryo",
+            "jizzakh": "🌅 Jizzax",
+            "navoiy": "⚒ Navoiy",
+            "karakalpakstan": "🏞 Qoraqalpog'iston",
+        }
+        region_name = region_names.get(region_filter, region_filter) if region_filter else "Hammasi"
+        cat_label = get_category_label(cat_filter) if cat_filter else "Hammasi"
+        await query.message.answer(
+            f"🌍 <b>{region_name}</b> | {cat_label} — {len(posts)} ta natija:\n"
+        )
+        for post in posts:
+            await _send_post_card(query.message, post)
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("customer:search:by_keyword:"))
+async def ask_keyword(query: CallbackQuery) -> None:
+    """Kalit so'z qidirish — foydalanuvchidan matn so'rash."""
+    if query.from_user is None or not query.data:
+        return
+
+    parts = query.data.split(":")
+    code = parts[-1] if len(parts) > 4 else "all"
+    state = await session.get(query.from_user.id)
+    state.data["search_category"] = code
+    state.step = "customer:awaiting_keyword"
+    await session.set(query.from_user.id, state)
+
+    if query.message:
+        await query.message.answer(
+            "⌨️ <b>Kalit so'z kiriting:</b>\n\n"
+            "Masalan: <i>Toshkent, kechqurun, Toyota</i>\n\n"
+            "/cancel — bekor qilish"
+        )
     await query.answer()
 
 
@@ -455,6 +599,65 @@ async def show_feed(message: Message) -> None:
 
     await message.answer(
         f"📰 <b>Eng so'nggi e'lonlar ({len(posts)} ta)</b>"
+    )
+    for post in posts:
+        await _send_post_card(message, post)
+
+
+async def _handle_keyword_search(message: Message, text: str) -> None:
+    """Kalit so'z kiritildi — qidiruvni bajar."""
+    if message.from_user is None:
+        return
+    state = await session.get(message.from_user.id)
+
+    if text in ("/cancel", "❌ Bekor qilish"):
+        await session.update(message.from_user.id, step="", tenant_id=state.tenant_id)
+        await message.answer("❌ Bekor qilindi.")
+        return
+
+    keyword = text.strip()
+    if len(keyword) < 2:
+        await message.answer("❌ Kalit so'z kamida 2 belgi bo'lsin.")
+        return
+    if len(keyword) > 100:
+        await message.answer("❌ Kalit so'z juda uzun (max 100 belgi).")
+        return
+
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        await session.reset(message.from_user.id)
+        return
+
+    cat_code = state.data.get("search_category")
+    cat_filter = None if not cat_code or cat_code == "all" else cat_code
+
+    posts = await db.search_announcements(
+        tenant_id=tenant_id,
+        category_code=cat_filter,
+        keyword=keyword,
+        limit=15,
+    )
+
+    # Qidiruv tarixiga yozish
+    await db.add_search_history(
+        tenant_id, message.from_user.id,
+        category_code=cat_filter,
+        keyword=keyword,
+        results_count=len(posts),
+    )
+
+    await session.update(message.from_user.id, step="", tenant_id=tenant_id)
+
+    if not posts:
+        await message.answer(
+            f"📭 <b>\"{fmt.esc(keyword)}\"</b> bo'yicha natija topilmadi.\n\n"
+            "💡 Boshqacha kalit so'z bilan sinab ko'ring."
+        )
+        return
+
+    cat_label = get_category_label(cat_filter) if cat_filter else "Hammasi"
+    await message.answer(
+        f"🔤 <b>\"{fmt.esc(keyword)}\"</b> | {cat_label} — {len(posts)} ta natija:"
     )
     for post in posts:
         await _send_post_card(message, post)
@@ -653,9 +856,60 @@ async def show_my_bookmarks(message: Message) -> None:
 # ═════════════════════════════════════════════════════════════════════
 @router.message(F.text == Btn.SEARCH_HISTORY)
 async def show_search_history(message: Message) -> None:
-    """Qidiruv tarixi (hozir oddiy info, v1.5'da DB bilan)."""
-    await message.answer(
-        "📋 <b>Qidiruv tarixi</b>\n\n"
-        "Bu funksiya keyingi versiyada qo'shiladi.\n"
-        "Hozircha 🔍 Qidirish va 📰 Yangi eʼlonlardan foydalaning."
+    """Mijozning oxirgi qidiruv tarixi."""
+    if message.from_user is None:
+        return
+    state = await session.get(message.from_user.id)
+    tenant_id = state.tenant_id
+    if not tenant_id:
+        await message.answer("Avval guruh tanlang. /start")
+        return
+
+    history = await db.get_search_history(tenant_id, message.from_user.id, limit=10)
+    if not history:
+        await message.answer(
+            "📋 <b>Qidiruv tarixi</b>\n\n"
+            "📭 Hozircha qidiruv tarixingiz yo'q.\n\n"
+            "🔍 Qidirish tugmasini bosib birinchi qidiruvni bajaring!"
+        )
+        return
+
+    lines = [f"📋 <b>Oxirgi {len(history)} ta qidiruv:</b>", ""]
+    for i, h in enumerate(history, 1):
+        cat = get_category_label(h.get("category_code") or "")
+        cat_str = cat if h.get("category_code") else "Barcha kategoriyalar"
+        keyword = h.get("keyword") or ""
+        region = h.get("region") or ""
+        results = h.get("results_count", 0)
+        ts = (h.get("created_at") or "")[:16]
+
+        parts = [f"{i}. {cat_str}"]
+        if keyword:
+            parts.append(f"🔤 \"{fmt.esc(keyword)}\"")
+        if region:
+            parts.append(f"🌍 {fmt.esc(region)}")
+        parts.append(f"→ {results} ta natija")
+        parts.append(f"<i>{ts}</i>")
+        lines.append(" | ".join(parts))
+
+    # Tarixni tozalash tugmasi
+    from keyboards.common_kb import inline_grid
+    kb = inline_grid(
+        [("🗑 Tarixni tozalash", "customer:clear_history")],
+        columns=1,
     )
+    await message.answer("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data == "customer:clear_history")
+async def clear_search_history_cb(query: CallbackQuery) -> None:
+    """Qidiruv tarixini tozalash."""
+    if query.from_user is None:
+        return
+    state = await session.get(query.from_user.id)
+    tenant_id = state.tenant_id
+    if tenant_id:
+        await db.clear_search_history(tenant_id, query.from_user.id)
+    await query.answer("🗑 Qidiruv tarixi tozalandi", show_alert=True)
+    if query.message:
+        await query.message.answer("✅ Qidiruv tarixi o'chirildi.")

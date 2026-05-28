@@ -208,6 +208,45 @@ def customer_search_categories(allowed_codes: list[str] | None = None):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# 10b. Customer search — viloyat tanlash
+# ─────────────────────────────────────────────────────────────────────
+def customer_search_regions(callback_prefix: str = "customer:search:region"):
+    """Mijoz qidiruvi: viloyat bo'yicha filtr."""
+    from keyboards.routes import REGIONS
+    items = [(name, f"{callback_prefix}:{code}") for name, code in REGIONS]
+    items.append(("🌍 Barcha viloyatlar", f"{callback_prefix}:all"))
+    return inline_grid(
+        items,
+        columns=2,
+        extra_rows=[[(Btn.BACK, "customer:search")]],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 10c. Qidiruv menyu (kalit so'z yoki viloyat tanlash)
+# ─────────────────────────────────────────────────────────────────────
+def search_options_menu(category_code: str | None = None):
+    """
+    Kategoriya tanlanganidan keyin qo'shimcha filtrlar taklif qilinadi.
+
+    Foydalanuvchi:
+    - Shu holatda natijalarni ko'rish (filter'siz)
+    - Viloyat bo'yicha filtrlash
+    - Kalit so'z bo'yicha qidirish
+    """
+    cat_suffix = f":{category_code}" if category_code else ":all"
+    return inline_grid(
+        [
+            ("🔎 Hoziroq ko'rish", f"customer:search:go{cat_suffix}"),
+            ("🌍 Viloyat bo'yicha", f"customer:search:by_region{cat_suffix}"),
+            ("⌨️ Kalit so'z bilan", f"customer:search:by_keyword{cat_suffix}"),
+        ],
+        columns=1,
+        extra_rows=[[(Btn.BACK, "customer:search")]],
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # 11. Eʼlon ostidagi tugmalar (mijoz uchun)
 # ─────────────────────────────────────────────────────────────────────
 def post_view_actions(post_id: int, phone: str = ""):
