@@ -99,6 +99,7 @@ async def init_db() -> None:
                 is_admin INTEGER DEFAULT 0,
                 interval_min INTEGER DEFAULT 5,
                 tariff INTEGER DEFAULT 1,
+                tariff_expires_at TEXT,
                 running INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -107,6 +108,7 @@ async def init_db() -> None:
         # Eski bazalar uchun idempotent migratsiya: tariff ustuni yo'q bo'lsa
         # qo'shamiz (CREATE TABLE IF NOT EXISTS mavjud jadvalni o'zgartirmaydi).
         await _ensure_column(db, "users", "tariff", "INTEGER DEFAULT 1")
+        await _ensure_column(db, "users", "tariff_expires_at", "TEXT")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
@@ -293,6 +295,30 @@ async def get_tariff(uid: int) -> int:
 
 async def set_tariff(uid: int, tariff: int) -> None:
     await upsert_user(uid, tariff=int(tariff))
+
+
+async def get_tariff_expires(uid: int) -> str | None:
+    """Tarif amal qilish muddati (ISO format str yoki None=cheksiz)."""
+    user = await get_user(uid)
+    return user.get("tariff_expires_at") if user else None
+
+
+async def set_tariff_expires(uid: int, expires_at: str | None) -> None:
+    """Tarif muddatini o'rnatish. None = cheksiz."""
+    await upsert_user(uid, tariff_expires_at=expires_at)
+
+
+async def get_expired_users() -> list[int]:
+    """Muddati o'tgan (expired) va hali running=1 bo'lgan userlar."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT uid FROM users WHERE tariff_expires_at IS NOT NULL "
+            "AND tariff_expires_at < datetime('now') "
+            "AND running = 1 AND is_admin = 1"
+        ) as cur:
+            rows = await cur.fetchall()
+            return [r[0] for r in rows]
 
 
 async def get_running(uid: int) -> bool:

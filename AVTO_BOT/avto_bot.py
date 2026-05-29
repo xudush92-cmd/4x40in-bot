@@ -32,6 +32,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
@@ -133,10 +134,10 @@ MAX_INTERVAL_MIN = 1440
 LOGIN_TIMEOUT_S = 300
 SEND_DELAY_S = 5
 INTERVAL_JITTER_S = 30
+TARIFF_DURATION_DAYS = 30   # default tarif muddati (kun)
+TARIFF_WARN_DAYS = 3        # muddat tugashidan necha kun oldin ogohlantirish
 
 ADMIN_CONTACT_PHONE = "+998938670592"
-BOT_USERNAME = "@avtoelon_el_uzbot"
-BOT_AD_FOOTER = f"\n\n🤖 AVTO_BOT — {BOT_USERNAME}"
 
 MEDIA_DIR = "media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -153,6 +154,11 @@ def tariff_label(tariff: int) -> str:
     """Tarifning inson o'qiydigan ko'rinishi."""
     mc, mp = tariff_limits(tariff)
     return f"{int(tariff or DEFAULT_TARIFF)}-tarif ({mc} chat / {mp} post)"
+
+
+def calc_expiry(days: int = TARIFF_DURATION_DAYS) -> str:
+    """Hozirdan {days} kun keyingi sanani ISO format string qaytaradi."""
+    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
 # ─────────────────────────────────────────────────────────────────────────
 # LOGGING
@@ -323,7 +329,7 @@ async def menu_for(uid: int) -> ReplyKeyboardMarkup:
     if not session:
         return kb_login()
 
-    interval = int(user.get("interval_min", 4)) if user else 4
+    interval = int(user.get("interval_min", MIN_INTERVAL_MIN)) if user else MIN_INTERVAL_MIN
     running = worker_manager.is_running(uid) if worker_manager else False
     return kb_main(interval, running, super_flag)
 
@@ -638,7 +644,7 @@ async def _send_post(client: TelegramClient, chat: str, post: dict) -> None:
     entities = dicts_to_telethon_entities(post.get("entities", []))
     target = await _resolve_chat(client, chat)
 
-    final_text = (text + BOT_AD_FOOTER) if text else BOT_AD_FOOTER.lstrip("\n")
+    final_text = text
 
     photo_path = post.get("photo")
     if photo_path and os.path.exists(photo_path):
@@ -967,7 +973,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await db.del_pending(target)
             await db.add_admin(target)
             await db.set_tariff(target, tariff)
-            log(f"✅ Tasdiqlandi: {target} ({tariff_label(tariff)})")
+            await db.set_tariff_expires(target, calc_expiry())
+            log(f"✅ Tasdiqlandi: {target} ({tariff_label(tariff)}, {TARIFF_DURATION_DAYS} kun)")
             await q.edit_message_text(
                 f"✅ Tasdiqlandi: {target}\n🎫 {tariff_label(tariff)}"
             )
@@ -978,7 +985,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await application.bot.send_message(
                     target,
                     f"✅ {name}, hisobingiz tasdiqlandi!\n\n"
-                    f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n\n"
+                    f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n"
+                    f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n\n"
                     "Endi:\n"
                     f"1️⃣ ➕ Chat qo'shing (max {tmc})\n"
                     f"2️⃣ 📝 Post qo'shing (max {tmp})\n"
@@ -1260,13 +1268,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         target = int(parts[1])
         new_t = int(parts[2])
         await db.set_tariff(target, new_t)
-        log(f"🎫 Tarif o'zgartirildi: {target} → {new_t}")
-        await q.edit_message_text(f"✅ {target} → {tariff_label(new_t)}")
+        await db.set_tariff_expires(target, calc_expiry())
+        log(f"🎫 Tarif o'zgartirildi: {target} → {new_t} (+{TARIFF_DURATION_DAYS} kun)")
+        await q.edit_message_text(
+            f"✅ {target} → {tariff_label(new_t)}\n📅 +{TARIFF_DURATION_DAYS} kun"
+        )
         with contextlib.suppress(Exception):
             tmc, tmp = tariff_limits(new_t)
             await application.bot.send_message(
                 target,
                 f"🎫 Tarifingiz yangilandi: {tariff_label(new_t)}\n"
+                f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n"
                 f"Endi {tmc} ta chat va {tmp} ta post qo'sha olasiz.",
                 reply_markup=await menu_for(target),
             )
@@ -1472,13 +1484,16 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         interval = await db.get_interval(uid)
         tariff = await db.get_tariff(uid)
         max_chats, max_posts = tariff_limits(tariff)
+        expires = await db.get_tariff_expires(uid)
         active = worker_manager.is_running(uid) if worker_manager else False
         status = "🟢 ON" if active else "🔴 OFF"
+        exp_line = f"📅 Muddat: {expires[:10]}" if expires else "📅 Muddat: cheksiz"
         await msg.reply_text(
             "📊 STATUS\n\n"
             f"Holat: {status}\n"
             f"Sessiya: ✅\n"
             f"Tarif: {tariff_label(tariff)}\n"
+            f"{exp_line}\n"
             f"Chatlar: {len(chats)}/{max_chats}\n"
             f"Postlar: {len(posts)}/{max_posts}\n"
             f"Interval: {interval} daqiqa",
@@ -2026,9 +2041,10 @@ async def _expire_stale_logins() -> int:
             expired_uids.add(uid)
 
     # 2) user_states — login bosqichida turib qolganlar (name/phone/code/password)
+    #    + edit_post (tahrirlash uchun mazmun kutilmoqda)
     for uid, state in list(user_states.items()):
         step = state.get("step")
-        if step in ("name", "phone", "code", "password"):
+        if step in ("name", "phone", "code", "password", "edit_post"):
             ts = state.get("ts", 0)
             if now - ts > LOGIN_TIMEOUT_S:
                 expired_uids.add(uid)
@@ -2073,6 +2089,98 @@ async def login_janitor_loop(stop: asyncio.Event) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# TARIF MUDDATI JANITOR — muddati o'tganlarni to'xtatadi va xabar beradi
+# ─────────────────────────────────────────────────────────────────────────
+TARIFF_CHECK_INTERVAL_S = 3600  # har soatda tekshirish
+
+
+async def _check_tariff_expiry() -> int:
+    """Muddati tugagan foydalanuvchilarni to'xtatadi. Qaytaradi: to'xtatilganlar soni."""
+    expired = await db.get_expired_users()
+    if not expired:
+        return 0
+
+    stopped = 0
+    for uid in expired:
+        # Workerni to'xtatamiz
+        if worker_manager and worker_manager.is_running(uid):
+            await worker_manager.stop_worker(uid)
+        await db.set_running(uid, False)
+        stopped += 1
+
+        # Foydalanuvchiga xabar
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                uid,
+                "⏰ Tarifingiz muddati tugadi!\n\n"
+                "⛔ Posting avtomatik to'xtatildi.\n\n"
+                "📞 Muddatni uzaytirish uchun admin bilan bog'laning:\n"
+                f"📱 {ADMIN_CONTACT_PHONE}",
+                reply_markup=await menu_for(uid),
+            )
+
+        # Adminga xabar
+        with contextlib.suppress(Exception):
+            info = await db.get_user_info(uid)
+            name = info.get("name", str(uid))
+            await application.bot.send_message(
+                SUPER_ADMIN,
+                f"⏰ Tarif muddati tugadi\n\n"
+                f"👤 {name} ({uid})\n"
+                "Posting to'xtatildi. Uzaytirish uchun admin paneldan tarif yangilang.",
+            )
+
+    if stopped:
+        log(f"⏰ Tarif expiry: {stopped} ta foydalanuvchi to'xtatildi")
+    return stopped
+
+
+async def _warn_expiring_users() -> None:
+    """Muddati {TARIFF_WARN_DAYS} kun ichida tugaydigan foydalanuvchilarga ogohlantirish."""
+    conn = await db._get_conn()
+    async with db._op_lock:
+        async with conn.execute(
+            "SELECT uid FROM users WHERE tariff_expires_at IS NOT NULL "
+            "AND tariff_expires_at > datetime('now') "
+            "AND tariff_expires_at <= datetime('now', ?) "
+            "AND running = 1 AND is_admin = 1",
+            (f"+{TARIFF_WARN_DAYS} days",)
+        ) as cur:
+            rows = await cur.fetchall()
+            warn_uids = [r[0] for r in rows]
+
+    for uid in warn_uids:
+        expires = await db.get_tariff_expires(uid)
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                uid,
+                f"⚠️ Diqqat! Tarifingiz muddati tugamoqda.\n\n"
+                f"📅 Tugash vaqti: {expires}\n\n"
+                "Uzaytirish uchun admin bilan bog'laning:\n"
+                f"📱 {ADMIN_CONTACT_PHONE}",
+            )
+
+
+async def tariff_expiry_loop(stop: asyncio.Event) -> None:
+    """Har soatda tarif muddatini tekshiradi va ogohlantirish yuboradi."""
+    log(f"⏰ Tariff expiry janitor boshlandi (har {TARIFF_CHECK_INTERVAL_S}s)")
+    try:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=TARIFF_CHECK_INTERVAL_S)
+                break
+            except asyncio.TimeoutError:
+                pass
+            with contextlib.suppress(Exception):
+                await _check_tariff_expiry()
+            with contextlib.suppress(Exception):
+                await _warn_expiring_users()
+    except asyncio.CancelledError:
+        pass
+    log("⏰ Tariff expiry janitor to'xtadi")
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # RESTART-DAN KEYIN AVTO-TIKLASH
 # ─────────────────────────────────────────────────────────────────────────
 async def restore_running_workers() -> None:
@@ -2113,8 +2221,8 @@ async def main() -> None:
             f"({len(migrated['files'])} fayl: {', '.join(migrated['files'])})"
         )
 
-    # 3. Super admin bazada borligini ta'minlash (eng yuqori tarif — 3)
-    await db.upsert_user(SUPER_ADMIN, is_admin=1, tariff=3)
+    # 3. Super admin bazada borligini ta'minlash (eng yuqori tarif — 3, cheksiz muddat)
+    await db.upsert_user(SUPER_ADMIN, is_admin=1, tariff=3, tariff_expires_at=None)
 
     # 4. Client pool
     # MUHIM: pool hajmi worker limitiga TENG — har faol worker o'z clientini
@@ -2167,6 +2275,12 @@ async def main() -> None:
         login_janitor_loop(janitor_stop), name="login-janitor"
     )
 
+    # 8c. Tarif muddati janitor — har soatda expired userlarni to'xtatadi
+    tariff_stop = asyncio.Event()
+    tariff_task = asyncio.create_task(
+        tariff_expiry_loop(tariff_stop), name="tariff-expiry"
+    )
+
     # 9. Cheksiz turish (yoki shutdown signali)
     try:
         await worker_manager.wait_shutdown()
@@ -2174,10 +2288,13 @@ async def main() -> None:
         pass
     finally:
         log("🛑 To'xtatilmoqda...")
-        # Janitorni avval to'xtatamiz — keyingi tasklar bilan to'qnashmasin
+        # Janitorlarni avval to'xtatamiz
         janitor_stop.set()
+        tariff_stop.set()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(janitor_task, timeout=5)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(tariff_task, timeout=5)
         with contextlib.suppress(Exception):
             await worker_manager.stop_all()
         with contextlib.suppress(Exception):
