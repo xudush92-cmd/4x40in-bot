@@ -9,16 +9,77 @@ Afzalliklari:
 - Backup = bitta fayl nusxalash
 - INSERT ON CONFLICT — atomic upsert (race-free)
 - Idempotent migration — JSON fayllar .migrated suffix bilan belgilanadi
+
+ULANISH (connection):
+- Ilgari HAR amal yangi aiosqlite.connect() ochardi — bu sekin (har
+  chaqiruvda fayl ochish, WAL/PRAGMA sozlash) va yuqori yuklamada
+  "database is locked" xavfini oshirardi.
+- Endi YAGONA uzoq yashovchi ulanish (_conn) ishlatiladi.
+- _op_lock barcha operatsiyalarni serial qiladi: bu BEGIN IMMEDIATE
+  tranzaksiyalari bir-biriga aralashib ketmasligini kafolatlaydi
+  (aiosqlite allaqachon bitta ishchi thread orqali serial qiladi,
+  lock esa tranzaksiya yaxlitligini ta'minlaydi).
+- MUHIM: composite funksiyalar (masalan set_session→upsert_user)
+  lock'ni O'ZI olmaydi — faqat ulanishga to'g'ridan-to'g'ri tegadigan
+  "leaf" funksiyalar oladi. Aks holda reentrant deadlock bo'lardi
+  (asyncio.Lock reentrant emas).
 """
 
 import aiosqlite
+import asyncio
 import contextlib
 import json
 import os
-from datetime import time as dtime
 
 DB_PATH = os.path.join("data", "avto_bot.db")
 os.makedirs("data", exist_ok=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# YAGONA ULANISH (shared connection)
+# ─────────────────────────────────────────────────────────────────────────
+_conn: aiosqlite.Connection | None = None
+_init_lock = asyncio.Lock()   # ulanishni yaratishni himoyalaydi
+_op_lock = asyncio.Lock()     # operatsiyalarni serial qiladi (tranzaksiya yaxlitligi)
+
+
+async def _get_conn() -> aiosqlite.Connection:
+    """Yagona ulanishni qaytaradi (birinchi chaqiruvda yaratadi)."""
+    global _conn
+    if _conn is None:
+        async with _init_lock:
+            if _conn is None:
+                c = await aiosqlite.connect(DB_PATH)
+                # row_factory = Row: ham r["col"], ham r[0] ishlaydi
+                c.row_factory = aiosqlite.Row
+                await c.execute("PRAGMA journal_mode=WAL")
+                await c.execute("PRAGMA busy_timeout=5000")
+                await c.execute("PRAGMA foreign_keys=ON")
+                await c.commit()
+                _conn = c
+    return _conn
+
+
+async def close_db() -> None:
+    """Ulanishni yopish (graceful shutdown)."""
+    global _conn
+    async with _init_lock:
+        if _conn is not None:
+            with contextlib.suppress(Exception):
+                await _conn.close()
+            _conn = None
+
+
+async def _ensure_column(db, table: str, column: str, decl: str) -> None:
+    """Ustun mavjud bo'lmasa qo'shadi (idempotent migratsiya).
+
+    MUHIM: _op_lock USHLAB TURILGAN holatda chaqiriladi (init_db ichidan),
+    shu sababli o'zi lock OLMAYDI."""
+    async with db.execute(f"PRAGMA table_info({table})") as cur:
+        rows = await cur.fetchall()
+    cols = {r[1] for r in rows}  # r[1] = column name
+    if column not in cols:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -26,11 +87,8 @@ os.makedirs("data", exist_ok=True)
 # ─────────────────────────────────────────────────────────────────────────
 async def init_db() -> None:
     """Bazani yaratish va jadvallarni sozlash."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute("PRAGMA busy_timeout=5000")
-        await db.execute("PRAGMA foreign_keys=ON")
-
+    db = await _get_conn()
+    async with _op_lock:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 uid INTEGER PRIMARY KEY,
@@ -39,13 +97,16 @@ async def init_db() -> None:
                 session TEXT,
                 pending_session TEXT,
                 is_admin INTEGER DEFAULT 0,
-                interval_min INTEGER DEFAULT 4,
-                schedule_start TEXT DEFAULT '00:00',
-                schedule_end TEXT DEFAULT '23:59',
+                interval_min INTEGER DEFAULT 5,
+                tariff INTEGER DEFAULT 1,
                 running INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Eski bazalar uchun idempotent migratsiya: tariff ustuni yo'q bo'lsa
+        # qo'shamiz (CREATE TABLE IF NOT EXISTS mavjud jadvalni o'zgartirmaydi).
+        await _ensure_column(db, "users", "tariff", "INTEGER DEFAULT 1")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
@@ -93,16 +154,15 @@ _USER_DEFAULTS = {
     "session": None,
     "pending_session": None,
     "is_admin": 0,
-    "interval_min": 4,
-    "schedule_start": "00:00",
-    "schedule_end": "23:59",
+    "interval_min": 5,
+    "tariff": 1,
     "running": 0,
 }
 
 
 async def get_user(uid: int) -> dict | None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute("SELECT * FROM users WHERE uid=?", (uid,)) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -113,11 +173,10 @@ async def upsert_user(uid: int, **kwargs) -> None:
     Foydalanuvchini yaratish yoki yangilash — atomic, race-free.
 
     INSERT OR IGNORE bilan satr borligini ta'minlaymiz, keyin UPDATE
-    qilamiz. Hammasi bitta connection ichida.
+    qilamiz.
     """
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA busy_timeout=5000")
-
+    db = await _get_conn()
+    async with _op_lock:
         # 1) Satr yo'q bo'lsa yaratamiz (default qiymatlar bilan)
         await db.execute(
             "INSERT OR IGNORE INTO users (uid) VALUES (?)", (uid,)
@@ -134,12 +193,18 @@ async def upsert_user(uid: int, **kwargs) -> None:
 
 async def delete_user(uid: int) -> None:
     """Foydalanuvchini va u bilan bog'liq barcha ma'lumotni o'chirish."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA busy_timeout=5000")
-        await db.execute("DELETE FROM chats WHERE uid=?", (uid,))
-        await db.execute("DELETE FROM posts WHERE uid=?", (uid,))
-        await db.execute("DELETE FROM users WHERE uid=?", (uid,))
-        await db.commit()
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute("DELETE FROM chats WHERE uid=?", (uid,))
+            await db.execute("DELETE FROM posts WHERE uid=?", (uid,))
+            await db.execute("DELETE FROM users WHERE uid=?", (uid,))
+            await db.commit()
+        except Exception:
+            with contextlib.suppress(Exception):
+                await db.rollback()
+            raise
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -175,7 +240,8 @@ async def del_pending(uid: int) -> None:
 # Adminlar
 # ─────────────────────────────────────────────────────────────────────────
 async def get_admins() -> list[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute("SELECT uid FROM users WHERE is_admin=1") as cur:
             rows = await cur.fetchall()
             return [r[0] for r in rows]
@@ -206,7 +272,7 @@ async def set_user_info(uid: int, name: str, username: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Interval va schedule
+# Interval
 # ─────────────────────────────────────────────────────────────────────────
 async def get_interval(uid: int) -> int:
     user = await get_user(uid)
@@ -217,24 +283,16 @@ async def set_interval(uid: int, minutes: int) -> None:
     await upsert_user(uid, interval_min=minutes)
 
 
-async def get_schedule(uid: int) -> tuple[dtime, dtime]:
+# ─────────────────────────────────────────────────────────────────────────
+# Tarif (tariff) — chat/post limitlari shu raqamga bog'liq
+# ─────────────────────────────────────────────────────────────────────────
+async def get_tariff(uid: int) -> int:
     user = await get_user(uid)
-    if not user:
-        return dtime(0, 0), dtime(23, 59)
-    try:
-        sh, sm = map(int, user["schedule_start"].split(":"))
-        eh, em = map(int, user["schedule_end"].split(":"))
-        return dtime(sh, sm), dtime(eh, em)
-    except Exception:
-        return dtime(0, 0), dtime(23, 59)
+    return int(user["tariff"]) if user and user.get("tariff") else _USER_DEFAULTS["tariff"]
 
 
-async def set_schedule(uid: int, start: dtime, end: dtime) -> None:
-    await upsert_user(
-        uid,
-        schedule_start=start.strftime("%H:%M"),
-        schedule_end=end.strftime("%H:%M"),
-    )
+async def set_tariff(uid: int, tariff: int) -> None:
+    await upsert_user(uid, tariff=int(tariff))
 
 
 async def get_running(uid: int) -> bool:
@@ -250,7 +308,8 @@ async def set_running(uid: int, value: bool) -> None:
 # CHATS — atomic count + insert (race-safe)
 # ─────────────────────────────────────────────────────────────────────────
 async def get_chats(uid: int) -> list[str]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute(
             "SELECT chat_id FROM chats WHERE uid=? ORDER BY id", (uid,)
         ) as cur:
@@ -259,7 +318,8 @@ async def get_chats(uid: int) -> list[str]:
 
 
 async def count_chats(uid: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute(
             "SELECT COUNT(*) FROM chats WHERE uid=?", (uid,)
         ) as cur:
@@ -276,8 +336,8 @@ async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tupl
         (False, "duplicate") — allaqachon mavjud
         (False, "limit") — max_chats limitidan oshib ketdi
     """
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA busy_timeout=5000")
+    db = await _get_conn()
+    async with _op_lock:
         # Transaction ichida count + insert — atomic
         await db.execute("BEGIN IMMEDIATE")
         try:
@@ -312,7 +372,8 @@ async def remove_chat(uid: int, index: int) -> str | None:
     chats = await get_chats(uid)
     if 0 <= index < len(chats):
         chat_id = chats[index]
-        async with aiosqlite.connect(DB_PATH) as db:
+        db = await _get_conn()
+        async with _op_lock:
             await db.execute(
                 "DELETE FROM chats WHERE uid=? AND chat_id=?", (uid, chat_id)
             )
@@ -322,7 +383,8 @@ async def remove_chat(uid: int, index: int) -> str | None:
 
 
 async def clear_chats(uid: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         await db.execute("DELETE FROM chats WHERE uid=?", (uid,))
         await db.commit()
 
@@ -331,8 +393,8 @@ async def clear_chats(uid: int) -> None:
 # POSTS — atomic count + insert (race-safe)
 # ─────────────────────────────────────────────────────────────────────────
 async def get_posts(uid: int) -> list[dict]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute(
             "SELECT * FROM posts WHERE uid=? ORDER BY id", (uid,)
         ) as cur:
@@ -350,7 +412,8 @@ async def get_posts(uid: int) -> list[dict]:
 
 
 async def count_posts(uid: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute(
             "SELECT COUNT(*) FROM posts WHERE uid=?", (uid,)
         ) as cur:
@@ -372,8 +435,8 @@ async def add_post(
         (True, "ok", post_id) — qo'shildi
         (False, "limit", None) — max_posts limitidan oshib ketdi
     """
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("PRAGMA busy_timeout=5000")
+    db = await _get_conn()
+    async with _op_lock:
         await db.execute("BEGIN IMMEDIATE")
         try:
             if max_posts is not None:
@@ -399,12 +462,41 @@ async def add_post(
             raise
 
 
+async def get_post(post_id: int) -> dict | None:
+    """ID bo'yicha bitta postni qaytaradi."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute("SELECT * FROM posts WHERE id=?", (post_id,)) as cur:
+            r = await cur.fetchone()
+            if not r:
+                return None
+            return {
+                "id": r["id"],
+                "text": r["text_content"],
+                "entities": json.loads(r["entities"]),
+                "photo": r["photo_path"],
+                "link_preview": bool(r["link_preview"]),
+            }
+
+
+async def update_post(post_id: int, text: str, entities: list, photo_path: str | None) -> None:
+    """Mavjud postni yangi mazmun bilan to'liq almashtiradi."""
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute(
+            "UPDATE posts SET text_content=?, entities=?, photo_path=? WHERE id=?",
+            (text, json.dumps(entities, ensure_ascii=False), photo_path, post_id),
+        )
+        await db.commit()
+
+
 async def remove_post(uid: int, index: int) -> dict | None:
     """Index bo'yicha postni o'chiradi."""
     posts = await get_posts(uid)
     if 0 <= index < len(posts):
         post = posts[index]
-        async with aiosqlite.connect(DB_PATH) as db:
+        db = await _get_conn()
+        async with _op_lock:
             await db.execute("DELETE FROM posts WHERE id=?", (post["id"],))
             await db.commit()
         return post
@@ -414,7 +506,8 @@ async def remove_post(uid: int, index: int) -> dict | None:
 async def clear_posts(uid: int) -> list[dict]:
     """Barcha postlarni o'chiradi. O'chirilgan postlar ro'yxatini qaytaradi."""
     posts = await get_posts(uid)
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         await db.execute("DELETE FROM posts WHERE uid=?", (uid,))
         await db.commit()
     return posts
@@ -424,7 +517,8 @@ async def clear_posts(uid: int) -> list[dict]:
 # ALL RUNNING USERS (restart-dan keyin tiklash uchun)
 # ─────────────────────────────────────────────────────────────────────────
 async def get_all_running() -> list[int]:
-    async with aiosqlite.connect(DB_PATH) as db:
+    db = await _get_conn()
+    async with _op_lock:
         async with db.execute(
             "SELECT uid FROM users WHERE running=1 AND session IS NOT NULL AND is_admin=1"
         ) as cur:
@@ -515,20 +609,10 @@ async def migrate_from_json() -> dict:
         except Exception:
             pass
 
-    # Schedule
+    # Schedule — endi ishlatilmaydi (vaqt oynasi funksiyasi olib tashlangan),
+    # lekin eski schedule.json bo'lsa qayta o'qilmasligi uchun belgilab qo'yamiz.
     if _is_pending("schedule.json"):
-        try:
-            with open(_path("schedule.json"), "r", encoding="utf-8") as f:
-                schedules = json.load(f)
-            for uid_str, sched in schedules.items():
-                await upsert_user(
-                    int(uid_str),
-                    schedule_start=sched.get("start", "00:00"),
-                    schedule_end=sched.get("end", "23:59"),
-                )
-            _mark_migrated("schedule.json")
-        except Exception:
-            pass
+        _mark_migrated("schedule.json")
 
     # Chats — UNIQUE(uid, chat_id) tufayli dubl bo'lmaydi
     if _is_pending("chats.json"):
