@@ -32,7 +32,6 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
@@ -94,8 +93,8 @@ from telegram.ext import (
 
 # Ichki modullar
 import database as db
-from client_pool import ClientPool
-from worker_manager import WorkerManager
+from client_pool import ClientPool, PoolBusyError, SessionInvalidError
+from worker_manager import WorkerManager, MAX_CONCURRENT_WORKERS
 from health import HealthServer, format_status_message, START_TIME, _get_memory_info
 from rate_limiter import RateLimiter
 
@@ -122,14 +121,18 @@ SUPER_ADMIN = int(_require_env("ADMIN_ID"))
 # ─────────────────────────────────────────────────────────────────────────
 # KONSTANTALAR
 # ─────────────────────────────────────────────────────────────────────────
-MAX_CHATS = 10
-MAX_POSTS = 20
-MIN_INTERVAL_MIN = 4
+# Tariflar: tariff raqami -> (max_chats, max_posts)
+#   1-tarif → 3 chat / 5 post
+#   2-tarif → 6 chat / 10 post
+#   3-tarif → 10 chat / 50 post
+TARIFFS = {1: (3, 5), 2: (6, 10), 3: (10, 50)}
+DEFAULT_TARIFF = 1
+
+MIN_INTERVAL_MIN = 5
 MAX_INTERVAL_MIN = 1440
 LOGIN_TIMEOUT_S = 300
 SEND_DELAY_S = 5
 INTERVAL_JITTER_S = 30
-DEFAULT_TZ_OFFSET = 5
 
 ADMIN_CONTACT_PHONE = "+998938670592"
 BOT_USERNAME = "@avtoelon_el_uzbot"
@@ -139,6 +142,17 @@ MEDIA_DIR = "media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 LOG_FILE = "avto_bot.log"
+
+
+def tariff_limits(tariff: int) -> tuple[int, int]:
+    """Tarif raqamidan (max_chats, max_posts) qaytaradi."""
+    return TARIFFS.get(int(tariff or DEFAULT_TARIFF), TARIFFS[DEFAULT_TARIFF])
+
+
+def tariff_label(tariff: int) -> str:
+    """Tarifning inson o'qiydigan ko'rinishi."""
+    mc, mp = tariff_limits(tariff)
+    return f"{int(tariff or DEFAULT_TARIFF)}-tarif ({mc} chat / {mp} post)"
 
 # ─────────────────────────────────────────────────────────────────────────
 # LOGGING
@@ -155,30 +169,6 @@ logger.addHandler(_sh)
 
 def log(msg: str, level: str = "info") -> None:
     getattr(logger, level)(msg)
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# VAQT YORDAMCHILARI
-# ─────────────────────────────────────────────────────────────────────────
-def now_local() -> datetime:
-    return datetime.now(timezone(timedelta(hours=DEFAULT_TZ_OFFSET)))
-
-
-def in_window(now: datetime, start: dtime, end: dtime) -> bool:
-    cur = now.time()
-    if start <= end:
-        return start <= cur <= end
-    return cur >= start or cur <= end
-
-
-def seconds_to_window_open(now: datetime, start: dtime, end: dtime) -> int:
-    if in_window(now, start, end):
-        return 0
-    today = now.date()
-    candidate = datetime.combine(today, start, tzinfo=now.tzinfo)
-    if candidate <= now:
-        candidate = candidate + timedelta(days=1)
-    return max(1, int((candidate - now).total_seconds()))
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -272,6 +262,11 @@ def is_super(uid: int) -> bool:
     return uid == SUPER_ADMIN
 
 
+async def user_limits(uid: int) -> tuple[int, int]:
+    """Foydalanuvchining tarifiga ko'ra (max_chats, max_posts)."""
+    return tariff_limits(await db.get_tariff(uid))
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # MENYU
 # ─────────────────────────────────────────────────────────────────────────
@@ -291,9 +286,9 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
         [KeyboardButton("▶️ Start"), KeyboardButton("⛔ Stop")],
         [KeyboardButton(f"📊 Status ({on})"), KeyboardButton("💬 Chatlar")],
         [KeyboardButton("➕ Chat qo'sh"), KeyboardButton("➖ Chat o'chir")],
-        [KeyboardButton("📝 Post qo'sh"), KeyboardButton("🗑 Post o'chir")],
-        [KeyboardButton("📋 Postlar"), KeyboardButton("🧹 Tozalash")],
-        [KeyboardButton(f"⏱ Interval: {interval} daq")],
+        [KeyboardButton("📝 Post qo'sh"), KeyboardButton("✏️ Post tahrir")],
+        [KeyboardButton("🗑 Post o'chir"), KeyboardButton("📋 Postlar")],
+        [KeyboardButton("🧹 Tozalash"), KeyboardButton(f"⏱ Interval: {interval} daq")],
         [KeyboardButton("🚪 Logout")],
     ]
     if super_admin:
@@ -305,18 +300,6 @@ async def is_approved(uid: int) -> bool:
     if uid == SUPER_ADMIN:
         return True
     return await db.is_admin(uid)
-
-
-def _user_to_schedule(user: dict | None) -> tuple[dtime, dtime]:
-    """Foydalanuvchi dict'idan schedule kortejini chiqarish."""
-    if not user:
-        return dtime(0, 0), dtime(23, 59)
-    try:
-        sh, sm = map(int, user.get("schedule_start", "00:00").split(":"))
-        eh, em = map(int, user.get("schedule_end", "23:59").split(":"))
-        return dtime(sh, sm), dtime(eh, em)
-    except Exception:
-        return dtime(0, 0), dtime(23, 59)
 
 
 async def menu_for(uid: int) -> ReplyKeyboardMarkup:
@@ -562,12 +545,17 @@ async def _finalize_login_uid(uid: int) -> None:
     login_ctx.pop(uid, None)
     user_states.pop(uid, None)
 
+    # Ism ro'yxatdan o'tishda kiritilgan — uni saqlab qolamiz, faqat
+    # username'ni (agar bor bo'lsa) yangilaymiz.
     try:
+        info = await db.get_user_info(uid)
+        entered_name = (info.get("name") or "").strip()
         chat = await application.bot.get_chat(uid)
-        name = (chat.first_name or "") + (
+        tg_name = (chat.first_name or "") + (
             f" {chat.last_name}" if chat.last_name else ""
-        ) or "Noma'lum"
-        username = chat.username or ""
+        )
+        name = entered_name or tg_name or "Noma'lum"
+        username = chat.username or info.get("username", "") or ""
         await db.set_user_info(uid, name, username)
     except Exception:
         pass
@@ -590,8 +578,10 @@ async def _finalize_login_uid(uid: int) -> None:
     await application.bot.send_message(
         uid,
         "✅ Login muvaffaqiyatli!\n\n"
-        "⏳ Endi admin tasdiqlashini kuting (ON/OFF).\n"
-        "Tasdiqlanganingizdan so'ng menyu ochiladi.",
+        "⏳ Hisobingiz admin tasdiqlashini kutmoqda.\n\n"
+        "📞 Tezroq tasdiqlanish va tarif tanlash uchun admin bilan bog'laning:\n"
+        f"📱 {ADMIN_CONTACT_PHONE}\n\n"
+        "Tasdiqlanganingizdan so'ng menyu avtomatik ochiladi.",
         reply_markup=await menu_for(uid),
     )
 
@@ -603,9 +593,15 @@ async def notify_super_for_approval(uid: int) -> None:
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ ON (tasdiqlash)", callback_data=f"app:on:{uid}"),
-                InlineKeyboardButton("⛔ OFF (rad etish)", callback_data=f"app:off:{uid}"),
-            ]
+                InlineKeyboardButton("✅ 1-tarif (3/5)", callback_data=f"app:t1:{uid}"),
+                InlineKeyboardButton("✅ 2-tarif (6/10)", callback_data=f"app:t2:{uid}"),
+            ],
+            [
+                InlineKeyboardButton("✅ 3-tarif (10/50)", callback_data=f"app:t3:{uid}"),
+            ],
+            [
+                InlineKeyboardButton("⛔ Rad etish", callback_data=f"app:off:{uid}"),
+            ],
         ]
     )
     text = (
@@ -613,8 +609,11 @@ async def notify_super_for_approval(uid: int) -> None:
         f"👤 Ism: {name}\n"
         f"📎 {username}\n"
         f"🆔 ID: {uid}\n\n"
-        "ON bossangiz — foydalanuvchi botdan to'liq foydalana boshlaydi.\n"
-        "OFF bossangiz — sessiyasi o'chiriladi va bot ishlatishni rad etadi."
+        "Tarif tanlab tasdiqlang (chat/post limiti):\n"
+        "• 1-tarif → 3 chat / 5 post\n"
+        "• 2-tarif → 6 chat / 10 post\n"
+        "• 3-tarif → 10 chat / 50 post\n\n"
+        "⛔ Rad etish — sessiyasi o'chiriladi."
     )
     with contextlib.suppress(Exception):
         await application.bot.send_message(SUPER_ADMIN, text, reply_markup=kb)
@@ -705,11 +704,14 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                 await _sleep_or_stop(stop, 30)
                 continue
 
-            client = await client_pool.acquire(uid, sess)
-            if client is None:
-                log(f"🚫 Worker:{uid} — sessiya yaroqsiz yoki pool to'la", "warning")
+            try:
+                client = await client_pool.acquire(uid, sess)
+            except SessionInvalidError:
+                # Sessiya HAQIQATAN bekor qilingan — o'chirib, login'ga yo'naltiramiz
+                log(f"🚫 Worker:{uid} — sessiya bekor qilingan", "warning")
                 await db.del_session(uid)
                 await db.set_running(uid, False)
+                await client_pool.remove(uid)
                 with contextlib.suppress(Exception):
                     await application.bot.send_message(
                         uid,
@@ -717,6 +719,13 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                         "Qaytadan 🔑 Login qiling.",
                     )
                 break
+            except PoolBusyError:
+                # Vaqtinchalik (pool to'la / tarmoq) — sessiyaga TEGMAYMIZ,
+                # 30s kutib qayta urinadi.
+                log(f"⏳ Worker:{uid} — tizim band/tarmoq, 30s kutadi", "warning")
+                if await _sleep_or_stop(stop, 30):
+                    break
+                continue
 
             try:
                 post = random.choice(posts)
@@ -834,19 +843,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📢 Yangi mahsulot/yangiliklar haqida xabar berish\n"
         "📢 Auditoriyani kengaytirish\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "⚙️ IMKONIYATLAR\n\n"
-        f"• Maksimal {MAX_CHATS} ta chat (guruh/kanal)\n"
-        f"• Maksimal {MAX_POSTS} ta post (matn yoki rasm + matn)\n"
+        "⚙️ IMKONIYATLAR (TARIFLAR)\n\n"
+        "• 1-tarif → 3 chat / 5 post\n"
+        "• 2-tarif → 6 chat / 10 post\n"
+        "• 3-tarif → 10 chat / 50 post\n"
         f"• Interval: {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daqiqa\n"
         "• Bold, italic, link va barcha formatlash saqlanadi\n"
         "• 24/7 ishlaydi, restart-dan keyin avtomatik tiklanadi\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "📋 BOSHLASH\n\n"
         "1️⃣ '🔑 Login' tugmasini bosing\n"
-        "2️⃣ Telefon raqamingizni kiriting (+998XXXXXXXXX)\n"
-        "3️⃣ Telegramdan kelgan kodni RAQAMLI TUGMALAR orqali kiriting\n"
-        "4️⃣ 2FA bo'lsa — parolni kiriting\n"
-        "5️⃣ Admin tasdiqlashini kuting (ON/OFF)\n\n"
+        "2️⃣ Ismingizni kiriting (admin tanishi uchun)\n"
+        "3️⃣ Telefon raqamingizni kiriting (+998XXXXXXXXX)\n"
+        "4️⃣ Telegramdan kelgan kodni RAQAMLI TUGMALAR orqali kiriting\n"
+        "5️⃣ 2FA bo'lsa — parolni kiriting\n"
+        "6️⃣ Tasdiqlash va tarif uchun admin bilan bog'laning\n\n"
+        f"📱 Admin: {ADMIN_CONTACT_PHONE}\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "🛡 XAVFSIZLIK\n\n"
         "✅ Kod va parol HECH QAYERDA saqlanmaydi\n"
@@ -938,36 +950,43 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
 
-    # Yangi user tasdiqlash
-    if data.startswith("app:on:") or data.startswith("app:off:"):
+    # Yangi user tasdiqlash — tarif bilan (app:t1/t2/t3:uid) yoki rad (app:off:uid)
+    if data.startswith("app:t") or data.startswith("app:off:"):
         if not is_super(uid):
             return
-        action = "on" if ":on:" in data else "off"
-        target = int(data.split(":")[2])
+        parts = data.split(":")
+        action = parts[1]  # "t1" | "t2" | "t3" | "off"
+        target = int(parts[2])
         sess = await db.get_pending(target)
-        if action == "on":
+        if action in ("t1", "t2", "t3"):
             if not sess:
                 await q.edit_message_text(f"⚠️ {target} pending sessiyasi topilmadi.")
                 return
+            tariff = int(action[1])  # t1->1, t2->2, t3->3
             await db.set_session(target, sess)
             await db.del_pending(target)
             await db.add_admin(target)
-            log(f"✅ Tasdiqlandi: {target}")
-            await q.edit_message_text(f"✅ Tasdiqlandi: {target}")
+            await db.set_tariff(target, tariff)
+            log(f"✅ Tasdiqlandi: {target} ({tariff_label(tariff)})")
+            await q.edit_message_text(
+                f"✅ Tasdiqlandi: {target}\n🎫 {tariff_label(tariff)}"
+            )
             with contextlib.suppress(Exception):
                 info = await db.get_user_info(target)
                 name = info.get("name", "Foydalanuvchi")
+                tmc, tmp = tariff_limits(tariff)
                 await application.bot.send_message(
                     target,
                     f"✅ {name}, hisobingiz tasdiqlandi!\n\n"
+                    f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n\n"
                     "Endi:\n"
-                    f"1️⃣ ➕ Chat qo'shing (max {MAX_CHATS})\n"
-                    f"2️⃣ 📝 Post qo'shing (max {MAX_POSTS})\n"
+                    f"1️⃣ ➕ Chat qo'shing (max {tmc})\n"
+                    f"2️⃣ 📝 Post qo'shing (max {tmp})\n"
                     "3️⃣ ⏱ Interval sozlang\n"
                     "4️⃣ ▶️ Start bosing",
                     reply_markup=await menu_for(target),
                 )
-        else:
+        else:  # off — rad etish
             # Pending bekor qilinadi. session bu yerda yo'q (faqat pending),
             # shu sababli del_session chaqirilmaydi.
             await db.del_pending(target)
@@ -976,7 +995,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             with contextlib.suppress(Exception):
                 await application.bot.send_message(
                     target,
-                    "❌ Sizning so'rovingiz rad etildi.\nQayta urinib ko'rishingiz mumkin.",
+                    "❌ Sizning so'rovingiz rad etildi.\n\n"
+                    f"📞 Savollar uchun admin bilan bog'laning: {ADMIN_CONTACT_PHONE}\n"
+                    "Qayta urinib ko'rishingiz mumkin.",
                     reply_markup=await menu_for(target),
                 )
         return
@@ -1015,6 +1036,40 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if data == "stop:no":
         await q.edit_message_text("✅ Posting davom etmoqda.")
+        return
+
+    # Start tasdiq
+    if data == "go:no":
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
+    if data == "go:yes":
+        if worker_manager and worker_manager.is_running(uid):
+            await q.edit_message_text("⚠️ Allaqachon ishlamoqda.")
+            return
+        chats = await db.get_chats(uid)
+        posts = await db.get_posts(uid)
+        if not chats or not posts:
+            await q.edit_message_text("❌ Chat yoki post yo'q. Avval qo'shing.")
+            return
+        started = await worker_manager.start_worker(uid) if worker_manager else False
+        if not started:
+            await q.edit_message_text(
+                "⚠️ Hozir tizim band. Bir oz kuting va qaytadan urinib ko'ring."
+            )
+            return
+        await db.set_running(uid, True)
+        interval = await db.get_interval(uid)
+        log(f"▶️ Start: {uid}")
+        await q.edit_message_text(
+            f"✅ Posting boshlandi!\n"
+            f"💬 {len(chats)} ta chat\n"
+            f"📝 {len(posts)} ta post\n"
+            f"⏱ Har {interval} daqiqada"
+        )
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                uid, "Holat yangilandi.", reply_markup=await menu_for(uid)
+            )
         return
 
     if data == "clr:yes":
@@ -1074,6 +1129,36 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
+    # Post tahrirlash — postni tanlash
+    if data == "editp:cancel":
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
+    if data.startswith("editp:"):
+        try:
+            i = int(data.split(":")[1])
+        except Exception:
+            return
+        posts = await db.get_posts(uid)
+        if not (0 <= i < len(posts)):
+            await q.edit_message_text("❌ Post topilmadi.")
+            return
+        target_post = posts[i]
+        user_states[uid] = {
+            "step": "edit_post",
+            "ts": time.time(),
+            "edit_post_id": target_post["id"],
+            "edit_old_photo": target_post.get("photo"),
+        }
+        preview = (target_post.get("text") or "(faqat rasm)")[:80]
+        await q.edit_message_text(f"✏️ Tanlandi:\n{preview}")
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                uid,
+                "✍️ Yangi mazmunni yuboring (matn, rasm yoki rasm+matn).\n\n"
+                "⚠️ Eski post yangi mazmun bilan TO'LIQ almashtiriladi.",
+            )
+        return
+
     if data.startswith("delc:"):
         try:
             i = int(data.split(":")[1])
@@ -1119,14 +1204,85 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # Tarif o'zgartirish: foydalanuvchini tanlash
+    if data == "adm:tariff":
+        if not is_super(uid):
+            return
+        admins = await db.get_admins()
+        admins = [a for a in admins if a != SUPER_ADMIN]
+        if not admins:
+            await q.edit_message_text("❌ Tarif o'zgartirish uchun foydalanuvchi yo'q.")
+            return
+        rows = []
+        for a in admins:
+            info = await db.get_user_info(a)
+            name = info.get("name", str(a))
+            t = await db.get_tariff(a)
+            rows.append([InlineKeyboardButton(f"🎫 {name} ({t}-tarif)", callback_data=f"tariff:{a}")])
+        rows.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="tariff:cancel")])
+        await q.edit_message_text(
+            "🎫 Tarifni o'zgartirish uchun foydalanuvchini tanlang:",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
+    if data == "tariff:cancel":
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
+
+    # Tanlangan foydalanuvchi uchun tarif variantlari
+    if data.startswith("tariff:"):
+        if not is_super(uid):
+            return
+        target = int(data.split(":")[1])
+        info = await db.get_user_info(target)
+        name = info.get("name", str(target))
+        cur_t = await db.get_tariff(target)
+        rows = [
+            [
+                InlineKeyboardButton("1-tarif (3/5)", callback_data=f"settar:{target}:1"),
+                InlineKeyboardButton("2-tarif (6/10)", callback_data=f"settar:{target}:2"),
+            ],
+            [InlineKeyboardButton("3-tarif (10/50)", callback_data=f"settar:{target}:3")],
+            [InlineKeyboardButton("❌ Bekor", callback_data="tariff:cancel")],
+        ]
+        await q.edit_message_text(
+            f"🎫 {name} — hozirgi: {cur_t}-tarif\nYangi tarifni tanlang:",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
+    # Tarifni o'rnatish + foydalanuvchiga bildirishnoma
+    if data.startswith("settar:"):
+        if not is_super(uid):
+            return
+        parts = data.split(":")
+        target = int(parts[1])
+        new_t = int(parts[2])
+        await db.set_tariff(target, new_t)
+        log(f"🎫 Tarif o'zgartirildi: {target} → {new_t}")
+        await q.edit_message_text(f"✅ {target} → {tariff_label(new_t)}")
+        with contextlib.suppress(Exception):
+            tmc, tmp = tariff_limits(new_t)
+            await application.bot.send_message(
+                target,
+                f"🎫 Tarifingiz yangilandi: {tariff_label(new_t)}\n"
+                f"Endi {tmc} ta chat va {tmp} ta post qo'sha olasiz.",
+                reply_markup=await menu_for(target),
+            )
+        return
+
 
 def admin_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton("🔄 Yangilash", callback_data="adm:list"),
+                InlineKeyboardButton("🎫 Tarif o'zgartir", callback_data="adm:tariff"),
+            ],
+            [
                 InlineKeyboardButton("➖ Admin o'chir", callback_data="adm:remove"),
-            ]
+            ],
         ]
     )
 
@@ -1146,12 +1302,13 @@ async def format_admin_list() -> str:
         s = "✅" if await db.get_session(a) else "❌"
         ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
         interval = await db.get_interval(a)
+        tariff = await db.get_tariff(a)
         chats_n = await db.count_chats(a)
         posts_n = await db.count_posts(a)
         lines.append("")
         lines.append(f"👤 {name}")
         lines.append(f"   {username} | {a}")
-        lines.append(f"   Sessiya: {s} | Holat: {ac}")
+        lines.append(f"   Sessiya: {s} | Holat: {ac} | 🎫 {tariff}-tarif")
         lines.append(
             f"   💬 {chats_n} | 📝 {posts_n} | ⏱ {interval} daq"
         )
@@ -1174,7 +1331,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # LOGIN BOSQICHLARI
-    if step in ("phone", "code", "password"):
+    if step in ("name", "phone", "code", "password"):
         if time.time() - state.get("ts", 0) > LOGIN_TIMEOUT_S:
             await cleanup_login(uid)
             await msg.reply_text(
@@ -1184,6 +1341,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
             return
 
+        if step == "name":
+            await _handle_name(update, text)
+            return
         if step == "phone":
             await _handle_phone(update, text)
             return
@@ -1221,6 +1381,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     if step == "add_post":
         await _handle_add_post(update)
+        return
+    if step == "edit_post":
+        await _handle_edit_post(update)
         return
     if step == "set_interval":
         await _handle_set_interval(update, text)
@@ -1270,21 +1433,21 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if not posts:
             await msg.reply_text("❌ Avval 📝 Post qo'shing.", reply_markup=await menu_for(uid))
             return
-        started = await worker_manager.start_worker(uid)
-        if not started:
-            await msg.reply_text(
-                "⚠️ Hozir tizim band. Bir oz kuting va qaytadan urinib ko'ring.",
-                reply_markup=await menu_for(uid),
-            )
-            return
-        await db.set_running(uid, True)
         interval = await db.get_interval(uid)
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("✅ Ha, boshlash", callback_data="go:yes"),
+                    InlineKeyboardButton("❌ Yo'q", callback_data="go:no"),
+                ]
+            ]
+        )
         await msg.reply_text(
-            f"✅ Posting boshlandi!\n"
-            f"💬 {len(chats)} ta chat\n"
-            f"📝 {len(posts)} ta post\n"
-            f"⏱ Har {interval} daqiqada",
-            reply_markup=await menu_for(uid),
+            "▶️ Postingni boshlaymizmi?\n\n"
+            f"💬 {len(chats)} ta chatga\n"
+            f"📝 {len(posts)} ta postdan navbatma-navbat\n"
+            f"⏱ Har {interval} daqiqada yuboriladi.",
+            reply_markup=kb,
         )
         return
 
@@ -1307,14 +1470,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         chats = await db.get_chats(uid)
         posts = await db.get_posts(uid)
         interval = await db.get_interval(uid)
+        tariff = await db.get_tariff(uid)
+        max_chats, max_posts = tariff_limits(tariff)
         active = worker_manager.is_running(uid) if worker_manager else False
         status = "🟢 ON" if active else "🔴 OFF"
         await msg.reply_text(
             "📊 STATUS\n\n"
             f"Holat: {status}\n"
             f"Sessiya: ✅\n"
-            f"Chatlar: {len(chats)}/{MAX_CHATS}\n"
-            f"Postlar: {len(posts)}/{MAX_POSTS}\n"
+            f"Tarif: {tariff_label(tariff)}\n"
+            f"Chatlar: {len(chats)}/{max_chats}\n"
+            f"Postlar: {len(posts)}/{max_posts}\n"
             f"Interval: {interval} daqiqa",
             reply_markup=await menu_for(uid),
         )
@@ -1325,7 +1491,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if not chats:
             await msg.reply_text("❌ Chatlar yo'q.", reply_markup=await menu_for(uid))
             return
-        lines = [f"💬 CHATLAR ({len(chats)}/{MAX_CHATS}):", ""]
+        max_chats, _ = await user_limits(uid)
+        lines = [f"💬 CHATLAR ({len(chats)}/{max_chats}):", ""]
         lines += [f"{i}. {c}" for i, c in enumerate(chats, 1)]
         await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
         return
@@ -1336,16 +1503,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await msg.reply_text(f"⏳ {wait} soniya kuting.")
             return
         chats = await db.get_chats(uid)
-        if len(chats) >= MAX_CHATS:
+        max_chats, _ = await user_limits(uid)
+        if len(chats) >= max_chats:
             await msg.reply_text(
-                f"❌ Maksimal {MAX_CHATS} ta chat. Avval birini o'chiring.",
+                f"❌ Maksimal {max_chats} ta chat (sizning tarifingiz). Avval birini o'chiring.",
                 reply_markup=await menu_for(uid),
             )
             return
         user_states[uid] = {"step": "add_chat", "ts": time.time()}
         await msg.reply_text(
             "➕ Chat @username, https://t.me/... yoki ID yuboring.\n\n"
-            f"Hozir: {len(chats)}/{MAX_CHATS}"
+            f"Hozir: {len(chats)}/{max_chats}"
         )
         return
 
@@ -1371,9 +1539,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await msg.reply_text(f"⏳ {wait} soniya kuting.")
             return
         posts = await db.get_posts(uid)
-        if len(posts) >= MAX_POSTS:
+        _, max_posts = await user_limits(uid)
+        if len(posts) >= max_posts:
             await msg.reply_text(
-                f"❌ Maksimal {MAX_POSTS} ta post.", reply_markup=await menu_for(uid)
+                f"❌ Maksimal {max_posts} ta post (sizning tarifingiz).",
+                reply_markup=await menu_for(uid),
             )
             return
         user_states[uid] = {"step": "add_post", "ts": time.time()}
@@ -1383,7 +1553,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "• Rasm + caption (formatlash bilan)\n"
             "• Faqat rasm\n\n"
             "Bold, italic, link va barcha formatlash saqlanadi.\n"
-            f"📝 Hozir: {len(posts)}/{MAX_POSTS}"
+            f"📝 Hozir: {len(posts)}/{max_posts}"
         )
         return
 
@@ -1400,6 +1570,27 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         rows.append([InlineKeyboardButton("❌ Bekor", callback_data="delp:cancel")])
         await msg.reply_text(
             f"🗑 O'chirish uchun postni tanlang ({len(posts)} ta):",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
+    if text == "✏️ Post tahrir":
+        if not rate_limiter.is_allowed(uid, "modify"):
+            wait = rate_limiter.get_wait_time(uid, "modify")
+            await msg.reply_text(f"⏳ {wait} soniya kuting.")
+            return
+        posts = await db.get_posts(uid)
+        if not posts:
+            await msg.reply_text("❌ Tahrirlash uchun post yo'q.", reply_markup=await menu_for(uid))
+            return
+        rows = []
+        for i, p in enumerate(posts):
+            icon = "🖼" if p.get("photo") else "📝"
+            preview = (p.get("text") or "(rasm)")[:25]
+            rows.append([InlineKeyboardButton(f"✏️ {i+1}. {icon} {preview}", callback_data=f"editp:{i}")])
+        rows.append([InlineKeyboardButton("❌ Bekor", callback_data="editp:cancel")])
+        await msg.reply_text(
+            f"✏️ Tahrirlash uchun postni tanlang ({len(posts)} ta):",
             reply_markup=InlineKeyboardMarkup(rows),
         )
         return
@@ -1475,9 +1666,31 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def _begin_login(update: Update) -> None:
     uid = update.effective_user.id
     await cleanup_login(uid)
+    user_states[uid] = {"step": "name", "ts": time.time()}
+    await update.message.reply_text(
+        "👤 Avval ismingizni kiriting:\n\n"
+        "Bu ism admin sizni tanishi va tasdiqlashi uchun kerak.\n"
+        "Masalan: Akmal Karimov\n\n"
+        f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
+    )
+
+
+async def _handle_name(update: Update, text: str) -> None:
+    uid = update.effective_user.id
+    name = text.strip()
+    if len(name) < 2:
+        await update.message.reply_text(
+            "❌ Ism juda qisqa. To'liq ismingizni yozing (kamida 2 harf):"
+        )
+        return
+    name = name[:64]  # juda uzun bo'lmasin
+    username = update.effective_user.username or ""
+    # Ismni darhol saqlaymiz — admin tasdiq xabarida ko'rinadi
+    await db.set_user_info(uid, name, username)
     user_states[uid] = {"step": "phone", "ts": time.time()}
     await update.message.reply_text(
-        "📱 Telefon raqamingizni yuboring:\n\n"
+        f"✅ Rahmat, {name}!\n\n"
+        "📱 Endi telefon raqamingizni yuboring:\n\n"
         "Format: +998XXXXXXXXX\n\n"
         "⚠️ Telegram ilovangiz ochiq ekanligini tekshiring!\n"
         "Kod SMS emas, Telegram ilovasidagi \"Telegram\" rasmiy chatiga keladi.\n\n"
@@ -1608,12 +1821,13 @@ async def _handle_add_chat(update: Update, text: str) -> None:
         await update.message.reply_text("❌ Bo'sh.", reply_markup=await menu_for(uid))
         return
 
+    max_chats, _ = await user_limits(uid)
     # Atomic check + insert (race-safe)
-    ok, reason = await db.add_chat(uid, chat, max_chats=MAX_CHATS)
+    ok, reason = await db.add_chat(uid, chat, max_chats=max_chats)
     if not ok:
         if reason == "limit":
             await update.message.reply_text(
-                f"❌ Maksimal {MAX_CHATS} ta chat. Avval birini o'chiring.",
+                f"❌ Maksimal {max_chats} ta chat (sizning tarifingiz). Avval birini o'chiring.",
                 reply_markup=await menu_for(uid),
             )
         elif reason == "duplicate":
@@ -1629,7 +1843,7 @@ async def _handle_add_chat(update: Update, text: str) -> None:
     log(f"💬 Chat qo'shildi: {uid} → {chat}")
     new_count = await db.count_chats(uid)
     await update.message.reply_text(
-        f"✅ Qo'shildi: {chat}\n💬 Jami: {new_count}/{MAX_CHATS}",
+        f"✅ Qo'shildi: {chat}\n💬 Jami: {new_count}/{max_chats}",
         reply_markup=await menu_for(uid),
     )
 
@@ -1642,12 +1856,14 @@ async def _handle_add_post(update: Update) -> None:
     text = msg.text or msg.caption or ""
     entities_src = list(msg.entities or []) + list(msg.caption_entities or [])
 
+    _, max_posts = await user_limits(uid)
     # Limitni rasm yuklashdan oldin tekshiramiz (rasm yuklab keyin
     # tashlab yuborish — vaqt va trafik isrofi)
     pre_count = await db.count_posts(uid)
-    if pre_count >= MAX_POSTS:
+    if pre_count >= max_posts:
         await msg.reply_text(
-            f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
+            f"❌ Maksimal {max_posts} ta post (sizning tarifingiz).",
+            reply_markup=await menu_for(uid),
         )
         return
 
@@ -1677,13 +1893,14 @@ async def _handle_add_post(update: Update) -> None:
     entities_dict = [entity_to_dict(e) for e in entities_src]
     # Atomic check + insert (race-safe)
     ok, reason, _ = await db.add_post(
-        uid, text, entities_dict, photo_path, max_posts=MAX_POSTS
+        uid, text, entities_dict, photo_path, max_posts=max_posts
     )
     if not ok:
         _safe_unlink(photo_path)
         if reason == "limit":
             await msg.reply_text(
-                f"❌ Maksimal {MAX_POSTS} ta.", reply_markup=await menu_for(uid)
+                f"❌ Maksimal {max_posts} ta post (sizning tarifingiz).",
+                reply_markup=await menu_for(uid),
             )
         else:
             await msg.reply_text(
@@ -1697,6 +1914,70 @@ async def _handle_add_post(update: Update) -> None:
     kind = "🖼 Rasm + matn" if photo_path else "📝 Matn"
     await msg.reply_text(
         f"✅ Saqlandi (#{new_count})\n{kind}\n\n{preview}",
+        reply_markup=await menu_for(uid),
+    )
+
+
+async def _handle_edit_post(update: Update) -> None:
+    uid = update.effective_user.id
+    state = user_states.get(uid, {})
+    post_id = state.get("edit_post_id")
+    old_photo = state.get("edit_old_photo")
+    user_states.pop(uid, None)
+    msg = update.message
+
+    if post_id is None:
+        await msg.reply_text(
+            "❌ Tahrir jarayoni buzildi. Qaytadan urinib ko'ring.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    # Post hali ham mavjudmi? (tahrir paytida o'chirilgan bo'lishi mumkin)
+    current = await db.get_post(post_id)
+    if not current:
+        await msg.reply_text(
+            "❌ Post topilmadi (o'chirilgan bo'lishi mumkin).",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    text = msg.text or msg.caption or ""
+    entities_src = list(msg.entities or []) + list(msg.caption_entities or [])
+
+    photo_path: str | None = None
+    if msg.photo:
+        try:
+            photo = msg.photo[-1]
+            tg_file = await photo.get_file()
+            user_dir = _user_media_dir(uid)
+            photo_path = os.path.join(user_dir, f"{uuid.uuid4().hex}.jpg")
+            await tg_file.download_to_drive(custom_path=photo_path)
+        except Exception as e:
+            log(f"❌ Rasm yuklashda xato {uid}: {type(e).__name__}: {e}", "error")
+            await msg.reply_text(
+                "❌ Rasmni saqlab bo'lmadi. Qaytadan urinib ko'ring.",
+                reply_markup=await menu_for(uid),
+            )
+            return
+
+    if not text.strip() and not photo_path:
+        await msg.reply_text(
+            "❌ Bo'sh post qabul qilinmaydi.\nMatn yoki rasm yuboring.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    entities_dict = [entity_to_dict(e) for e in entities_src]
+    await db.update_post(post_id, text, entities_dict, photo_path)
+    # Eski rasmni o'chiramiz (agar boshqa fayl bilan almashtirilgan bo'lsa)
+    if old_photo and old_photo != photo_path:
+        _safe_unlink(old_photo)
+    log(f"✏️ Post tahrirlandi: {uid} (#{post_id})")
+    preview = (text or "(faqat rasm)")[:100]
+    kind = "🖼 Rasm + matn" if photo_path else "📝 Matn"
+    await msg.reply_text(
+        f"✅ Post yangilandi!\n{kind}\n\n{preview}",
         reply_markup=await menu_for(uid),
     )
 
@@ -1744,10 +2025,10 @@ async def _expire_stale_logins() -> int:
         if now - ctx.started_at > LOGIN_TIMEOUT_S:
             expired_uids.add(uid)
 
-    # 2) user_states — login bosqichida turib qolganlar (phone/code/password)
+    # 2) user_states — login bosqichida turib qolganlar (name/phone/code/password)
     for uid, state in list(user_states.items()):
         step = state.get("step")
-        if step in ("phone", "code", "password"):
+        if step in ("name", "phone", "code", "password"):
             ts = state.get("ts", 0)
             if now - ts > LOGIN_TIMEOUT_S:
                 expired_uids.add(uid)
@@ -1832,11 +2113,13 @@ async def main() -> None:
             f"({len(migrated['files'])} fayl: {', '.join(migrated['files'])})"
         )
 
-    # 3. Super admin bazada borligini ta'minlash
-    await db.upsert_user(SUPER_ADMIN, is_admin=1)
+    # 3. Super admin bazada borligini ta'minlash (eng yuqori tarif — 3)
+    await db.upsert_user(SUPER_ADMIN, is_admin=1, tariff=3)
 
     # 4. Client pool
-    client_pool = ClientPool(API_ID, API_HASH)
+    # MUHIM: pool hajmi worker limitiga TENG — har faol worker o'z clientini
+    # ola olishi kafolatlanadi (pool<worker nomuvofiqligi bartaraf etildi).
+    client_pool = ClientPool(API_ID, API_HASH, max_clients=MAX_CONCURRENT_WORKERS)
     await client_pool.start()
 
     # 5. Worker manager
@@ -1905,6 +2188,8 @@ async def main() -> None:
             await app.updater.stop()
             await app.stop()
             await app.shutdown()
+        with contextlib.suppress(Exception):
+            await db.close_db()
         log("👋 To'xtatildi")
 
 
