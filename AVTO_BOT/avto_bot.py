@@ -140,6 +140,8 @@ MAX_INTERVAL_MIN = 1440
 LOGIN_TIMEOUT_S = 300
 SEND_DELAY_S = 5
 INTERVAL_JITTER_S = 30
+START_JITTER_MAX_S = 60     # worker birinchi start: 0-60s tasodifiy kechikish (yukni yoyish)
+MAX_CHAT_FAILS = 3          # chat ketma-ket shuncha xato bersa — avto-o'chiriladi
 TARIFF_DURATION_DAYS = 30   # default tarif muddati (kun)
 TARIFF_WARN_DAYS = 3        # muddat tugashidan necha kun oldin ogohlantirish
 
@@ -711,6 +713,28 @@ async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> bool:
 async def posting_loop(uid: int, stop: asyncio.Event) -> None:
     """Asosiy posting siklini ishlatadi (ClientPool orqali)."""
     log(f"🟢 Worker:{uid} ishga tushdi")
+
+    # ── O'ZGARISH 1: START JITTER ──────────────────────────────────────
+    # Worker birinchi marta ishga tushganda 0-START_JITTER_MAX_S oralig'ida
+    # tasodifiy kutadi. Bu — ko'p worker (restart yoki bir paytda Start)
+    # bir lahzada yuborishni boshlamasligi uchun. Yuk vaqtga yoyiladi,
+    # CPU/tarmoq cho'qqisi (spike) yo'qoladi. Interval BUZILMAYDI — bu faqat
+    # birinchi turdan oldingi bir martalik siljish.
+    first_delay = random.randint(0, START_JITTER_MAX_S)
+    log(f"⏳ Worker:{uid} start jitter {first_delay}s")
+    if await _sleep_or_stop(stop, first_delay):
+        return
+
+    # ── O'ZGARISH 4: POST ROTATION ─────────────────────────────────────
+    # random.choice o'rniga navbat (rotation): A→B→C→A. Har post teng
+    # chiqadi, hech biri o'tkazib yuborilmaydi. Indeks worker xotirasida.
+    post_index = 0
+
+    # ── O'ZGARISH 3: SPAM HIMOYA ───────────────────────────────────────
+    # Har chat uchun ketma-ket xato hisoblagichi. MAX_CHAT_FAILS ga yetsa —
+    # chat avto-o'chiriladi va foydalanuvchi ogohlantiriladi.
+    chat_fails: dict[str, int] = {}
+
     try:
         while not stop.is_set():
             sess = await db.get_session(uid)
@@ -750,8 +774,14 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                 continue
 
             try:
-                post = random.choice(posts)
+                # O'ZGARISH 4: navbatdagi postni olamiz (rotation, random emas)
+                post_index %= len(posts)
+                post = posts[post_index]
+                post_index += 1
+
                 ok, fail = 0, 0
+                # Bu turda muvaffaqiyatsiz/muvaffaqiyatli bo'lgan chatlar
+                removed_chats: list[str] = []
                 for chat in chats:
                     if stop.is_set():
                         break
@@ -760,8 +790,11 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                             _send_post(client, chat, post), timeout=20
                         )
                         ok += 1
+                        chat_fails[chat] = 0   # muvaffaqiyat — hisoblagich nollanadi
                         log(f"✅ {uid} → {chat}")
                     except FloodWaitError as e:
+                        # FloodWait — Telegram "sekin" deydi. Bu chat AYBI emas,
+                        # shuning uchun fail hisoblanmaydi (chat o'chirilmaydi).
                         wait_s = int(getattr(e, "seconds", 30)) + 5
                         log(f"⏳ {uid} → {chat} FloodWait {wait_s}s", "warning")
                         if await _sleep_or_stop(stop, wait_s):
@@ -775,10 +808,27 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                         ValueError,
                     ) as e:
                         fail += 1
-                        log(f"❌ {uid} → {chat}: {type(e).__name__}", "warning")
+                        # O'ZGARISH 3: chat xatosi — ketma-ket hisoblaymiz
+                        chat_fails[chat] = chat_fails.get(chat, 0) + 1
+                        log(
+                            f"❌ {uid} → {chat}: {type(e).__name__} "
+                            f"({chat_fails[chat]}/{MAX_CHAT_FAILS})",
+                            "warning",
+                        )
+                        if chat_fails[chat] >= MAX_CHAT_FAILS:
+                            removed_chats.append(chat)
                     except asyncio.TimeoutError:
                         fail += 1
-                        log(f"⏱ {uid} → {chat} timeout", "warning")
+                        # Timeout — vaqtinchalik bo'lishi mumkin, lekin baribir
+                        # ketma-ket hisoblaymiz (cheksiz osilib qolmasin)
+                        chat_fails[chat] = chat_fails.get(chat, 0) + 1
+                        log(
+                            f"⏱ {uid} → {chat} timeout "
+                            f"({chat_fails[chat]}/{MAX_CHAT_FAILS})",
+                            "warning",
+                        )
+                        if chat_fails[chat] >= MAX_CHAT_FAILS:
+                            removed_chats.append(chat)
                     except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
                         log(f"🚫 {uid} sessiya yaroqsiz: {type(e).__name__}", "error")
                         await db.del_session(uid)
@@ -795,6 +845,24 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                         log(f"❌ {uid} → {chat}: {type(e).__name__}: {e}", "error")
                     if not stop.is_set():
                         await _sleep_or_stop(stop, SEND_DELAY_S)
+
+                # O'ZGARISH 3: ko'p marta xato bergan chatlarni o'chirib,
+                # foydalanuvchini ogohlantiramiz (spam-bandan himoya)
+                for bad in removed_chats:
+                    await db.remove_chat_by_value(uid, bad)
+                    chat_fails.pop(bad, None)
+                    log(f"🗑 {uid} chat avto-o'chirildi (spam himoya): {bad}")
+                    with contextlib.suppress(Exception):
+                        await application.bot.send_message(
+                            uid,
+                            f"⚠️ Diqqat! Quyidagi chatga {MAX_CHAT_FAILS} marta "
+                            f"xabar yuborib bo'lmadi:\n\n"
+                            f"📛 {bad}\n\n"
+                            "Sabab: bot o'sha chatdan chiqarilgan, yozish taqiqlangan "
+                            "yoki chat mavjud emas.\n"
+                            "Behuda urinishlarni to'xtatish uchun u ro'yxatdan "
+                            "AVTOMATIK o'chirildi. Tekshirib, qayta qo'shing.",
+                        )
 
                 log(f"📊 {uid} ✅{ok} ❌{fail} / {len(chats)}")
             finally:
