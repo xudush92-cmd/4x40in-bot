@@ -122,11 +122,17 @@ SUPER_ADMIN = int(_require_env("ADMIN_ID"))
 # ─────────────────────────────────────────────────────────────────────────
 # KONSTANTALAR
 # ─────────────────────────────────────────────────────────────────────────
-# Tariflar: tariff raqami -> (max_chats, max_posts)
-#   1-tarif → 3 chat / 5 post
-#   2-tarif → 6 chat / 10 post
-#   3-tarif → 10 chat / 50 post
-TARIFFS = {1: (3, 5), 2: (6, 10), 3: (10, 50)}
+# Tariflar: tariff raqami -> (nomi, max_chats, max_posts)
+#   1-tarif 🟢 Start   → 5 chat / 10 post
+#   2-tarif 🔵 Biznes  → 10 chat / 25 post
+#   3-tarif 🟡 Pro     → 20 chat / 50 post
+#   4-tarif 🔴 Premium → 50 chat / 100 post
+TARIFFS = {
+    1: ("🟢 Start", 5, 10),
+    2: ("🔵 Biznes", 10, 25),
+    3: ("🟡 Pro", 20, 50),
+    4: ("🔴 Premium", 50, 100),
+}
 DEFAULT_TARIFF = 1
 
 MIN_INTERVAL_MIN = 5
@@ -147,13 +153,21 @@ LOG_FILE = "avto_bot.log"
 
 def tariff_limits(tariff: int) -> tuple[int, int]:
     """Tarif raqamidan (max_chats, max_posts) qaytaradi."""
-    return TARIFFS.get(int(tariff or DEFAULT_TARIFF), TARIFFS[DEFAULT_TARIFF])
+    _, mc, mp = TARIFFS.get(int(tariff or DEFAULT_TARIFF), TARIFFS[DEFAULT_TARIFF])
+    return mc, mp
+
+
+def tariff_name(tariff: int) -> str:
+    """Tarif nomi (masalan '🔵 Biznes')."""
+    name, _, _ = TARIFFS.get(int(tariff or DEFAULT_TARIFF), TARIFFS[DEFAULT_TARIFF])
+    return name
 
 
 def tariff_label(tariff: int) -> str:
     """Tarifning inson o'qiydigan ko'rinishi."""
-    mc, mp = tariff_limits(tariff)
-    return f"{int(tariff or DEFAULT_TARIFF)}-tarif ({mc} chat / {mp} post)"
+    t = int(tariff or DEFAULT_TARIFF)
+    name, mc, mp = TARIFFS.get(t, TARIFFS[DEFAULT_TARIFF])
+    return f"{t}-tarif {name} ({mc} chat / {mp} post)"
 
 
 def calc_expiry(days: int = TARIFF_DURATION_DAYS) -> str:
@@ -599,11 +613,12 @@ async def notify_super_for_approval(uid: int) -> None:
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ 1-tarif (3/5)", callback_data=f"app:t1:{uid}"),
-                InlineKeyboardButton("✅ 2-tarif (6/10)", callback_data=f"app:t2:{uid}"),
+                InlineKeyboardButton("🟢 1-Start (5/10)", callback_data=f"app:t1:{uid}"),
+                InlineKeyboardButton("🔵 2-Biznes (10/25)", callback_data=f"app:t2:{uid}"),
             ],
             [
-                InlineKeyboardButton("✅ 3-tarif (10/50)", callback_data=f"app:t3:{uid}"),
+                InlineKeyboardButton("🟡 3-Pro (20/50)", callback_data=f"app:t3:{uid}"),
+                InlineKeyboardButton("🔴 4-Premium (50/100)", callback_data=f"app:t4:{uid}"),
             ],
             [
                 InlineKeyboardButton("⛔ Rad etish", callback_data=f"app:off:{uid}"),
@@ -616,9 +631,10 @@ async def notify_super_for_approval(uid: int) -> None:
         f"📎 {username}\n"
         f"🆔 ID: {uid}\n\n"
         "Tarif tanlab tasdiqlang (chat/post limiti):\n"
-        "• 1-tarif → 3 chat / 5 post\n"
-        "• 2-tarif → 6 chat / 10 post\n"
-        "• 3-tarif → 10 chat / 50 post\n\n"
+        "• 🟢 1-Start → 5 chat / 10 post\n"
+        "• 🔵 2-Biznes → 10 chat / 25 post\n"
+        "• 🟡 3-Pro → 20 chat / 50 post\n"
+        "• 🔴 4-Premium → 50 chat / 100 post\n\n"
         "⛔ Rad etish — sessiyasi o'chiriladi."
     )
     with contextlib.suppress(Exception):
@@ -850,9 +866,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📢 Auditoriyani kengaytirish\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "⚙️ IMKONIYATLAR (TARIFLAR)\n\n"
-        "• 1-tarif → 3 chat / 5 post\n"
-        "• 2-tarif → 6 chat / 10 post\n"
-        "• 3-tarif → 10 chat / 50 post\n"
+        "• 🟢 1-Start → 5 chat / 10 post\n"
+        "• 🔵 2-Biznes → 10 chat / 25 post\n"
+        "• 🟡 3-Pro → 20 chat / 50 post\n"
+        "• 🔴 4-Premium → 50 chat / 100 post\n"
         f"• Interval: {MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN} daqiqa\n"
         "• Bold, italic, link va barcha formatlash saqlanadi\n"
         "• 24/7 ishlaydi, restart-dan keyin avtomatik tiklanadi\n\n"
@@ -956,19 +973,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
 
-    # Yangi user tasdiqlash — tarif bilan (app:t1/t2/t3:uid) yoki rad (app:off:uid)
+    # Yangi user tasdiqlash — tarif bilan (app:t1..t4:uid) yoki rad (app:off:uid)
     if data.startswith("app:t") or data.startswith("app:off:"):
         if not is_super(uid):
             return
         parts = data.split(":")
-        action = parts[1]  # "t1" | "t2" | "t3" | "off"
+        action = parts[1]  # "t1" | "t2" | "t3" | "t4" | "off"
         target = int(parts[2])
         sess = await db.get_pending(target)
-        if action in ("t1", "t2", "t3"):
+        if action in ("t1", "t2", "t3", "t4"):
             if not sess:
                 await q.edit_message_text(f"⚠️ {target} pending sessiyasi topilmadi.")
                 return
-            tariff = int(action[1])  # t1->1, t2->2, t3->3
+            tariff = int(action[1])  # t1->1 ... t4->4
             await db.set_session(target, sess)
             await db.del_pending(target)
             await db.add_admin(target)
@@ -1248,10 +1265,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         cur_t = await db.get_tariff(target)
         rows = [
             [
-                InlineKeyboardButton("1-tarif (3/5)", callback_data=f"settar:{target}:1"),
-                InlineKeyboardButton("2-tarif (6/10)", callback_data=f"settar:{target}:2"),
+                InlineKeyboardButton("🟢 1-Start (5/10)", callback_data=f"settar:{target}:1"),
+                InlineKeyboardButton("🔵 2-Biznes (10/25)", callback_data=f"settar:{target}:2"),
             ],
-            [InlineKeyboardButton("3-tarif (10/50)", callback_data=f"settar:{target}:3")],
+            [
+                InlineKeyboardButton("🟡 3-Pro (20/50)", callback_data=f"settar:{target}:3"),
+                InlineKeyboardButton("🔴 4-Premium (50/100)", callback_data=f"settar:{target}:4"),
+            ],
             [InlineKeyboardButton("❌ Bekor", callback_data="tariff:cancel")],
         ]
         await q.edit_message_text(
@@ -1320,7 +1340,7 @@ async def format_admin_list() -> str:
         lines.append("")
         lines.append(f"👤 {name}")
         lines.append(f"   {username} | {a}")
-        lines.append(f"   Sessiya: {s} | Holat: {ac} | 🎫 {tariff}-tarif")
+        lines.append(f"   Sessiya: {s} | Holat: {ac} | 🎫 {tariff}-tarif {tariff_name(tariff)}")
         lines.append(
             f"   💬 {chats_n} | 📝 {posts_n} | ⏱ {interval} daq"
         )
