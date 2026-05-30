@@ -408,6 +408,18 @@ async def remove_chat(uid: int, index: int) -> str | None:
     return None
 
 
+async def remove_chat_by_value(uid: int, chat_id: str) -> bool:
+    """Chat qiymati (username/id) bo'yicha o'chiradi (spam himoya uchun).
+    O'chirilgan bo'lsa True qaytaradi."""
+    db = await _get_conn()
+    async with _op_lock:
+        cur = await db.execute(
+            "DELETE FROM chats WHERE uid=? AND chat_id=?", (uid, chat_id)
+        )
+        await db.commit()
+        return cur.rowcount > 0 if hasattr(cur, "rowcount") else True
+
+
 async def clear_chats(uid: int) -> None:
     db = await _get_conn()
     async with _op_lock:

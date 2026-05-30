@@ -29,7 +29,14 @@ logger = logging.getLogger("AvtoBot")
 # ─────────────────────────────────────────────────────────────────────────
 # KONFIGURATSIYA
 # ─────────────────────────────────────────────────────────────────────────
-MAX_CONCURRENT_WORKERS = 100     # bir vaqtda max ishlaydigan workerlar
+# MAX_CONCURRENT_WORKERS — bir vaqtda max ishlaydigan workerlar (= faol userlar).
+# HISOB (1 GB RAM EC2 Free Tier):
+#   Jami RAM 1024 MB − tizim ~200 MB = ~824 MB bo'sh.
+#   Har faol user (Telethon client) ~20 MB → 824/20 ≈ 41 nazariy maksimal.
+#   Xavfsizlik zaxirasi (zaxira RAM, OOM oldini olish) → 35.
+# Limitга yetganda 36-chi user "Tizim band, kuting" xabarini oladi (OOM emas).
+# Server RAM ko'paysa (2 GB→75, 4 GB→150) bu qiymatni oshirish mumkin.
+MAX_CONCURRENT_WORKERS = 35
 WORKER_STOP_TIMEOUT_S = 15      # worker to'xtashi uchun kutish vaqti
 
 
