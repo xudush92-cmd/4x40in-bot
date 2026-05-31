@@ -146,6 +146,9 @@ TARIFF_DURATION_DAYS = 30   # default tarif muddati (kun)
 TARIFF_WARN_DAYS = 3        # muddat tugashidan necha kun oldin ogohlantirish
 
 ADMIN_CONTACT_PHONE = "+998938670592"
+# Referal link uchun bot username (postlarga qo'shilmaydi, faqat referal linkda).
+# ENV orqali ham berish mumkin: BOT_USERNAME=avtoelon_el_uzbot
+BOT_USERNAME = os.getenv("BOT_USERNAME", "avtoelon_el_uzbot").lstrip("@")
 
 MEDIA_DIR = "media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -311,7 +314,7 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
         [KeyboardButton("📝 Post qo'sh"), KeyboardButton("✏️ Post tahrir")],
         [KeyboardButton("🗑 Post o'chir"), KeyboardButton("📋 Postlar")],
         [KeyboardButton("🧹 Tozalash"), KeyboardButton(f"⏱ Interval: {interval} daq")],
-        [KeyboardButton("🚪 Logout")],
+        [KeyboardButton("👥 Referal"), KeyboardButton("🚪 Logout")],
     ]
     if super_admin:
         rows.append([KeyboardButton("👥 Adminlar"), KeyboardButton("🖥 Tizim")])
@@ -900,6 +903,17 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"⏳ Juda ko'p so'rov. {wait} soniya kuting.")
         return
 
+    # ── REFERAL: /start ref_<uid> orqali kelganni biriktiramiz ──────────
+    # Faqat hali tasdiqlanmagan (yangi) userlar uchun. Hisoblash esa
+    # admin tasdiqlaganda amalga oshadi (try_count_referral).
+    if context.args:
+        arg = context.args[0]
+        if arg.startswith("ref_"):
+            ref_part = arg[4:]
+            if ref_part.isdigit() and not await is_approved(uid):
+                with contextlib.suppress(Exception):
+                    await db.set_referrer(uid, int(ref_part))
+
     if await db.get_pending(uid) and not await is_approved(uid):
         await update.message.reply_text(
             "⏳ Sizning so'rovingiz ko'rib chiqilmoqda.\nAdmin tasdiqlashini kuting.",
@@ -1099,6 +1113,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     "4️⃣ ▶️ Start bosing",
                     reply_markup=await menu_for(target),
                 )
+            # ── REFERAL HISOBLASH ───────────────────────────────────────
+            # Tasdiqlangan user kimdir tomonidan taklif qilingan bo'lsa —
+            # BIR MARTA hisoblaymiz va taklif qilganga xabar beramiz.
+            with contextlib.suppress(Exception):
+                referrer = await db.try_count_referral(target)
+                if referrer:
+                    total = await db.count_referrals(referrer)
+                    rinfo = await db.get_user_info(target)
+                    rname = rinfo.get("name", "Yangi foydalanuvchi")
+                    await application.bot.send_message(
+                        referrer,
+                        f"🎉 Sizning referalingiz faollashdi!\n\n"
+                        f"👤 {rname} ro'yxatdan o'tib, tasdiqlandi.\n"
+                        f"👥 Jami faol referallaringiz: {total} ta",
+                    )
         else:  # off — rad etish
             # Pending bekor qilinadi. session bu yerda yo'q (faqat pending),
             # shu sababli del_session chaqirilmaydi.
@@ -1528,6 +1557,30 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if text == "🔑 Login":
         await msg.reply_text("✅ Siz allaqachon kirgansiz.", reply_markup=await menu_for(uid))
+        return
+
+    if text == "👥 Referal":
+        link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
+        total = await db.count_referrals(uid)
+        refs = await db.get_referrals(uid)
+        lines = [
+            "👥 SIZNING REFERALLARINGIZ\n",
+            "🔗 Sizning taklif havolangiz:",
+            link,
+            "",
+            f"✅ Faol referallar: {total} ta",
+            "(ro'yxatdan o'tib, tasdiqlangan)",
+        ]
+        if refs:
+            lines.append("")
+            lines.append("📋 Ro'yxat:")
+            for i, r in enumerate(refs, 1):
+                mark = "✅" if r["counted"] else "⏳"
+                lines.append(f"{i}. {r['name']} — {mark}")
+        else:
+            lines.append("")
+            lines.append("Hozircha referal yo'q. Havolani do'stlaringizga ulashing!")
+        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
         return
 
     if text == "🚪 Logout":

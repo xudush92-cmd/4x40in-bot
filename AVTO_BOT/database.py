@@ -100,15 +100,19 @@ async def init_db() -> None:
                 interval_min INTEGER DEFAULT 5,
                 tariff INTEGER DEFAULT 1,
                 tariff_expires_at TEXT,
+                referred_by INTEGER,
+                referral_counted INTEGER DEFAULT 0,
                 running INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # Eski bazalar uchun idempotent migratsiya: tariff ustuni yo'q bo'lsa
+        # Eski bazalar uchun idempotent migratsiya: ustun yo'q bo'lsa
         # qo'shamiz (CREATE TABLE IF NOT EXISTS mavjud jadvalni o'zgartirmaydi).
         await _ensure_column(db, "users", "tariff", "INTEGER DEFAULT 1")
         await _ensure_column(db, "users", "tariff_expires_at", "TEXT")
+        await _ensure_column(db, "users", "referred_by", "INTEGER")
+        await _ensure_column(db, "users", "referral_counted", "INTEGER DEFAULT 0")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
@@ -319,6 +323,93 @@ async def get_expired_users() -> list[int]:
         ) as cur:
             rows = await cur.fetchall()
             return [r[0] for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# REFERAL — taklif tizimi (bonus yo'q, faqat aniq hisoblash)
+#
+# referred_by        — bu userni kim taklif qilgan (referrer uid)
+# referral_counted   — referal sifatida hisoblanganmi (takror oldini olish)
+# Referal FAQAT taklif qilingan user admin tomonidan tasdiqlanganda hisoblanadi.
+# ─────────────────────────────────────────────────────────────────────────
+async def set_referrer(uid: int, referrer_uid: int) -> bool:
+    """Yangi userga uni kim taklif qilganini yozadi.
+    Faqat: o'zini taklif qilmasa, ilgari referrer yo'q bo'lsa, referrer mavjud bo'lsa.
+    True qaytarsa — yozildi."""
+    if uid == referrer_uid:
+        return False
+    db = await _get_conn()
+    async with _op_lock:
+        # referrer haqiqatan mavjudmi?
+        async with db.execute("SELECT uid FROM users WHERE uid=?", (referrer_uid,)) as cur:
+            if await cur.fetchone() is None:
+                return False
+        # bu user uchun referred_by allaqachon bormi?
+        await db.execute("INSERT OR IGNORE INTO users (uid) VALUES (?)", (uid,))
+        async with db.execute("SELECT referred_by FROM users WHERE uid=?", (uid,)) as cur:
+            row = await cur.fetchone()
+            if row and row[0] is not None:
+                return False  # allaqachon biriktirilgan — o'zgartirmaymiz
+        await db.execute(
+            "UPDATE users SET referred_by=? WHERE uid=?", (referrer_uid, uid)
+        )
+        await db.commit()
+        return True
+
+
+async def get_referrer(uid: int) -> int | None:
+    """Bu userni kim taklif qilgan (referrer uid yoki None)."""
+    user = await get_user(uid)
+    return user.get("referred_by") if user else None
+
+
+async def try_count_referral(uid: int) -> int | None:
+    """Tasdiqlangan user uchun referalni BIR MARTA hisoblaydi.
+    Qaytaradi: referrer uid (agar yangi hisoblangan bo'lsa) yoki None.
+    Takror chaqirilsa None qaytaradi (referral_counted=1 bo'lib qoladi)."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT referred_by, referral_counted FROM users WHERE uid=?", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        referrer, counted = row[0], row[1]
+        if referrer is None or counted:
+            return None  # referrer yo'q yoki allaqachon hisoblangan
+        await db.execute(
+            "UPDATE users SET referral_counted=1 WHERE uid=?", (uid,)
+        )
+        await db.commit()
+        return int(referrer)
+
+
+async def count_referrals(referrer_uid: int) -> int:
+    """Berilgan user nechta FAOL (hisoblangan) referal jalb qilgan."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE referred_by=? AND referral_counted=1",
+            (referrer_uid,),
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def get_referrals(referrer_uid: int) -> list[dict]:
+    """Referallar ro'yxati (faol=hisoblangan va kutilayotgan)."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT uid, name, referral_counted FROM users WHERE referred_by=? ORDER BY referral_counted DESC, uid",
+            (referrer_uid,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [
+                {"uid": r[0], "name": r[1] or "Noma'lum", "counted": bool(r[2])}
+                for r in rows
+            ]
 
 
 async def get_running(uid: int) -> bool:
