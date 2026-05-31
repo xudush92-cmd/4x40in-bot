@@ -391,6 +391,7 @@ def numpad_display(buffer: str, total: int = CODE_LENGTH) -> str:
 
 def numpad_message(buffer: str, hint: str = "") -> str:
     base = (
+        "📋 RO'YXATDAN O'TISH (3/4)\n\n"
         "📩 Telegramdan kelgan kodni quyidagi tugmalar orqali kiriting.\n\n"
         "👉 Telegram ilovangizni oching → \"Telegram\" rasmiy chati →\n"
         "    kodni KO'RING va shu yerga tugmalar orqali kiriting.\n\n"
@@ -600,6 +601,7 @@ async def _finalize_login_uid(uid: int) -> None:
     await application.bot.send_message(
         uid,
         "✅ Login muvaffaqiyatli!\n\n"
+        "📋 RO'YXATDAN O'TISH (4/4)\n\n"
         "⏳ Hisobingiz admin tasdiqlashini kutmoqda.\n\n"
         "📞 Tezroq tasdiqlanish va tarif tanlash uchun admin bilan bog'laning:\n"
         f"📱 {ADMIN_CONTACT_PHONE}\n\n"
@@ -906,8 +908,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if await is_approved(uid) and await db.get_session(uid):
+        user = await db.get_user(uid)
+        name = user.get("name", "Foydalanuvchi") if user else "Foydalanuvchi"
+        tariff = int(user.get("tariff", 1)) if user else 1
+        max_chats, max_posts = tariff_limits(tariff)
+        expires = user.get("tariff_expires_at") if user else None
+        exp_line = f"📅 Muddat: {expires[:10]}" if expires else "📅 Muddat: cheksiz"
+        chats_n = await db.count_chats(uid)
+        posts_n = await db.count_posts(uid)
+        interval = await db.get_interval(uid)
+        active = worker_manager.is_running(uid) if worker_manager else False
+        status = "🟢 ON" if active else "🔴 OFF"
         await update.message.reply_text(
-            "🤖 AVTO BOT\n\nSiz tizimga kirgansiz!",
+            "🤖 AVTO BOT\n\n"
+            f"👤 {name}\n"
+            f"🎫 {tariff_label(tariff)}\n"
+            f"{exp_line}\n\n"
+            f"📊 Holat: {status}\n"
+            f"💬 Chatlar: {chats_n}/{max_chats}\n"
+            f"📝 Postlar: {posts_n}/{max_posts}\n"
+            f"⏱ Interval: {interval} daqiqa",
             reply_markup=await menu_for(uid),
         )
         return
@@ -1403,12 +1423,16 @@ async def format_admin_list() -> str:
         ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
         interval = await db.get_interval(a)
         tariff = await db.get_tariff(a)
+        expires = await db.get_tariff_expires(a)
+        exp_str = expires[:10] if expires else "cheksiz"
         chats_n = await db.count_chats(a)
         posts_n = await db.count_posts(a)
         lines.append("")
         lines.append(f"👤 {name}")
         lines.append(f"   {username} | {a}")
-        lines.append(f"   Sessiya: {s} | Holat: {ac} | 🎫 {tariff}-tarif {tariff_name(tariff)}")
+        lines.append(f"   Sessiya: {s} | Holat: {ac}")
+        lines.append(f"   🎫 {tariff_label(tariff)}")
+        lines.append(f"   📅 Muddat: {exp_str}")
         lines.append(
             f"   💬 {chats_n} | 📝 {posts_n} | ⏱ {interval} daq"
         )
@@ -1771,10 +1795,17 @@ async def _begin_login(update: Update) -> None:
     await cleanup_login(uid)
     user_states[uid] = {"step": "name", "ts": time.time()}
     await update.message.reply_text(
-        "👤 Avval ismingizni kiriting:\n\n"
-        "Bu ism admin sizni tanishi va tasdiqlashi uchun kerak.\n"
+        "📋 RO'YXATDAN O'TISH (1/4)\n\n"
+        "👤 To'liq ismingizni kiriting:\n\n"
+        "Bu ism sizning profilingizda ko'rinadi va\n"
+        "admin sizni tasdiqlashi uchun kerak.\n\n"
         "Masalan: Akmal Karimov\n\n"
-        f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📌 Keyingi qadamlar:\n"
+        "2️⃣ Telefon raqam\n"
+        "3️⃣ Tasdiqlash kodi\n"
+        "4️⃣ Admin tasdiqlashi\n\n"
+        f"❓ Yordam: {ADMIN_CONTACT_PHONE}"
     )
 
 
@@ -1793,11 +1824,16 @@ async def _handle_name(update: Update, text: str) -> None:
     user_states[uid] = {"step": "phone", "ts": time.time()}
     await update.message.reply_text(
         f"✅ Rahmat, {name}!\n\n"
-        "📱 Endi telefon raqamingizni yuboring:\n\n"
+        "📋 RO'YXATDAN O'TISH (2/4)\n\n"
+        "📱 Telefon raqamingizni yuboring:\n\n"
         "Format: +998XXXXXXXXX\n\n"
         "⚠️ Telegram ilovangiz ochiq ekanligini tekshiring!\n"
         "Kod SMS emas, Telegram ilovasidagi \"Telegram\" rasmiy chatiga keladi.\n\n"
-        f"❓ Muammo bo'lsa: {ADMIN_CONTACT_PHONE}"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "📌 Keyingi qadamlar:\n"
+        "3️⃣ Tasdiqlash kodi\n"
+        "4️⃣ Admin tasdiqlashi\n\n"
+        f"❓ Yordam: {ADMIN_CONTACT_PHONE}"
     )
 
 
