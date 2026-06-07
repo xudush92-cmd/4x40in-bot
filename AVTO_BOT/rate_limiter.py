@@ -34,7 +34,7 @@ class RateLimit:
 # ─────────────────────────────────────────────────────────────────────────
 LIMITS = {
     # Login — juda ko'p urinish Telegram'dan ban oladi
-    "login": RateLimit(max_actions=3, window_seconds=300, block_seconds=600),
+    "login": RateLimit(max_actions=2, window_seconds=3600, block_seconds=1800),
 
     # Buyruqlar (start, stop, status va h.k.)
     "command": RateLimit(max_actions=30, window_seconds=60, block_seconds=30),

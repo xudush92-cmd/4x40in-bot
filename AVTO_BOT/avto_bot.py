@@ -496,11 +496,11 @@ async def _attempt_signin(uid: int, code: str) -> None:
 
     except PhoneCodeExpiredError:
         ctx.resend_count += 1
-        if ctx.resend_count > 3:
+        if ctx.resend_count > 1:
             await cleanup_login(uid)
             await application.bot.send_message(
                 uid,
-                "⏰ 3 marta kod muddati tugadi.\n\n"
+                "⏰ Kod muddati tugadi.\n\n"
                 "Bir necha daqiqa kuting va qaytadan 🔑 Login bosing.\n"
                 f"❓ Muammo: {ADMIN_CONTACT_PHONE}",
                 reply_markup=await menu_for(uid),
@@ -520,7 +520,7 @@ async def _attempt_signin(uid: int, code: str) -> None:
                 uid,
                 "",
                 hint=(
-                    f"⏰ Eski kod yaroqsiz — YANGI kod yuborildi! ({ctx.resend_count}/3)\n"
+                    "⏰ Eski kod yaroqsiz — YANGI kod yuborildi!\n"
                     "Telegram ilovangizdan ENG SO'NGGI kodni qarang."
                 ),
             )
@@ -1902,22 +1902,6 @@ async def _handle_phone(update: Update, text: str) -> None:
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
         result = await client.send_code_request(phone)
-        # ── DIAGNOSTIKA: Telegram kodni QAYSI usulda yubordi? ──────────────
-        # type     → hozir yuborilgan kod turi (App/Sms/Call/FlashCall)
-        # next_type→ "Qayta yuborish"da ishlatiladigan keyingi tur
-        # timeout  → keyingi qayta yuborishgacha kutish (soniya)
-        try:
-            _sent = getattr(result, "type", None)
-            _next = getattr(result, "next_type", None)
-            _tout = getattr(result, "timeout", None)
-            log(
-                f"📨 sendCode {uid} {phone}: "
-                f"type={type(_sent).__name__ if _sent else None} "
-                f"next={type(_next).__name__ if _next else None} "
-                f"timeout={_tout} hash_len={len(result.phone_code_hash or '')}"
-            )
-        except Exception as _diag_e:
-            log(f"⚠️ sendCode diag {uid}: {type(_diag_e).__name__}: {_diag_e}", "warning")
         login_ctx[uid] = LoginCtx(
             client=client,
             phone=phone,
