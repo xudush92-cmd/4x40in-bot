@@ -94,8 +94,8 @@ async def init_db() -> None:
                 uid INTEGER PRIMARY KEY,
                 name TEXT DEFAULT '',
                 username TEXT DEFAULT '',
-                session TEXT,
-                pending_session TEXT,
+                phone TEXT DEFAULT '',
+                session TEXT,                pending_session TEXT,
                 is_admin INTEGER DEFAULT 0,
                 interval_min INTEGER DEFAULT 5,
                 tariff INTEGER DEFAULT 1,
@@ -113,6 +113,8 @@ async def init_db() -> None:
         await _ensure_column(db, "users", "tariff_expires_at", "TEXT")
         await _ensure_column(db, "users", "referred_by", "INTEGER")
         await _ensure_column(db, "users", "referral_counted", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "users", "phone", "TEXT DEFAULT ''")
+        await _ensure_column(db, "users", "awaiting_approval", "INTEGER DEFAULT 0")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
@@ -275,6 +277,26 @@ async def get_user_info(uid: int) -> dict:
 
 async def set_user_info(uid: int, name: str, username: str) -> None:
     await upsert_user(uid, name=name, username=username)
+
+
+async def get_phone(uid: int) -> str:
+    """Foydalanuvchi telefon raqami (tasdiqdan oldin saqlanadi)."""
+    user = await get_user(uid)
+    return (user.get("phone") or "") if user else ""
+
+
+async def set_phone(uid: int, phone: str) -> None:
+    await upsert_user(uid, phone=phone)
+
+
+async def is_awaiting_approval(uid: int) -> bool:
+    """Foydalanuvchi ro'yxatdan o'tib, admin tasdiqlashini kutyaptimi?"""
+    user = await get_user(uid)
+    return bool(user and user.get("awaiting_approval"))
+
+
+async def set_awaiting_approval(uid: int, value: bool) -> None:
+    await upsert_user(uid, awaiting_approval=1 if value else 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────

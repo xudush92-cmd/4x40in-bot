@@ -339,10 +339,11 @@ async def menu_for(uid: int) -> ReplyKeyboardMarkup:
     is_admin_flag = bool(user and user.get("is_admin"))
     approved = super_flag or is_admin_flag
     pending = bool(user and user.get("pending_session")) if user else False
+    awaiting = bool(user and user.get("awaiting_approval")) if user else False
     session = (user.get("session") if user else None)
 
     if not approved:
-        if pending:
+        if pending or awaiting:
             return kb_pending()
         return kb_login()
     if not session:
@@ -598,13 +599,31 @@ async def _finalize_login_uid(uid: int) -> None:
         )
         return
 
+    # YANGI OQIM: foydalanuvchi allaqachon TASDIQLANGAN (admin tasdiq bergan),
+    # endi kod kiritib login qildi → sessiya darrov faollashadi.
+    if await db.is_admin(uid):
+        await db.set_session(uid, sess_str)
+        await db.del_pending(uid)
+        await db.set_awaiting_approval(uid, False)
+        log(f"✅ Tasdiqlangan user login qildi: {uid}")
+        with contextlib.suppress(Exception):
+            info = await db.get_user_info(uid)
+            name = info.get("name", "Foydalanuvchi")
+            await application.bot.send_message(
+                uid,
+                f"✅ {name}, tizimga muvaffaqiyatli kirdingiz!\n\n"
+                "Endi chat va post qo'shib, ▶️ Start bosishingiz mumkin.",
+                reply_markup=await menu_for(uid),
+            )
+        return
+
+    # ESKI OQIM (moslik uchun): tasdiqlanmagan — pending'ga qo'yib admin so'raymiz
     await db.set_pending(uid, sess_str)
     log(f"⏳ Tasdiq kutilmoqda: {uid}")
     await notify_super_for_approval(uid)
     await application.bot.send_message(
         uid,
         "✅ Login muvaffaqiyatli!\n\n"
-        "📋 RO'YXATDAN O'TISH (4/4)\n\n"
         "⏳ Hisobingiz admin tasdiqlashini kutmoqda.\n\n"
         "📞 Tezroq tasdiqlanish va tarif tanlash uchun admin bilan bog'laning:\n"
         f"📱 {ADMIN_CONTACT_PHONE}\n\n"
@@ -617,6 +636,8 @@ async def notify_super_for_approval(uid: int) -> None:
     info = await db.get_user_info(uid)
     name = info.get("name", "Noma'lum")
     username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
+    phone = await db.get_phone(uid)
+    phone_line = f"📱 Telefon: {phone}\n" if phone else ""
     kb = InlineKeyboardMarkup(
         [
             [
@@ -635,6 +656,7 @@ async def notify_super_for_approval(uid: int) -> None:
     text = (
         "🔔 Yangi foydalanuvchi tasdiq so'ramoqda\n\n"
         f"👤 Ism: {name}\n"
+        f"{phone_line}"
         f"📎 {username}\n"
         f"🆔 ID: {uid}\n\n"
         "Tarif tanlab tasdiqlang (chat/post limiti):\n"
@@ -642,7 +664,7 @@ async def notify_super_for_approval(uid: int) -> None:
         "• 🔵 2-Biznes → 10 chat / 25 post\n"
         "• 🟡 3-Pro → 20 chat / 50 post\n"
         "• 🔴 4-Premium → 50 chat / 100 post\n\n"
-        "⛔ Rad etish — sessiyasi o'chiriladi."
+        "⛔ Rad etish — so'rov bekor qilinadi."
     )
     with contextlib.suppress(Exception):
         await application.bot.send_message(SUPER_ADMIN, text, reply_markup=kb)
@@ -914,7 +936,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 with contextlib.suppress(Exception):
                     await db.set_referrer(uid, int(ref_part))
 
-    if await db.get_pending(uid) and not await is_approved(uid):
+    if (await db.get_pending(uid) or await db.is_awaiting_approval(uid)) and not await is_approved(uid):
         await update.message.reply_text(
             "⏳ Sizning so'rovingiz ko'rib chiqilmoqda.\nAdmin tasdiqlashini kuting.",
             reply_markup=await menu_for(uid),
@@ -980,9 +1002,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "1️⃣ '🔑 Login' tugmasini bosing\n"
         "2️⃣ Ismingizni kiriting (admin tanishi uchun)\n"
         "3️⃣ Telefon raqamingizni kiriting (+998XXXXXXXXX)\n"
-        "4️⃣ Telegramdan kelgan kodni RAQAMLI TUGMALAR orqali kiriting\n"
-        "5️⃣ 2FA bo'lsa — parolni kiriting\n"
-        "6️⃣ Tasdiqlash va tarif uchun admin bilan bog'laning\n\n"
+        "4️⃣ Admin tasdiqlashini kuting (tarif beriladi)\n"
+        "5️⃣ Tasdiqdan keyin '🔑 Login' → Telegramdan kelgan\n"
+        "    kodni RAQAMLI TUGMALAR orqali kiriting\n"
+        "6️⃣ 2FA bo'lsa — parolni kiriting\n\n"
         f"📱 Admin: {ADMIN_CONTACT_PHONE}\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "🛡 XAVFSIZLIK\n\n"
@@ -1084,15 +1107,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         target = int(parts[2])
         sess = await db.get_pending(target)
         if action in ("t1", "t2", "t3", "t4"):
-            if not sess:
-                await q.edit_message_text(f"⚠️ {target} pending sessiyasi topilmadi.")
+            # Yangi oqim: tasdiqda sessiya BO'LMAYDI (kod hali so'ralmagan).
+            # Admin tasdiqlaydi → user keyin 🔑 Login bosib kod kiritadi.
+            awaiting = await db.is_awaiting_approval(target)
+            if not sess and not awaiting:
+                await q.edit_message_text(f"⚠️ {target} so'rovi topilmadi.")
                 return
             tariff = int(action[1])  # t1->1 ... t4->4
-            await db.set_session(target, sess)
-            await db.del_pending(target)
             await db.add_admin(target)
             await db.set_tariff(target, tariff)
             await db.set_tariff_expires(target, calc_expiry())
+            await db.set_awaiting_approval(target, False)
+            # Eski oqim bilan moslik: agar pending sessiya bo'lsa, uni faollashtiraman
+            if sess:
+                await db.set_session(target, sess)
+                await db.del_pending(target)
             log(f"✅ Tasdiqlandi: {target} ({tariff_label(tariff)}, {TARIFF_DURATION_DAYS} kun)")
             await q.edit_message_text(
                 f"✅ Tasdiqlandi: {target}\n🎫 {tariff_label(tariff)}"
@@ -1101,18 +1130,31 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 info = await db.get_user_info(target)
                 name = info.get("name", "Foydalanuvchi")
                 tmc, tmp = tariff_limits(tariff)
-                await application.bot.send_message(
-                    target,
-                    f"✅ {name}, hisobingiz tasdiqlandi!\n\n"
-                    f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n"
-                    f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n\n"
-                    "Endi:\n"
-                    f"1️⃣ ➕ Chat qo'shing (max {tmc})\n"
-                    f"2️⃣ 📝 Post qo'shing (max {tmp})\n"
-                    "3️⃣ ⏱ Interval sozlang\n"
-                    "4️⃣ ▶️ Start bosing",
-                    reply_markup=await menu_for(target),
-                )
+                if sess:
+                    # Eski oqim — sessiya allaqachon bor, to'g'ridan-to'g'ri ishlaydi
+                    await application.bot.send_message(
+                        target,
+                        f"✅ {name}, hisobingiz tasdiqlandi!\n\n"
+                        f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n"
+                        f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n\n"
+                        "Endi:\n"
+                        f"1️⃣ ➕ Chat qo'shing (max {tmc})\n"
+                        f"2️⃣ 📝 Post qo'shing (max {tmp})\n"
+                        "3️⃣ ⏱ Interval sozlang\n"
+                        "4️⃣ ▶️ Start bosing",
+                        reply_markup=await menu_for(target),
+                    )
+                else:
+                    # Yangi oqim — user endi Login bosib kodni kiritishi kerak
+                    await application.bot.send_message(
+                        target,
+                        f"✅ {name}, hisobingiz tasdiqlandi!\n\n"
+                        f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n"
+                        f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n\n"
+                        "🔑 Endi \"🔑 Login\" tugmasini bosing.\n"
+                        "Telegramdan kod keladi — uni kiritsangiz, tayyor!",
+                        reply_markup=await menu_for(target),
+                    )
             # ── REFERAL HISOBLASH ───────────────────────────────────────
             # Tasdiqlangan user kimdir tomonidan taklif qilingan bo'lsa —
             # BIR MARTA hisoblaymiz va taklif qilganga xabar beramiz.
@@ -1132,6 +1174,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # Pending bekor qilinadi. session bu yerda yo'q (faqat pending),
             # shu sababli del_session chaqirilmaydi.
             await db.del_pending(target)
+            await db.set_awaiting_approval(target, False)
             log(f"❌ Rad etildi: {target}")
             await q.edit_message_text(f"⛔ Rad etildi: {target}")
             with contextlib.suppress(Exception):
@@ -1484,7 +1527,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # LOGIN BOSQICHLARI
-    if step in ("name", "phone", "code", "password"):
+    if step in ("name", "phone", "phone_login", "code", "password"):
         if time.time() - state.get("ts", 0) > LOGIN_TIMEOUT_S:
             await cleanup_login(uid)
             await msg.reply_text(
@@ -1500,6 +1543,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if step == "phone":
             await _handle_phone(update, text)
             return
+        if step == "phone_login":
+            await _handle_phone_login(update, text)
+            return
         if step == "code":
             await _handle_code(update, text)
             return
@@ -1509,7 +1555,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # PENDING
     if not await is_approved(uid):
-        if await db.get_pending(uid):
+        if await db.get_pending(uid) or await db.is_awaiting_approval(uid):
             await msg.reply_text(
                 "⏳ So'rovingiz ko'rib chiqilmoqda. Admin tasdiqlashini kuting.",
                 reply_markup=kb_pending(),
@@ -1846,18 +1892,38 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def _begin_login(update: Update) -> None:
     uid = update.effective_user.id
     await cleanup_login(uid)
+
+    # TASDIQLANGAN foydalanuvchi (admin) — ro'yxatdan o'tish kerak emas.
+    # To'g'ridan-to'g'ri kod so'rovi (login fazasi).
+    if await is_approved(uid):
+        phone = await db.get_phone(uid)
+        if phone:
+            await update.message.reply_text(
+                f"📱 {phone} raqamiga kod yuborilmoqda...\n"
+                "Telegram ilovangizdagi \"Telegram\" rasmiy chatini tekshiring."
+            )
+            await _request_code(uid, phone)
+            return
+        # Tasdiqlangan, lekin telefon saqlanmagan (super admin yoki eski user)
+        user_states[uid] = {"step": "phone_login", "ts": time.time()}
+        await update.message.reply_text(
+            "📱 Telefon raqamingizni yuboring (kod keladi):\n\n"
+            "Format: +998XXXXXXXXX"
+        )
+        return
+
+    # YANGI foydalanuvchi — ro'yxatdan o'tish (kod so'rovi YO'Q, avval admin tasdiqlaydi)
     user_states[uid] = {"step": "name", "ts": time.time()}
     await update.message.reply_text(
-        "📋 RO'YXATDAN O'TISH (1/4)\n\n"
+        "📋 RO'YXATDAN O'TISH (1/3)\n\n"
         "👤 To'liq ismingizni kiriting:\n\n"
-        "Bu ism sizning profilingizda ko'rinadi va\n"
-        "admin sizni tasdiqlashi uchun kerak.\n\n"
+        "Bu ism admin sizni tasdiqlashi uchun kerak.\n\n"
         "Masalan: Akmal Karimov\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "📌 Keyingi qadamlar:\n"
         "2️⃣ Telefon raqam\n"
-        "3️⃣ Tasdiqlash kodi\n"
-        "4️⃣ Admin tasdiqlashi\n\n"
+        "3️⃣ Admin tasdiqlashi\n"
+        "    (tasdiqdan keyingina kod keladi)\n\n"
         f"❓ Yordam: {ADMIN_CONTACT_PHONE}"
     )
 
@@ -1877,15 +1943,13 @@ async def _handle_name(update: Update, text: str) -> None:
     user_states[uid] = {"step": "phone", "ts": time.time()}
     await update.message.reply_text(
         f"✅ Rahmat, {name}!\n\n"
-        "📋 RO'YXATDAN O'TISH (2/4)\n\n"
+        "📋 RO'YXATDAN O'TISH (2/3)\n\n"
         "📱 Telefon raqamingizni yuboring:\n\n"
         "Format: +998XXXXXXXXX\n\n"
-        "⚠️ Telegram ilovangiz ochiq ekanligini tekshiring!\n"
-        "Kod SMS emas, Telegram ilovasidagi \"Telegram\" rasmiy chatiga keladi.\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
-        "📌 Keyingi qadamlar:\n"
-        "3️⃣ Tasdiqlash kodi\n"
-        "4️⃣ Admin tasdiqlashi\n\n"
+        "📌 Keyingi qadam:\n"
+        "3️⃣ Admin tasdiqlashi\n"
+        "    (tasdiqdan keyingina kod keladi)\n\n"
         f"❓ Yordam: {ADMIN_CONTACT_PHONE}"
     )
 
@@ -1898,6 +1962,28 @@ async def _handle_phone(update: Update, text: str) -> None:
             "❌ Telefon + bilan, faqat raqamlardan iborat bo'lishi kerak.\nMasalan: +998901234567"
         )
         return
+
+    # Telefonni saqlaymiz (tasdiqdan keyin login uchun ishlatiladi)
+    await db.set_phone(uid, phone)
+    user_states.pop(uid, None)
+
+    # KOD SO'RALMAYDI — avval admin tasdiqlashi kerak.
+    # Bu Telegram'ga keraksiz kod so'rovlarini (flood ban sababi) oldini oladi.
+    await db.set_awaiting_approval(uid, True)
+    log(f"⏳ Ro'yxatdan o'tish so'rovi: {uid} ({phone})")
+    await notify_super_for_approval(uid)
+    await update.message.reply_text(
+        "✅ So'rovingiz qabul qilindi!\n\n"
+        "📋 RO'YXATDAN O'TISH (3/3)\n\n"
+        "⏳ Endi admin tasdiqlashini kuting.\n"
+        "Tasdiqlangach, 🔑 Login bosib kodni kiritasiz.\n\n"
+        f"📞 Tezroq tasdiqlanish uchun: {ADMIN_CONTACT_PHONE}",
+        reply_markup=kb_pending(),
+    )
+
+
+async def _request_code(uid: int, phone: str) -> None:
+    """Telegram'ga kod so'rovi yuboradi (FAQAT tasdiqlangan user uchun, login fazasi)."""
     client = TelegramClient(StringSession(), API_ID, API_HASH)
     try:
         await asyncio.wait_for(client.connect(), timeout=20)
@@ -1918,15 +2004,16 @@ async def _handle_phone(update: Update, text: str) -> None:
             "",
             hint=(
                 "📩 Kod yuborildi!\n"
-                "Telegram ilovangizdan kodni KO'RING (lekin kopiyalamasdan!) "
-                "va pastdagi tugmalar orqali kiriting."
+                "Telegram ilovangizdagi \"Telegram\" rasmiy chatidan kodni "
+                "KO'RING (kopiyalamasdan!) va tugmalar orqali kiriting."
             ),
         )
     except PhoneNumberInvalidError:
         with contextlib.suppress(Exception):
             await client.disconnect()
         await cleanup_login(uid)
-        await update.message.reply_text(
+        await application.bot.send_message(
+            uid,
             "❌ Noto'g'ri raqam. Qaytadan 🔑 Login bosing.",
             reply_markup=await menu_for(uid),
         )
@@ -1934,14 +2021,15 @@ async def _handle_phone(update: Update, text: str) -> None:
         with contextlib.suppress(Exception):
             await client.disconnect()
         await cleanup_login(uid)
-        await update.message.reply_text(
-            "🚫 Bu raqam bloklangan.", reply_markup=await menu_for(uid)
+        await application.bot.send_message(
+            uid, "🚫 Bu raqam bloklangan.", reply_markup=await menu_for(uid)
         )
     except FloodWaitError as e:
         with contextlib.suppress(Exception):
             await client.disconnect()
         await cleanup_login(uid)
-        await update.message.reply_text(
+        await application.bot.send_message(
+            uid,
             f"⏳ Juda ko'p urinish. {e.seconds} soniya kuting.",
             reply_markup=await menu_for(uid),
         )
@@ -1949,11 +2037,26 @@ async def _handle_phone(update: Update, text: str) -> None:
         with contextlib.suppress(Exception):
             await client.disconnect()
         await cleanup_login(uid)
-        log(f"❌ phone {uid}: {type(e).__name__}: {e}", "error")
-        await update.message.reply_text(
+        log(f"❌ request_code {uid}: {type(e).__name__}: {e}", "error")
+        await application.bot.send_message(
+            uid,
             f"❌ Xatolik: {type(e).__name__}\nQaytadan 🔑 Login bosing.",
             reply_markup=await menu_for(uid),
         )
+
+
+async def _handle_phone_login(update: Update, text: str) -> None:
+    """Tasdiqlangan user telefonini kiritadi (telefoni saqlanmagan holatda) → kod so'rovi."""
+    uid = update.effective_user.id
+    phone = text.strip().replace(" ", "")
+    if not phone.startswith("+") or not phone[1:].isdigit() or len(phone) < 7:
+        await update.message.reply_text(
+            "❌ Telefon + bilan, faqat raqamlardan iborat bo'lishi kerak.\nMasalan: +998901234567"
+        )
+        return
+    await db.set_phone(uid, phone)
+    user_states.pop(uid, None)
+    await _request_code(uid, phone)
 
 
 async def _handle_code(update: Update, text: str) -> None:
