@@ -1574,19 +1574,34 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # FSM
-    if step == "add_chat":
-        await _handle_add_chat(update, text)
-        return
-    if step == "add_post":
-        await _handle_add_post(update)
-        return
-    if step == "edit_post":
-        await _handle_edit_post(update)
-        return
-    if step == "set_interval":
-        await _handle_set_interval(update, text)
-        return
+    # FSM — menyu tugmasi bosilsa holatni bekor qilib, tugma buyrug'iga o'tkazamiz
+    _MENU_BUTTONS = (
+        "🔑 Login", "▶️ Start", "⛔ Stop", "💬 Chatlar",
+        "➕ Chat qo'sh", "➖ Chat o'chir", "📝 Post qo'sh",
+        "✏️ Post tahrir", "🗑 Post o'chir", "📋 Postlar",
+        "🧹 Tozalash", "👥 Referal", "🚪 Logout",
+        "👥 Adminlar", "🖥 Tizim",
+    )
+    _is_menu = text in _MENU_BUTTONS or text.startswith("⏱ Interval") or text.startswith("📊 Status")
+
+    if step in ("add_chat", "add_post", "edit_post", "set_interval"):
+        if _is_menu:
+            # Menyu tugmasi bosildi — holatni bekor qilib, pastdagi handlerga o'tkazamiz
+            user_states.pop(uid, None)
+        else:
+            # Oddiy matn — avvalgidek FSM davom etadi
+            if step == "add_chat":
+                await _handle_add_chat(update, text)
+                return
+            if step == "add_post":
+                await _handle_add_post(update)
+                return
+            if step == "edit_post":
+                await _handle_edit_post(update)
+                return
+            if step == "set_interval":
+                await _handle_set_interval(update, text)
+                return
 
     # MENYU
     sess = await db.get_session(uid)
