@@ -1491,6 +1491,8 @@ async def format_admin_list() -> str:
         info = await db.get_user_info(a)
         name = info.get("name", "Noma'lum")
         username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
+        phone = await db.get_phone(a)
+        phone_str = phone if phone else "telefon yo'q"
         s = "✅" if await db.get_session(a) else "❌"
         ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
         interval = await db.get_interval(a)
@@ -1502,6 +1504,7 @@ async def format_admin_list() -> str:
         lines.append("")
         lines.append(f"👤 {name}")
         lines.append(f"   {username} | {a}")
+        lines.append(f"   📱 {phone_str}")
         lines.append(f"   Sessiya: {s} | Holat: {ac}")
         lines.append(f"   🎫 {tariff_label(tariff)}")
         lines.append(f"   📅 Muddat: {exp_str}")
