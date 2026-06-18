@@ -1,0 +1,13 @@
+# POSTCHI_BOT — maxfiy va vaqtinchalik fayllar
+.env
+data/
+media/
+postchi_bot.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
