@@ -311,10 +311,8 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
         [KeyboardButton("▶️ Start"), KeyboardButton("⛔ Stop")],
         [KeyboardButton(f"📊 Status ({on})"), KeyboardButton("💬 Chatlar")],
         [KeyboardButton("➕ Chat qo'sh"), KeyboardButton("➖ Chat o'chir")],
-        [KeyboardButton("📝 Post qo'sh"), KeyboardButton("✏️ Post tahrir")],
-        [KeyboardButton("🗑 Post o'chir"), KeyboardButton("📋 Postlar")],
-        [KeyboardButton("🧹 Tozalash"), KeyboardButton(f"⏱ Interval: {interval} daq")],
-        [KeyboardButton("👥 Referal"), KeyboardButton("🚪 Logout")],
+        [KeyboardButton("📝 Post qo'sh"), KeyboardButton("🗑 Post o'chir")],
+        [KeyboardButton(f"⏱ Interval: {interval} daq"), KeyboardButton("👥 Referal")],
     ]
     if super_admin:
         rows.append([KeyboardButton("👥 Adminlar"), KeyboardButton("🖥 Tizim")])
@@ -1010,9 +1008,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "━━━━━━━━━━━━━━━━━━━\n"
         "🛡 XAVFSIZLIK\n\n"
         "✅ Kod va parol HECH QAYERDA saqlanmaydi\n"
-        "✅ Faqat session token saqlanadi (Logout — o'chadi)\n"
-        "✅ Ma'lumotlaringiz boshqalarga ko'rinmaydi\n"
-        "✅ Istalgan vaqt '🚪 Logout' orqali chiqishingiz mumkin\n\n"
+        "✅ Faqat session token saqlanadi\n"
+        "✅ Ma'lumotlaringiz boshqalarga ko'rinmaydi\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
         "📞 FOYDALANISH BO'YICHA YORDAM\n\n"
         "Ro'yxatdan o'tishda muammo, savol yoki taklif bo'lsa:\n\n"
@@ -1581,13 +1578,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     _MENU_BUTTONS = (
         "🔑 Login", "▶️ Start", "⛔ Stop", "💬 Chatlar",
         "➕ Chat qo'sh", "➖ Chat o'chir", "📝 Post qo'sh",
-        "✏️ Post tahrir", "🗑 Post o'chir", "📋 Postlar",
-        "🧹 Tozalash", "👥 Referal", "🚪 Logout",
+        "🗑 Post o'chir", "👥 Referal",
         "👥 Adminlar", "🖥 Tizim",
     )
     _is_menu = text in _MENU_BUTTONS or text.startswith("⏱ Interval") or text.startswith("📊 Status")
 
-    if step in ("add_chat", "add_post", "edit_post", "set_interval"):
+    if step in ("add_chat", "add_post", "set_interval"):
         if _is_menu:
             # Menyu tugmasi bosildi — holatni bekor qilib, pastdagi handlerga o'tkazamiz
             user_states.pop(uid, None)
@@ -1598,9 +1594,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 return
             if step == "add_post":
                 await _handle_add_post(update)
-                return
-            if step == "edit_post":
-                await _handle_edit_post(update)
                 return
             if step == "set_interval":
                 await _handle_set_interval(update, text)
@@ -1645,21 +1638,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             lines.append("")
             lines.append("Hozircha referal yo'q. Havolani do'stlaringizga ulashing!")
         await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
-        return
-
-    if text == "🚪 Logout":
-        kb = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("✅ Ha", callback_data="out:yes"),
-                    InlineKeyboardButton("❌ Yo'q", callback_data="out:no"),
-                ]
-            ]
-        )
-        await msg.reply_text(
-            "🚪 Tizimdan chiqasizmi?\n\nPosting to'xtaydi va sessiya o'chadi.",
-            reply_markup=kb,
-        )
         return
 
     if text == "▶️ Start":
@@ -1816,56 +1794,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"🗑 O'chirish uchun postni tanlang ({len(posts)} ta):",
             reply_markup=InlineKeyboardMarkup(rows),
         )
-        return
-
-    if text == "✏️ Post tahrir":
-        if not rate_limiter.is_allowed(uid, "modify"):
-            wait = rate_limiter.get_wait_time(uid, "modify")
-            await msg.reply_text(f"⏳ {wait} soniya kuting.")
-            return
-        posts = await db.get_posts(uid)
-        if not posts:
-            await msg.reply_text("❌ Tahrirlash uchun post yo'q.", reply_markup=await menu_for(uid))
-            return
-        rows = []
-        for i, p in enumerate(posts):
-            icon = "🖼" if p.get("photo") else "📝"
-            preview = (p.get("text") or "(rasm)")[:25]
-            rows.append([InlineKeyboardButton(f"✏️ {i+1}. {icon} {preview}", callback_data=f"editp:{i}")])
-        rows.append([InlineKeyboardButton("❌ Bekor", callback_data="editp:cancel")])
-        await msg.reply_text(
-            f"✏️ Tahrirlash uchun postni tanlang ({len(posts)} ta):",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        return
-
-    if text == "📋 Postlar":
-        posts = await db.get_posts(uid)
-        if not posts:
-            await msg.reply_text("❌ Postlar yo'q.", reply_markup=await menu_for(uid))
-            return
-        lines = [f"📋 POSTLAR ({len(posts)} ta):", ""]
-        for i, p in enumerate(posts, 1):
-            icon = "🖼" if p.get("photo") else "📝"
-            t = (p.get("text") or "(faqat rasm)")[:80]
-            lines.append(f"{i}. {icon} {t}")
-        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
-        return
-
-    if text == "🧹 Tozalash":
-        posts = await db.get_posts(uid)
-        if not posts:
-            await msg.reply_text("❌ Postlar yo'q.", reply_markup=await menu_for(uid))
-            return
-        kb = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("✅ Ha", callback_data="clr:yes"),
-                    InlineKeyboardButton("❌ Yo'q", callback_data="clr:no"),
-                ]
-            ]
-        )
-        await msg.reply_text(f"🧹 Barcha {len(posts)} ta post o'chirilsinmi?", reply_markup=kb)
         return
 
     if text.startswith("⏱ Interval"):
