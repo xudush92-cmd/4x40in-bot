@@ -149,25 +149,25 @@ def _format_uptime(seconds: int) -> str:
 
 def _get_memory_info() -> dict:
     """Joriy jarayon RAM iste'moli (Linux/Mac)."""
-    # Birinchi: resource module (Linux/Mac)
-    try:
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        rss = usage.ru_maxrss  # Linux: KB, Mac: bytes
-        if platform.system() == "Darwin":
-            rss_mb = rss / (1024 * 1024)
-        else:
-            rss_mb = rss / 1024
-        return {"rss_mb": round(rss_mb, 1)}
-    except Exception:
-        pass
-
-    # Ikkinchi: /proc/self/status (Linux)
+    # Birinchi: /proc/self/status (Linux) — VmRSS = JORIY RSS
     try:
         with open("/proc/self/status", "r") as f:
             for line in f:
                 if line.startswith("VmRSS:"):
                     kb = int(line.split()[1])
                     return {"rss_mb": round(kb / 1024, 1)}
+    except Exception:
+        pass
+
+    # Ikkinchi: resource module (Mac uchun current-ga yaqin; Linux'da peak)
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss = usage.ru_maxrss  # Linux: KB (peak), Mac: bytes
+        if platform.system() == "Darwin":
+            rss_mb = rss / (1024 * 1024)
+        else:
+            rss_mb = rss / 1024
+        return {"rss_mb": round(rss_mb, 1)}
     except Exception:
         pass
 

