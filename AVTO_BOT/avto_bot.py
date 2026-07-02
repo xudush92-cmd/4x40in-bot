@@ -179,6 +179,18 @@ def calc_expiry(days: int = TARIFF_DURATION_DAYS) -> str:
     """Hozirdan {days} kun keyingi sanani ISO format string qaytaradi."""
     return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
+
+def _days_until(expires_iso: str | None) -> int | None:
+    """ISO sanadan hozirgacha nechа kun qolganini (floor) qaytaradi. None = noma'lum."""
+    if not expires_iso:
+        return None
+    try:
+        dt = datetime.strptime(expires_iso, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        delta = dt - datetime.now(timezone.utc)
+        return max(0, int(delta.total_seconds() // 86400))
+    except Exception:
+        return None
+
 # ─────────────────────────────────────────────────────────────────────────
 # LOGGING
 # ─────────────────────────────────────────────────────────────────────────
@@ -2362,29 +2374,40 @@ async def _check_tariff_expiry() -> int:
 
 
 async def _warn_expiring_users() -> None:
-    """Muddati {TARIFF_WARN_DAYS} kun ichida tugaydigan foydalanuvchilarga ogohlantirish."""
-    conn = await db._get_conn()
-    async with db._op_lock:
-        async with conn.execute(
-            "SELECT uid FROM users WHERE tariff_expires_at IS NOT NULL "
-            "AND tariff_expires_at > datetime('now') "
-            "AND tariff_expires_at <= datetime('now', ?) "
-            "AND running = 1 AND is_admin = 1",
-            (f"+{TARIFF_WARN_DAYS} days",)
-        ) as cur:
-            rows = await cur.fetchall()
-            warn_uids = [r[0] for r in rows]
+    """Muddati {TARIFF_WARN_DAYS} kun ichida tugaydigan foydalanuvchilarga BIR MARTA ogohlantirish.
 
+    Takror oldini olish: xabar muvaffaqiyatli yuborilgach db.mark_expiry_warned()
+    chaqiriladi — shunda har soatlik sikl bir xil userga qayta xabar yubormaydi.
+    Tarif uzaytirilganda (set_tariff_expires) flag reset bo'ladi.
+    """
+    warn_uids = await db.get_expiring_users(TARIFF_WARN_DAYS)
     for uid in warn_uids:
         expires = await db.get_tariff_expires(uid)
+        days_left = _days_until(expires)
+        if days_left is None:
+            left_line = ""
+        elif days_left >= 1:
+            left_line = f"⏳ Taxminan {days_left} kun qoldi\n"
+        else:
+            left_line = "⏳ 1 kundan kam vaqt qoldi\n"
+
+        sent = False
         with contextlib.suppress(Exception):
             await application.bot.send_message(
                 uid,
-                f"⚠️ Diqqat! Tarifingiz muddati tugamoqda.\n\n"
-                f"📅 Tugash vaqti: {expires}\n\n"
+                "⚠️ Diqqat! Tarifingiz muddati tugamoqda.\n\n"
+                f"📅 Tugash sanasi: {expires[:10] if expires else '-'}\n"
+                f"{left_line}\n"
+                "Muddat tugaganda posting avtomatik to'xtaydi.\n\n"
                 "Uzaytirish uchun admin bilan bog'laning:\n"
                 f"📱 {ADMIN_CONTACT_PHONE}",
             )
+            sent = True  # faqat yuborish muvaffaqiyatli bo'lsa bu qatorga yetadi
+
+        # Faqat yuborilgan bo'lsa belgilaymiz — aks holda keyingi siklda qayta urinadi
+        if sent:
+            with contextlib.suppress(Exception):
+                await db.mark_expiry_warned(uid)
 
 
 async def tariff_expiry_loop(stop: asyncio.Event) -> None:

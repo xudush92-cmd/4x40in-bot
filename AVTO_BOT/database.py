@@ -115,6 +115,7 @@ async def init_db() -> None:
         await _ensure_column(db, "users", "referral_counted", "INTEGER DEFAULT 0")
         await _ensure_column(db, "users", "phone", "TEXT DEFAULT ''")
         await _ensure_column(db, "users", "awaiting_approval", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "users", "expiry_warned", "INTEGER DEFAULT 0")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
@@ -330,8 +331,38 @@ async def get_tariff_expires(uid: int) -> str | None:
 
 
 async def set_tariff_expires(uid: int, expires_at: str | None) -> None:
-    """Tarif muddatini o'rnatish. None = cheksiz."""
-    await upsert_user(uid, tariff_expires_at=expires_at)
+    """Tarif muddatini o'rnatish. None = cheksiz.
+
+    Yangi muddat qo'yilganda `expiry_warned` reset qilinadi — shunda yangi
+    davrda foydalanuvchi yana bir marta ogohlantiriladi.
+    """
+    await upsert_user(uid, tariff_expires_at=expires_at, expiry_warned=0)
+
+
+async def get_expiring_users(days: int) -> list[int]:
+    """Muddati `days` kun ICHIDA tugaydigan, running=1 va HALI ogohlantirilmagan
+    (expiry_warned=0) foydalanuvchilar ro'yxati.
+
+    Ogohlantirish bir martaga cheklanadi: mark_expiry_warned() chaqirilgach,
+    bu user qayta qaytmaydi (tarif uzaytirilib flag reset bo'lmaguncha).
+    """
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT uid FROM users WHERE tariff_expires_at IS NOT NULL "
+            "AND tariff_expires_at > datetime('now') "
+            "AND tariff_expires_at <= datetime('now', ?) "
+            "AND running = 1 AND is_admin = 1 "
+            "AND COALESCE(expiry_warned, 0) = 0",
+            (f"+{int(days)} days",),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [r[0] for r in rows]
+
+
+async def mark_expiry_warned(uid: int) -> None:
+    """Foydalanuvchi muddat ogohlantirishi yuborilganini belgilaydi (takrorni oldini oladi)."""
+    await upsert_user(uid, expiry_warned=1)
 
 
 async def get_expired_users() -> list[int]:
