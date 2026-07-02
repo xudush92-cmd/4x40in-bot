@@ -378,6 +378,21 @@ async def get_expired_users() -> list[int]:
             return [r[0] for r in rows]
 
 
+async def is_tariff_expired(uid: int) -> bool:
+    """Foydalanuvchi tarifi muddati tugaganmi. True = tugagan (kutish rejimi).
+
+    tariff_expires_at NULL bo'lsa (cheksiz, masalan super admin) — False.
+    """
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT 1 FROM users WHERE uid=? AND tariff_expires_at IS NOT NULL "
+            "AND tariff_expires_at < datetime('now')",
+            (uid,),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # REFERAL — taklif tizimi (bonus yo'q, faqat aniq hisoblash)
 #

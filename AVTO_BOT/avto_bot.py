@@ -191,6 +191,18 @@ def _days_until(expires_iso: str | None) -> int | None:
     except Exception:
         return None
 
+
+def _waiting_mode_text(prefix: str = "") -> str:
+    """Muddat tugaganda ko'rsatiladigan 'kutish rejimi' xabari."""
+    head = prefix or "⏸ KUTISH REJIMI"
+    return (
+        f"{head}\n\n"
+        "Tarifingiz muddati tugadi — posting AVTOMATIK to'xtatildi.\n"
+        "Bot kutish rejimiga o'tdi va yangi post yubormaydi.\n\n"
+        "Davom ettirish uchun tarifni uzaytiring:\n"
+        f"📱 Admin: {ADMIN_CONTACT_PHONE}"
+    )
+
 # ─────────────────────────────────────────────────────────────────────────
 # LOGGING
 # ─────────────────────────────────────────────────────────────────────────
@@ -964,7 +976,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         posts_n = await db.count_posts(uid)
         interval = await db.get_interval(uid)
         active = worker_manager.is_running(uid) if worker_manager else False
-        status = "🟢 ON" if active else "🔴 OFF"
+        expired = await db.is_tariff_expired(uid)
+        if expired:
+            status = "⏸ Kutish rejimi (muddat tugagan)"
+        else:
+            status = "🟢 ON" if active else "🔴 OFF"
         await update.message.reply_text(
             "🤖 AVTO BOT\n\n"
             f"👤 {name}\n"
@@ -1239,6 +1255,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "go:yes":
         if worker_manager and worker_manager.is_running(uid):
             await q.edit_message_text("⚠️ Allaqachon ishlamoqda.")
+            return
+        if await db.is_tariff_expired(uid):
+            await q.edit_message_text(_waiting_mode_text())
             return
         chats = await db.get_chats(uid)
         posts = await db.get_posts(uid)
@@ -1656,6 +1675,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if worker_manager and worker_manager.is_running(uid):
             await msg.reply_text("⚠️ Allaqachon ishlamoqda.", reply_markup=await menu_for(uid))
             return
+        # Muddat tugagan bo'lsa — kutish rejimi, admin uzaytirmaguncha boshlab bo'lmaydi
+        if await db.is_tariff_expired(uid):
+            await msg.reply_text(_waiting_mode_text(), reply_markup=await menu_for(uid))
+            return
         chats = await db.get_chats(uid)
         posts = await db.get_posts(uid)
         if not chats:
@@ -1705,7 +1728,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         max_chats, max_posts = tariff_limits(tariff)
         expires = await db.get_tariff_expires(uid)
         active = worker_manager.is_running(uid) if worker_manager else False
-        status = "🟢 ON" if active else "🔴 OFF"
+        expired = await db.is_tariff_expired(uid)
+        if expired:
+            status = "⏸ Kutish rejimi (muddat tugagan)"
+        else:
+            status = "🟢 ON" if active else "🔴 OFF"
         exp_line = f"📅 Muddat: {expires[:10]}" if expires else "📅 Muddat: cheksiz"
         await msg.reply_text(
             "📊 STATUS\n\n"
@@ -2346,14 +2373,11 @@ async def _check_tariff_expiry() -> int:
         await db.set_running(uid, False)
         stopped += 1
 
-        # Foydalanuvchiga xabar
+        # Foydalanuvchiga xabar — kutish rejimiga o'tdi (oxirgi/to'xtash xabari, 1 marta)
         with contextlib.suppress(Exception):
             await application.bot.send_message(
                 uid,
-                "⏰ Tarifingiz muddati tugadi!\n\n"
-                "⛔ Posting avtomatik to'xtatildi.\n\n"
-                "📞 Muddatni uzaytirish uchun admin bilan bog'laning:\n"
-                f"📱 {ADMIN_CONTACT_PHONE}",
+                _waiting_mode_text(),
                 reply_markup=await menu_for(uid),
             )
 
@@ -2440,6 +2464,11 @@ async def restore_running_workers() -> None:
         posts = await db.get_posts(uid)
         if not chats or not posts:
             await db.set_running(uid, False)
+            continue
+        # Muddati tugagan bo'lsa — tiklamaymiz (kutish rejimida qoladi)
+        if await db.is_tariff_expired(uid):
+            await db.set_running(uid, False)
+            log(f"⏸ Tiklanmadi (muddat tugagan): {uid}")
             continue
         if await worker_manager.start_worker(uid):
             restored += 1
