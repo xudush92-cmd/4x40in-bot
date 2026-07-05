@@ -323,7 +323,6 @@ def kb_login() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton("🔑 Login")]],
         resize_keyboard=True,
-        is_persistent=True,
     )
 
 
@@ -331,7 +330,6 @@ def kb_pending() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton("⏳ Tasdiq kutilmoqda...")]],
         resize_keyboard=True,
-        is_persistent=True,
     )
 
 
@@ -349,7 +347,6 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
-        is_persistent=True,
     )
 
 
