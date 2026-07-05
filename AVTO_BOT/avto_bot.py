@@ -320,12 +320,18 @@ async def user_limits(uid: int) -> tuple[int, int]:
 # MENYU
 # ─────────────────────────────────────────────────────────────────────────
 def kb_login() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([[KeyboardButton("🔑 Login")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("🔑 Login")]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def kb_pending() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("⏳ Tasdiq kutilmoqda...")]], resize_keyboard=True
+        [[KeyboardButton("⏳ Tasdiq kutilmoqda...")]],
+        resize_keyboard=True,
+        is_persistent=True,
     )
 
 
@@ -340,7 +346,11 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
     ]
     if super_admin:
         rows.append([KeyboardButton("👥 Adminlar"), KeyboardButton("🖥 Tizim")])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 async def is_approved(uid: int) -> bool:
