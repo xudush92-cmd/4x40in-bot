@@ -1320,6 +1320,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
 
+    if data == "delp:cancel":
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
     if data.startswith("delp:"):
         try:
             i = int(data.split(":")[1])
@@ -1337,9 +1340,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
         else:
             await q.edit_message_text("❌ Post topilmadi.")
-        return
-    if data == "delp:cancel":
-        await q.edit_message_text("❌ Bekor qilindi.")
         return
 
     # Post tahrirlash — postni tanlash
@@ -1372,6 +1372,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
 
+    if data == "delc:cancel":
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
     if data.startswith("delc:"):
         try:
             i = int(data.split(":")[1])
@@ -1387,9 +1390,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
         else:
             await q.edit_message_text("❌ Chat topilmadi.")
-        return
-    if data == "delc:cancel":
-        await q.edit_message_text("❌ Bekor qilindi.")
         return
 
     if data == "adm:list":
