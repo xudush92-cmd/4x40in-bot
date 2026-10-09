@@ -84,6 +84,14 @@ class BoardManager:
     async def force_repost(self) -> None:
         await self.sync(force=True)
 
+    async def delete_all(self) -> None:
+        """Guruh o'chirilganda oynaning xabarlarini o'chiradi."""
+        for _, mid in await self.db.get_board(self.chat_id):
+            try:
+                await self.bot.delete_message(chat_id=self.chat_id, message_id=mid)
+            except TelegramError:
+                pass
+
     # ── ichki mantiq ──────────────────────────────────────────────────
 
     def _keyboard(self) -> InlineKeyboardMarkup:
@@ -182,6 +190,9 @@ class BoardHub:
 
     def add(self, board: BoardManager) -> None:
         self.boards[board.chat_id] = board
+
+    def remove(self, chat_id: int) -> BoardManager | None:
+        return self.boards.pop(chat_id, None)
 
     def get(self, chat_id: int) -> BoardManager | None:
         return self.boards.get(chat_id)

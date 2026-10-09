@@ -123,8 +123,11 @@ async def post_init(app: Application) -> None:
     db = Database(DB_PATH)
     await db.open()
     me = await app.bot.get_me()
-    hub = BoardHub()
+    # .env dagi boshlang'ich guruhlarni bazaga qo'shamiz (agar yo'q bo'lsa)
     for chat_id in GROUP_CHAT_IDS:
+        await db.add_group(chat_id, "")
+    hub = BoardHub()
+    for chat_id in await db.group_ids():
         hub.add(BoardManager(app.bot, db, chat_id, me.username))
     app.bot_data["db"] = db
     app.bot_data["hub"] = hub
@@ -134,7 +137,7 @@ async def post_init(app: Application) -> None:
     ]
     # Qayta ishga tushganda oynalarni darhol holatga keltiramiz
     hub.request_update_all()
-    log.info("Bot ishga tushdi: @%s, guruhlar=%s", me.username, GROUP_CHAT_IDS)
+    log.info("Bot ishga tushdi: @%s, guruhlar=%s", me.username, await db.group_ids())
 
 
 async def post_shutdown(app: Application) -> None:
@@ -163,8 +166,8 @@ def build_app() -> Application:
         MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, on_private_text)
     )
 
-    # Guruhlar (bir nechta)
-    groups = filters.Chat(chat_id=GROUP_CHAT_IDS)
+    # Guruhlar: qaysi guruhlar boshqarilishi admin tomonidan botda belgilanadi
+    groups = filters.ChatType.GROUPS
     app.add_handler(CommandHandler("yangila", cmd_group_refresh, filters=groups))
     app.add_handler(MessageHandler(groups & ~filters.COMMAND, on_group_message))
 

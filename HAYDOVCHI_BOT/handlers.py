@@ -25,7 +25,8 @@ from telegram.constants import ChatType
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
-from config import ADMIN_ID, GROUP_CHAT_IDS
+from config import ADMIN_ID
+from board import BoardManager
 from db import end_of_day_ts, ts_to_date_str
 from utils import SEAT_OPTIONS, normalize_phone, parse_route, seats_label
 
@@ -39,6 +40,7 @@ BTN_PROFILE = "👤 Mening ma'lumotim"
 BTN_CONTACT = "📱 Raqamni yuborish"
 
 A_ROUTES = "🛣 Yo'nalishlar"
+A_GROUPS = "🏘 Guruhlar"
 A_DRIVERS = "👥 Haydovchilar"
 A_REFRESH = "📢 Oynani yangilash"
 A_SETTINGS = "⚙️ Sozlamalar"
@@ -57,7 +59,7 @@ def driver_menu_kb() -> ReplyKeyboardMarkup:
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[A_ROUTES, A_DRIVERS], [A_REFRESH, A_SETTINGS], [A_STATS]], resize_keyboard=True
+        [[A_ROUTES, A_DRIVERS], [A_GROUPS, A_REFRESH], [A_SETTINGS, A_STATS]], resize_keyboard=True
     )
 
 
@@ -78,13 +80,14 @@ def _hub(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["hub"]
 
 
-async def is_manager(bot, uid: int) -> bool:
-    """Super admin, yoki boshqaruvchi guruhlardan birida admin/creator."""
+async def is_manager(context, uid: int) -> bool:
+    """Super admin, yoki boshqariladigan guruhlardan birida admin/creator."""
     if uid == ADMIN_ID:
         return True
-    for chat_id in GROUP_CHAT_IDS:
+    db = _db(context)
+    for chat_id in await db.group_ids():
         try:
-            member = await bot.get_chat_member(chat_id, uid)
+            member = await context.bot.get_chat_member(chat_id, uid)
             if member.status in ("creator", "administrator"):
                 return True
         except TelegramError:
@@ -126,7 +129,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != ChatType.PRIVATE:
         return
     uid = update.effective_user.id
-    if await is_manager(context.bot, uid):
+    if await is_manager(context, uid):
         await update.effective_message.reply_text(
             "🛠 Boshqaruv paneli. Kerakli bo'limni tanlang.", reply_markup=admin_menu_kb()
         )
@@ -214,7 +217,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     uid = update.effective_user.id
     text = (update.effective_message.text or "").strip()
 
-    if await is_manager(context.bot, uid):
+    if await is_manager(context, uid):
         await _manager_text(update, context, text)
         return
 
@@ -378,8 +381,16 @@ async def _manager_text(update, context, text: str) -> None:
         _hub(context).request_update_all()
         return
 
+    if pending and pending[0] == "group":
+        context.user_data.pop("await", None)
+        await _add_group_from_message(update, context)
+        return
+
     if text == A_ROUTES:
         body, markup = await _routes_view(db)
+        await msg.reply_text(body, reply_markup=markup)
+    elif text == A_GROUPS:
+        body, markup = await _groups_view(db)
         await msg.reply_text(body, reply_markup=markup)
     elif text == A_DRIVERS:
         body, markup = await _drivers_view(db)
@@ -394,6 +405,74 @@ async def _manager_text(update, context, text: str) -> None:
         await msg.reply_text(await _stats_text(db))
     else:
         await msg.reply_text("🛠 Boshqaruv paneli", reply_markup=admin_menu_kb())
+
+
+async def _groups_view(db) -> tuple[str, InlineKeyboardMarkup]:
+    groups = await db.list_groups()
+    rows = []
+    lines = ["🏘 Boshqariladigan guruhlar:"]
+    if not groups:
+        lines.append("Hozircha guruh yo'q. Qo'shish uchun ➕ tugmasini bosing.")
+    for g in groups:
+        title = g["title"] or str(g["chat_id"])
+        lines.append(f"• {title}  ({g['chat_id']})")
+        rows.append([InlineKeyboardButton(f"🗑 Olib tashlash: {title[:24]}",
+                                          callback_data=f"grm:{g['chat_id']}")])
+    rows.append([InlineKeyboardButton("➕ Guruh qo'shish", callback_data="gadd")])
+    lines.append(
+        "\nGuruh qo'shish: botni guruhga admin qiling, so'ng guruhdan bitta xabarni "
+        "shu botga forward qiling yoki guruh ID sini yozing."
+    )
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _forwarded_chat_id(msg) -> int | None:
+    origin = getattr(msg, "forward_origin", None)
+    chat = getattr(origin, "chat", None)
+    if chat is not None:
+        return chat.id
+    fwd = getattr(msg, "forward_from_chat", None)  # eski PTB ko'rinishi
+    return fwd.id if fwd else None
+
+
+async def _add_group_from_message(update, context) -> None:
+    db = _db(context)
+    msg = update.effective_message
+    chat_id = _forwarded_chat_id(msg)
+    if chat_id is None:
+        try:
+            chat_id = int((msg.text or "").strip())
+        except ValueError:
+            await msg.reply_text("Guruh ID si noto'g'ri. Guruhdan xabar forward qiling yoki "
+                                 "-100 bilan boshlanadigan raqamni yozing.")
+            context.user_data["await"] = ("group",)
+            return
+    if chat_id >= 0:
+        await msg.reply_text("Bu guruh emas. Guruh ID si manfiy raqam bo'ladi (-100...).")
+        return
+
+    bot_user = await context.bot.get_me()
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        me = await context.bot.get_chat_member(chat_id, bot_user.id)
+    except TelegramError as e:
+        await msg.reply_text(f"⚠️ Guruhga kirib bo'lmadi. Bot guruhda borligini tekshiring.\n({e})")
+        return
+    if me.status not in ("administrator", "creator"):
+        await msg.reply_text("⚠️ Bot bu guruhda admin emas. Avval botni admin qiling "
+                             "(xabarlarni o'chirish huquqi bilan), keyin qayta urinib ko'ring.")
+        return
+
+    added = await db.add_group(chat_id, chat.title or "")
+    if not added:
+        await msg.reply_text("Bu guruh allaqachon qo'shilgan.")
+        return
+    hub = _hub(context)
+    hub.add(BoardManager(context.bot, db, chat_id, bot_user.username))
+    hub.boards[chat_id].request_update(delay=0)
+    await msg.reply_text(f"✅ Guruh qo'shildi: {chat.title or chat_id}. Oyna shu yerda ko'rinadi.")
+    body, markup = await _groups_view(db)
+    await msg.reply_text(body, reply_markup=markup)
 
 
 async def _routes_view(db) -> tuple[str, InlineKeyboardMarkup]:
@@ -474,14 +553,14 @@ async def _stats_text(db) -> str:
         f"🛣 Ochiq yo'nalishlar: {open_routes} / {len(routes)}\n"
         f"🟢 Faol e'lonlar: {active}\n"
         f"🪑 Jami bo'sh joy (oynadagi): {free_seats}\n"
-        f"🏘 Boshqariladigan guruhlar: {len(GROUP_CHAT_IDS)}"
+        f"🏘 Boshqariladigan guruhlar: {len(await db.group_ids())}"
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Inline tugmalar (callback)
 # ══════════════════════════════════════════════════════════════════════════
-MANAGER_ACTIONS = {"ra", "rtg", "rdl", "dok", "dno", "dblk", "dunb", "sub", "sd", "sauto", "sper"}
+MANAGER_ACTIONS = {"ra", "rtg", "rdl", "gadd", "grm", "dok", "dno", "dblk", "dunb", "sub", "sd", "sauto", "sper"}
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -492,7 +571,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     db = _db(context)
 
     if action in MANAGER_ACTIONS:
-        if not await is_manager(context.bot, uid):
+        if not await is_manager(context, uid):
             await query.answer("Bu amal faqat adminlar uchun.", show_alert=True)
             return
         await query.answer()
@@ -530,6 +609,23 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
             await db.stop_route_entries(route_id)
         hub.request_update_all()
         body, markup = await _routes_view(db)
+        await _safe_edit(query, body, markup)
+        return
+
+    if action == "gadd":
+        context.user_data["await"] = ("group",)
+        await query.message.reply_text(
+            "Guruhdan bitta xabarni shu botga forward qiling, yoki guruh ID sini yozing (-100...)."
+        )
+        return
+
+    if action == "grm":
+        chat_id = int(parts[1])
+        board = hub.remove(chat_id)
+        if board:
+            await board.delete_all()
+        await db.remove_group(chat_id)
+        body, markup = await _groups_view(db)
         await _safe_edit(query, body, markup)
         return
 
@@ -604,20 +700,19 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
         )
         return
 
+    # Vaqt tanlangach menyu yopiladi: tugmalar olib tashlanadi, faqat natija qoladi
     if action == "sauto":
         hours = int(parts[1])
         if hours in AUTO_STOP_CHOICES:
             await db.set_setting("auto_stop_hours", str(hours))
-        body, markup = await _settings_view(db)
-        await _safe_edit(query, body, markup)
+        await _safe_edit(query, f"✅ Saqlandi: avtomatik to'xtash {hours} soat.")
         return
 
     if action == "sper":
         minutes = int(parts[1])
         if minutes in PERIODIC_CHOICES:
             await db.set_setting("periodic_minutes", str(minutes))
-        body, markup = await _settings_view(db)
-        await _safe_edit(query, body, markup)
+        await _safe_edit(query, f"✅ Saqlandi: tekshiruv har {minutes} daqiqada.")
         return
 
 
@@ -730,7 +825,7 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cmd_group_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Guruhda /yangila — admin shu guruh oynasini darhol pastga qayta yuboradi."""
-    if not await is_manager(context.bot, update.effective_user.id):
+    if not await is_manager(context, update.effective_user.id):
         return
     board = _hub(context).get(update.effective_chat.id)
     if board:

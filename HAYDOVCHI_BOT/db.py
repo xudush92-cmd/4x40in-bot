@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS chat_state (
     value       INTEGER NOT NULL,
     PRIMARY KEY (chat_id, key)
 );
+CREATE TABLE IF NOT EXISTS groups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- qo'shilish tartibi uchun
+    chat_id     INTEGER NOT NULL UNIQUE,
+    title       TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS settings (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL
@@ -147,6 +153,29 @@ class Database:
             rows = await cur.fetchall()
             await cur.close()
             return rows
+
+    # ── guruhlar (admin botdan qo'shadi/o'chiradi) ─────────────────────
+    async def list_groups(self) -> list[dict]:
+        rows = await self._all("SELECT chat_id, title FROM groups ORDER BY id")
+        return [dict(r) for r in rows]
+
+    async def group_ids(self) -> list[int]:
+        return [g["chat_id"] for g in await self.list_groups()]
+
+    async def add_group(self, chat_id: int, title: str = "") -> bool:
+        """Yangi guruh qo'shadi. Yangi bo'lsa True, allaqachon bo'lsa False."""
+        rc = await self._exec(
+            "INSERT OR IGNORE INTO groups(chat_id, title, created_at) VALUES (?, ?, ?)",
+            (chat_id, title, int(time.time())),
+        )
+        return rc == 1
+
+    async def remove_group(self, chat_id: int) -> None:
+        async with self._lock:
+            await self._conn.execute("DELETE FROM groups WHERE chat_id=?", (chat_id,))
+            await self._conn.execute("DELETE FROM board WHERE chat_id=?", (chat_id,))
+            await self._conn.execute("DELETE FROM chat_state WHERE chat_id=?", (chat_id,))
+            await self._conn.commit()
 
     # ── sozlamalar ─────────────────────────────────────────────────────
     async def get_setting(self, key: str) -> str:

@@ -23,16 +23,11 @@ ADMIN_ID: int = int(_require("ADMIN_ID"))
 
 def _group_ids() -> list[int]:
     """
-    GROUP_CHAT_IDS=-100111,-100222  (bir nechta guruh, vergul bilan)
-    yoki eski ko'rinish: GROUP_CHAT_ID=-100111
+    Boshlang'ich guruhlar (ixtiyoriy). Guruhlarni asosan admin botning o'zidan qo'shadi.
+    GROUP_CHAT_IDS=-100111,-100222
     """
-    raw = os.getenv("GROUP_CHAT_IDS") or os.getenv("GROUP_CHAT_ID")
-    if not raw:
-        raise RuntimeError("GROUP_CHAT_IDS yo'q. .env faylida guruh ID sini yozing.")
-    ids = [int(x.strip()) for x in raw.split(",") if x.strip()]
-    if not ids:
-        raise RuntimeError("GROUP_CHAT_IDS bo'sh.")
-    return ids
+    raw = os.getenv("GROUP_CHAT_IDS") or os.getenv("GROUP_CHAT_ID") or ""
+    return [int(x.strip()) for x in raw.split(",") if x.strip()]
 
 
 GROUP_CHAT_IDS: list[int] = _group_ids()

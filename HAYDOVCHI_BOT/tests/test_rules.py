@@ -133,3 +133,39 @@ def test_end_of_day_timestamp():
     ts = end_of_day_ts(date(2026, 11, 30))
     assert datetime.fromtimestamp(ts, LOCAL_TZ).date() == date(2026, 11, 30)
     assert datetime.fromtimestamp(ts, LOCAL_TZ).hour == 23
+
+
+def test_groups_add_list_remove(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        try:
+            assert await db.add_group(-100111, "Haydovchilar 1") is True
+            assert await db.add_group(-100111, "Haydovchilar 1") is False   # takror qo'shilmaydi
+            await db.add_group(-100222, "Haydovchilar 2")
+            assert await db.group_ids() == [-100111, -100222]
+            await db.set_board(-100111, [5, 6])
+            await db.remove_group(-100111)
+            assert await db.group_ids() == [-100222]
+            assert await db.get_board(-100111) == []                   # oyna yozuvlari tozalanadi
+        finally:
+            await db.close()
+    run(go())
+
+
+def test_same_board_content_for_all_groups(tmp_path):
+    """Bir xil yo'nalish va haydovchilar barcha guruhlarda bir xil ko'rinadi."""
+    async def go():
+        db = await _db(tmp_path)
+        await db.add_route("A", "B")
+        await _driver(db, 1)
+        await db.start_entry(1, 1, 2)
+        await db.add_group(-100111, "G1")
+        await db.add_group(-100222, "G2")
+        from board import routes_to_views
+        from utils import render_parts, now_local
+        rows = await db.board_routes()
+        t1 = render_parts(routes_to_views(rows), now_local())
+        t2 = render_parts(routes_to_views(rows), now_local())
+        assert t1 == t2
+        await db.close()
+    run(go())

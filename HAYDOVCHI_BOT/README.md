@@ -19,18 +19,25 @@ python bot.py
 
 6. Testlar: `python -m pytest -q`
 
-## Bir nechta guruh
+## Guruhlarni boshqarish
 
-`.env` da `GROUP_CHAT_IDS` ga guruh ID larini vergul bilan yozing. Har bir guruhda o'z ma'lumot
-oynasi bo'ladi. Yo'nalishlar va haydovchilar hamma guruhlar uchun umumiy. Guruh adminlari
-o'zi admin bo'lgan guruhlar bo'yicha boshqaruv paneliga kiradi.
+Guruhlarni `.env` ga yozish shart emas. Super admin yoki guruh admini botda
+**🏘 Guruhlar → ➕ Guruh qo'shish** orqali guruh qo'shadi:
 
-> Eski versiyadagi `GROUP_CHAT_ID` ham ishlaydi. Ma'lumotlar bazasi sxemasi o'zgargani uchun
-> sinov paytida eski `data/haydovchi.db` faylini o'chiring.
+1. Botni guruhga **admin** qiling (xabarlarni o'chirish huquqi bilan).
+2. Guruhdan bitta xabarni botga **forward** qiling yoki guruh ID sini yozing (`-100...`).
+3. Bot guruhni tekshiradi va oynani shu guruhda chiqaradi.
+
+Barcha belgilangan guruhlarda **bir xil** ma'lumot oynasi ko'rinadi. Guruhni "🗑 Olib tashlash"
+bilan o'chirsangiz, uning oynasi ham o'chiriladi.
+
+`GROUP_CHAT_IDS` (`.env`) ixtiyoriy: bot ishga tushganda shu guruhlar bazaga qo'shiladi.
+
+> Ma'lumotlar bazasi sxemasi o'zgargani uchun sinov paytida eski `data/haydovchi.db` faylini o'chiring.
 
 ## Obuna (oylik tarif)
 
-- Admin har bir haydovchi uchun obuna muddatini qo'lda belgilaydi: `+30 kun`, `+90 kun` yoki
+- Admin har bir haydovchi uchun obuna muddatini qo'lda belgilaydi (👥 Haydovchilar bo'limida): `+30 kun`, `+90 kun` yoki
   aniq sana (YYYY-MM-DD).
 - Obuna tugagan haydovchi e'lon bera olmaydi, uning faol e'loni to'xtatiladi.
 - Tugashiga 3 kun qolganda haydovchiga ogohlantirish yuboriladi (bir marta).
