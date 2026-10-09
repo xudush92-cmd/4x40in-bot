@@ -19,6 +19,31 @@ python bot.py
 
 6. Testlar: `python -m pytest -q`
 
+## Bir nechta guruh
+
+`.env` da `GROUP_CHAT_IDS` ga guruh ID larini vergul bilan yozing. Har bir guruhda o'z ma'lumot
+oynasi bo'ladi. Yo'nalishlar va haydovchilar hamma guruhlar uchun umumiy. Guruh adminlari
+o'zi admin bo'lgan guruhlar bo'yicha boshqaruv paneliga kiradi.
+
+> Eski versiyadagi `GROUP_CHAT_ID` ham ishlaydi. Ma'lumotlar bazasi sxemasi o'zgargani uchun
+> sinov paytida eski `data/haydovchi.db` faylini o'chiring.
+
+## Obuna (oylik tarif)
+
+- Admin har bir haydovchi uchun obuna muddatini qo'lda belgilaydi: `+30 kun`, `+90 kun` yoki
+  aniq sana (YYYY-MM-DD).
+- Obuna tugagan haydovchi e'lon bera olmaydi, uning faol e'loni to'xtatiladi.
+- Tugashiga 3 kun qolganda haydovchiga ogohlantirish yuboriladi (bir marta).
+- Yangi muddat hozirgi tugashidan keyin qo'shiladi.
+
+## Qoidalar
+
+- Haydovchida bir vaqtda faqat **bitta faol yo'nalish** bo'ladi. Yangi yo'nalish boshlansa,
+  eskisi avtomatik to'xtaydi.
+- Admin yo'nalishni `Toshkent - Qibray` ko'rinishida yozadi. Ajratuvchi sifatida `-`, `–`, `—`,
+  `->`, `→`, `/`, `|` ishlaydi. Bir nechta yo'nalishni har birini yangi qatordan yozib, bir
+  vaqtda qo'shish mumkin.
+
 ## Rollar
 
 - **Super admin** (`ADMIN_ID`) va **guruh adminlari** (Telegram'dagi admin/creator) — boshqaruv paneli:

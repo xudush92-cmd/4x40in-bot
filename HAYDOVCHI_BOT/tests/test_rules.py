@@ -1,0 +1,135 @@
+"""Yangi qoidalar: bitta faol e'lon, obuna, ko'p yo'nalish kiritish, avto-to'xtash."""
+import asyncio
+import time
+
+from db import Database, end_of_day_ts
+from utils import parse_route
+from datetime import date
+
+DAY = 86400
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+async def _db(tmp_path):
+    db = Database(str(tmp_path / "r.db"))
+    await db.open()
+    return db
+
+
+async def _driver(db, uid, paid_days=30, status="approved"):
+    await db.ensure_user(uid)
+    paid = int(time.time()) + paid_days * DAY if paid_days else 0
+    await db.update_user_fields(uid, first_name=f"F{uid}", last_name="L", phone="+998901234567",
+                                status=status, paid_until=paid)
+
+
+def test_one_active_entry_per_driver(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await db.add_route("A", "B")
+        await db.add_route("C", "D")
+        await _driver(db, 1)
+        _, replaced1 = await db.start_entry(1, 1, 2)
+        assert replaced1 == []
+        _, replaced2 = await db.start_entry(1, 2, 3)
+        assert replaced2 == ["A → B"]          # eski yo'nalish avtomatik to'xtadi
+        active = await db.driver_entries(1)
+        assert len(active) == 1 and active[0]["route_id"] == 2
+        await db.close()
+    run(go())
+
+
+def test_restart_same_route_updates_seats(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await db.add_route("A", "B")
+        await _driver(db, 1)
+        await db.start_entry(1, 1, 2)
+        await db.start_entry(1, 1, 5)
+        e = await db.driver_entries(1)
+        assert len(e) == 1 and e[0]["seats"] == 5
+        await db.close()
+    run(go())
+
+
+def test_expired_subscription_hidden_from_board(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await db.add_route("A", "B")
+        await _driver(db, 1, paid_days=30)
+        await _driver(db, 2, paid_days=0)                 # obuna belgilanmagan
+        await db.start_entry(1, 1, 2)
+        await db.start_entry(2, 1, 3)
+        rows = await db.board_routes()
+        names = [e["first_name"] for e in rows[0]["entries"]]
+        assert names == ["F1"]
+        await db.close()
+    run(go())
+
+
+def test_extend_subscription_stacks_from_current_end(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await _driver(db, 1, paid_days=10)
+        before = (await db.get_user(1)).paid_until
+        new_until = await db.extend_subscription(1, 30)
+        assert new_until - before == 30 * DAY
+        await db.close()
+    run(go())
+
+
+def test_expiring_warning_once(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await _driver(db, 1, paid_days=2)                 # 3 kundan kam qoldi
+        now = int(time.time())
+        assert len(await db.subscription_expiring(now)) == 1
+        u = await db.get_user(1)
+        await db.update_user_fields(1, warned_for=u.paid_until)
+        assert await db.subscription_expiring(now) == []  # ikkinchi marta yubormaydi
+        await db.close()
+    run(go())
+
+
+def test_expired_with_entries_detected(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await db.add_route("A", "B")
+        await _driver(db, 1, paid_days=30)
+        await db.start_entry(1, 1, 2)
+        await db.set_subscription_end(1, int(time.time()) - 60)
+        found = await db.subscription_expired_with_entries(int(time.time()))
+        assert len(found) == 1
+        await db.close()
+    run(go())
+
+
+def test_stale_entry_auto_stop(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        await db.add_route("A", "B")
+        await _driver(db, 1, paid_days=30)
+        eid, _ = await db.start_entry(1, 1, 2)
+        await db._exec("UPDATE entries SET updated_at=? WHERE id=?", (int(time.time()) - 3 * 3600, eid))
+        stale = await db.stale_entries(int(time.time()) - 2 * 3600)
+        assert [s["id"] for s in stale] == [eid]
+        await db.stop_entry(eid)
+        assert await db.driver_entries(1) == []
+        await db.close()
+    run(go())
+
+
+def test_multi_route_parse_separators():
+    for s in ["Toshkent - Qibray", "Toshkent / Qibray", "Toshkent | Qibray", "Toshkent → Qibray"]:
+        assert parse_route(s) == ("Toshkent", "Qibray"), s
+
+
+def test_end_of_day_timestamp():
+    from datetime import datetime
+    from utils import LOCAL_TZ
+    ts = end_of_day_ts(date(2026, 11, 30))
+    assert datetime.fromtimestamp(ts, LOCAL_TZ).date() == date(2026, 11, 30)
+    assert datetime.fromtimestamp(ts, LOCAL_TZ).hour == 23

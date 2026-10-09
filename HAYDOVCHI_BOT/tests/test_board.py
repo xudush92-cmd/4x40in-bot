@@ -4,6 +4,7 @@ eski nusxani o'chirish, jim yuborish.
 """
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import board as board_mod
@@ -41,7 +42,8 @@ async def _seed(db):
     await db.add_route("Toshkent", "Qibray")
     await db.ensure_user(1)
     await db.update_user_fields(1, first_name="Ali", last_name="Valiyev",
-                                phone="+998901234567", status="approved")
+                                phone="+998901234567", status="approved",
+                                paid_until=int(time.time()) + 30 * 86400)
     await db.start_entry(1, 1, 2)
 
 
@@ -56,7 +58,7 @@ def test_first_sync_sends_pinless_message_silently(tmp_path, monkeypatch):
         assert len(bot.sent) == 1
         assert bot.sent[0][2] is True               # disable_notification
         assert "Ali Valiyev" in bot.sent[0][1]
-        assert await db.get_board() == [(0, bot.sent[0][0])]
+        assert await db.get_board(-100) == [(0, bot.sent[0][0])]
         await db.close()
 
     asyncio.run(scenario())
@@ -75,7 +77,7 @@ def test_edit_in_place_when_board_is_last_message(tmp_path):
         await bm.sync()                              # oyna hali pastda -> tahrir
         assert len(bot.sent) == sent_before          # yangi xabar yo'q
         assert len(bot.edited) == 1
-        assert bot.edited[0][0] == (await db.get_board())[0][1]
+        assert bot.edited[0][0] == (await db.get_board(-100))[0][1]
         await db.close()
 
     asyncio.run(scenario())
@@ -91,14 +93,14 @@ def test_repost_when_other_messages_came_after(tmp_path, monkeypatch):
         bot = FakeBot()
         bm = BoardManager(bot, db, -100, "haydovchi_bot")
         await bm.sync()
-        old_mid = (await db.get_board())[0][1]
+        old_mid = (await db.get_board(-100))[0][1]
         await bm.on_group_message(9001)              # boshqa odam yozdi
         await bm.sync()
-        new_mid = (await db.get_board())[0][1]
+        new_mid = (await db.get_board(-100))[0][1]
         assert new_mid != old_mid                    # qayta yuborildi
         assert old_mid in bot.deleted                # eskisi o'chirildi
         assert bot.sent[-1][2] is True               # jim yuborildi
-        assert await db.get_chat_value("msgs_since_repost") == 0
+        assert await db.get_chat_value(-100, "msgs_since_repost") == 0
         await db.close()
 
     asyncio.run(scenario())

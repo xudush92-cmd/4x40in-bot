@@ -42,13 +42,13 @@ def normalize_phone(raw: str) -> str | None:
     return None
 
 
-_ROUTE_SPLIT = re.compile(r"\s*(?:->|→|—|–|-|>)\s*")
+_ROUTE_SPLIT = re.compile(r"\s*(?:->|→|—|–|-|>|/|\|)\s*")
 
 
 def parse_route(text: str) -> tuple[str, str] | None:
     """
     "Toshkent - Qibray" -> ("Toshkent", "Qibray")
-    Ajratuvchilar: -, –, —, ->, >, →
+    Ajratuvchilar: -, –, —, ->, >, →, /, |
     Ikki qism bo'lmasa yoki bo'sh bo'lsa None.
     """
     if not text:

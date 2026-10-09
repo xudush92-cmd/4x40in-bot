@@ -1,14 +1,17 @@
 """
-handlers.py — bot buyruqlari, tugmalar va guruh xabarlari.
+handlers.py — bot buyruqlari, tugmalar, ro'yxatdan o'tish, boshqaruv paneli, guruh xabarlari.
 
 Rollar:
-- Super admin (ADMIN_ID) va guruh adminlari (Telegram'dagi admin huquqi) — boshqaruv paneli.
-- Haydovchi — ro'yxatdan o'tadi, tasdiqlanadi, start/stop va bo'sh joy tugmalari.
+- Super admin (ADMIN_ID) va guruhlardagi adminlar (Telegram admin huquqi) — boshqaruv paneli.
+- Haydovchi — ro'yxatdan o'tadi, admin tasdiqlaydi, obuna muddatini admin belgilaydi,
+  so'ng start/stop va bo'sh joy tugmalarini ishlatadi.
 """
 
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime
 
 from telegram import (
     InlineKeyboardButton,
@@ -22,7 +25,8 @@ from telegram.constants import ChatType
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
-from config import ADMIN_ID, GROUP_CHAT_ID
+from config import ADMIN_ID, GROUP_CHAT_IDS
+from db import end_of_day_ts, ts_to_date_str
 from utils import SEAT_OPTIONS, normalize_phone, parse_route, seats_label
 
 log = logging.getLogger("haydovchi.handlers")
@@ -42,6 +46,7 @@ A_STATS = "📊 Statistika"
 
 AUTO_STOP_CHOICES = [1, 2, 3, 4]        # soat
 PERIODIC_CHOICES = [10, 15, 20, 30]     # daqiqa
+SUB_CHOICES = [30, 90]                  # kun (tugmalar)
 
 
 def driver_menu_kb() -> ReplyKeyboardMarkup:
@@ -69,19 +74,22 @@ def _db(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["db"]
 
 
-def _board(context: ContextTypes.DEFAULT_TYPE):
-    return context.application.bot_data["board"]
+def _hub(context: ContextTypes.DEFAULT_TYPE):
+    return context.application.bot_data["hub"]
 
 
 async def is_manager(bot, uid: int) -> bool:
-    """Super admin yoki guruhdagi admin/creator."""
+    """Super admin, yoki boshqaruvchi guruhlardan birida admin/creator."""
     if uid == ADMIN_ID:
         return True
-    try:
-        member = await bot.get_chat_member(GROUP_CHAT_ID, uid)
-        return member.status in ("creator", "administrator")
-    except TelegramError:
-        return False
+    for chat_id in GROUP_CHAT_IDS:
+        try:
+            member = await bot.get_chat_member(chat_id, uid)
+            if member.status in ("creator", "administrator"):
+                return True
+        except TelegramError:
+            continue
+    return False
 
 
 async def _safe_edit(query, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
@@ -93,11 +101,22 @@ async def _safe_edit(query, text: str, markup: InlineKeyboardMarkup | None = Non
 
 
 async def _notify(context, uid: int, text: str, markup=None) -> None:
-    """Foydalanuvchiga shaxsiy xabar. U botni ishga tushirmagan bo'lsa — jim o'tadi."""
     try:
         await context.bot.send_message(chat_id=uid, text=text, reply_markup=markup)
     except TelegramError as e:
         log.info("Xabar yuborib bo'lmadi (%s): %s", uid, e)
+
+
+def _sub_status(paid_until: int) -> str:
+    if not paid_until:
+        return "❌ obuna yo'q (admin belgilaydi)"
+    if paid_until < int(time.time()):
+        return f"⛔ obuna tugagan ({ts_to_date_str(paid_until)})"
+    return f"✅ obuna: {ts_to_date_str(paid_until)} gacha"
+
+
+def _subscribed(user) -> bool:
+    return user.paid_until > int(time.time())
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -117,11 +136,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _advance(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int) -> None:
-    """Haydovchi holatiga qarab keyingi qadamni ko'rsatadi."""
     db = _db(context)
-    user = await db.get_user(uid)
     msg = update.effective_message
-
+    user = await db.get_user(uid)
     if user is None:
         await db.ensure_user(uid)
         user = await db.get_user(uid)
@@ -138,7 +155,6 @@ async def _advance(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: int)
         await msg.reply_text("🚗 Haydovchi paneli", reply_markup=driver_menu_kb())
         return
 
-    # ro'yxatdan o'tish bosqichlari
     if not user.first_name:
         await msg.reply_text("👋 Xush kelibsiz! Avval ismingizni yozing:",
                              reply_markup=ReplyKeyboardRemove())
@@ -198,7 +214,6 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     uid = update.effective_user.id
     text = (update.effective_message.text or "").strip()
 
-    # 1) Boshqaruvchi — admin paneli (yo'nalish qo'shish holati ham shu yerda)
     if await is_manager(context.bot, uid):
         await _manager_text(update, context, text)
         return
@@ -207,12 +222,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await db.ensure_user(uid)
     user = await db.get_user(uid)
 
-    # 2) Tasdiqlangan haydovchi
     if user.status == "approved":
         await _driver_text(update, context, uid, text)
         return
 
-    # 3) Ro'yxatdan o'tish bosqichlari
     if user.status in ("new", ""):
         if not user.first_name:
             if len(text) < 2:
@@ -235,7 +248,6 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _advance(update, context, uid)
         return
 
-    # 4) pending / blocked
     await _advance(update, context, uid)
 
 
@@ -245,17 +257,28 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def _driver_text(update, context, uid: int, text: str) -> None:
     db = _db(context)
     msg = update.effective_message
+    user = await db.get_user(uid)
 
     if text == BTN_START:
+        if not _subscribed(user):
+            await msg.reply_text(
+                f"⛔ Obuna muddati tugagan yoki belgilanmagan.\n{_sub_status(user.paid_until)}\n"
+                "Obunani admin belgilaydi. Admin bilan bog'laning."
+            )
+            return
         routes = [r for r in await db.list_routes() if r["is_open"]]
         if not routes:
             await msg.reply_text("Hozircha ochiq yo'nalish yo'q. Admin yo'nalish ochishini kuting.")
             return
         rows = [
-            [InlineKeyboardButton(f"📍 {r['from_place']} → {r['to_place']}", callback_data=f"rt:{r['id']}")]
+            [InlineKeyboardButton(f"📍 {r['from_place']} → {r['to_place']}",
+                                  callback_data=f"rt:{r['id']}")]
             for r in routes
         ]
-        await msg.reply_text("Yo'nalishni tanlang:", reply_markup=InlineKeyboardMarkup(rows))
+        await msg.reply_text(
+            "Yo'nalishni tanlang. Bir vaqtda faqat bitta yo'nalishda e'lon bo'ladi:",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
         return
 
     if text == BTN_STOP:
@@ -264,11 +287,10 @@ async def _driver_text(update, context, uid: int, text: str) -> None:
             await msg.reply_text("Sizda faol e'lon yo'q.")
             return
         rows = [
-            [InlineKeyboardButton(
-                f"🔴 {e['from_place']} → {e['to_place']}", callback_data=f"st:{e['id']}")]
+            [InlineKeyboardButton(f"🔴 {e['from_place']} → {e['to_place']}",
+                                  callback_data=f"st:{e['id']}")]
             for e in entries
         ]
-        rows.append([InlineKeyboardButton("⛔ Hammasini to'xtatish", callback_data="sa")])
         await msg.reply_text("To'xtatmoqchi bo'lgan yo'nalishingizni tanlang:",
                              reply_markup=InlineKeyboardMarkup(rows))
         return
@@ -279,10 +301,11 @@ async def _driver_text(update, context, uid: int, text: str) -> None:
         return
 
     if text == BTN_PROFILE:
-        user = await db.get_user(uid)
+        entries = await db.driver_entries(uid)
         await msg.reply_text(
             f"👤 {user.first_name} {user.last_name}\n📞 {user.phone}\n"
-            f"🟢 Faol e'lonlar: {len(await db.driver_entries(uid))} ta"
+            f"📅 {_sub_status(user.paid_until)}\n"
+            f"🟢 Faol e'lon: {len(entries)} ta"
         )
         return
 
@@ -292,19 +315,18 @@ async def _driver_text(update, context, uid: int, text: str) -> None:
 async def _my_entries_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
     entries = await db.driver_entries(uid)
     if not entries:
-        return "Sizda faol e'lon yo'q. 🟢 Ishni boshlash tugmasini bosing.", InlineKeyboardMarkup([])
+        return ("Sizda faol e'lon yo'q. 🟢 Ishni boshlash tugmasini bosing.",
+                InlineKeyboardMarkup([]))
     rows = []
-    lines = ["📋 Faol e'lonlaringiz:"]
+    lines = ["📋 Faol e'loningiz:"]
     for e in entries:
-        title = f"{e['from_place']} → {e['to_place']}"
-        lines.append(f"📍 {title}: {seats_label(e['seats'])}")
+        lines.append(f"📍 {e['from_place']} → {e['to_place']}: {seats_label(e['seats'])}")
         rows.append([
             InlineKeyboardButton("➖", callback_data=f"ea:{e['id']}:-1"),
             InlineKeyboardButton("➕", callback_data=f"ea:{e['id']}:1"),
             InlineKeyboardButton("🔢", callback_data=f"ee:{e['id']}"),
             InlineKeyboardButton("🔴", callback_data=f"st:{e['id']}"),
         ])
-    rows.append([InlineKeyboardButton("⛔ Hammasini to'xtatish", callback_data="sa")])
     lines.append("\n➖ odam oldi · ➕ joy bo'shadi · 🔢 aniq son · 🔴 to'xtatish")
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -315,18 +337,45 @@ async def _my_entries_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
 async def _manager_text(update, context, text: str) -> None:
     db = _db(context)
     msg = update.effective_message
+    pending = context.user_data.get("await")
 
-    # yo'nalish nomini kutilayotgan holat
-    if context.user_data.get("await") == "route":
-        parsed = parse_route(text)
-        if not parsed:
-            await msg.reply_text("Format noto'g'ri. Masalan: Toshkent - Qibray")
-            return
+    if pending and pending[0] == "route":
         context.user_data.pop("await", None)
-        await db.add_route(parsed[0], parsed[1])
-        await msg.reply_text(f"✅ Yo'nalish qo'shildi: {parsed[0]} → {parsed[1]}")
+        added, bad = [], []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            parsed = parse_route(line)
+            if parsed:
+                await db.add_route(parsed[0], parsed[1])
+                added.append(f"{parsed[0]} → {parsed[1]}")
+            else:
+                bad.append(line.strip())
+        out = []
+        if added:
+            out.append("✅ Qo'shildi:\n" + "\n".join(f"• {a}" for a in added))
+        if bad:
+            out.append("⚠️ Tushunilmadi (format: Toshkent - Qibray):\n" + "\n".join(bad))
+        await msg.reply_text("\n\n".join(out) or "Hech narsa qo'shilmadi.")
+        if added:
+            _hub(context).request_update_all()
         body, markup = await _routes_view(db)
         await msg.reply_text(body, reply_markup=markup)
+        return
+
+    if pending and pending[0] == "sub":
+        context.user_data.pop("await", None)
+        uid = pending[1]
+        try:
+            d = datetime.strptime(text, "%Y-%m-%d").date()
+        except ValueError:
+            await msg.reply_text("Sana formati noto'g'ri. Masalan: 2026-11-30")
+            context.user_data["await"] = ("sub", uid)
+            return
+        await db.set_subscription_end(uid, end_of_day_ts(d))
+        user = await db.get_user(uid)
+        await msg.reply_text(f"✅ {user.full_name} obunasi {d.isoformat()} gacha belgilandi.")
+        _hub(context).request_update_all()
         return
 
     if text == A_ROUTES:
@@ -336,8 +385,8 @@ async def _manager_text(update, context, text: str) -> None:
         body, markup = await _drivers_view(db)
         await msg.reply_text(body, reply_markup=markup)
     elif text == A_REFRESH:
-        await _board(context).force_repost()
-        await msg.reply_text("✅ Guruh oynasi pastga qayta yuborildi.")
+        await _hub(context).force_all()
+        await msg.reply_text("✅ Guruh oynalari pastga qayta yuborildi.")
     elif text == A_SETTINGS:
         body, markup = await _settings_view(db)
         await msg.reply_text(body, reply_markup=markup)
@@ -357,13 +406,12 @@ async def _routes_view(db) -> tuple[str, InlineKeyboardMarkup]:
         state = "🟢 ochiq" if r["is_open"] else "⛔ yopiq"
         lines.append(f"• {r['from_place']} → {r['to_place']} ({state})")
         rows.append([
-            InlineKeyboardButton(
-                ("⛔ Yopish" if r["is_open"] else "🟢 Ochish"),
-                callback_data=f"rtg:{r['id']}",
-            ),
+            InlineKeyboardButton("⛔ Yopish" if r["is_open"] else "🟢 Ochish",
+                                 callback_data=f"rtg:{r['id']}"),
             InlineKeyboardButton("🗑 O'chirish", callback_data=f"rdl:{r['id']}"),
         ])
     rows.append([InlineKeyboardButton("➕ Yangi yo'nalish", callback_data="ra")])
+    lines.append("\nYangi yo'nalish: bir qatorga bitta, masalan \"Toshkent - Qibray\".")
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
@@ -380,7 +428,12 @@ async def _drivers_view(db) -> tuple[str, InlineKeyboardMarkup]:
         ])
     lines.append(f"\n✅ Tasdiqlangan haydovchilar: {len(approved)} ta")
     for u in approved[:20]:
-        lines.append(f"🚗 {u.full_name} — {u.phone}")
+        lines.append(f"🚗 {u.full_name} — {u.phone}\n    {_sub_status(u.paid_until)}")
+        rows.append([
+            InlineKeyboardButton(f"📅 +{SUB_CHOICES[0]} kun", callback_data=f"sub:{u.tg_id}:{SUB_CHOICES[0]}"),
+            InlineKeyboardButton(f"📅 +{SUB_CHOICES[1]} kun", callback_data=f"sub:{u.tg_id}:{SUB_CHOICES[1]}"),
+            InlineKeyboardButton("📅 Sana", callback_data=f"sd:{u.tg_id}"),
+        ])
         rows.append([InlineKeyboardButton(f"🚫 Bloklash: {u.first_name}",
                                           callback_data=f"dblk:{u.tg_id}")])
     if len(approved) > 20:
@@ -420,14 +473,15 @@ async def _stats_text(db) -> str:
         f"⛔ Bloklangan: {counts.get('blocked', 0)}\n\n"
         f"🛣 Ochiq yo'nalishlar: {open_routes} / {len(routes)}\n"
         f"🟢 Faol e'lonlar: {active}\n"
-        f"🪑 Jami bo'sh joy (oynadagi): {free_seats}"
+        f"🪑 Jami bo'sh joy (oynadagi): {free_seats}\n"
+        f"🏘 Boshqariladigan guruhlar: {len(GROUP_CHAT_IDS)}"
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Inline tugmalar (callback)
 # ══════════════════════════════════════════════════════════════════════════
-MANAGER_ACTIONS = {"ra", "rtg", "rdl", "dok", "dno", "dblk", "dunb", "sauto", "sper"}
+MANAGER_ACTIONS = {"ra", "rtg", "rdl", "dok", "dno", "dblk", "dunb", "sub", "sd", "sauto", "sper"}
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -437,7 +491,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     action = parts[0]
     db = _db(context)
 
-    # Ruxsatni tekshiramiz, keyin BIR MARTA answer() qilamiz
     if action in MANAGER_ACTIONS:
         if not await is_manager(context.bot, uid):
             await query.answer("Bu amal faqat adminlar uchun.", show_alert=True)
@@ -456,11 +509,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _manager_callback(query, context, action: str, parts: list[str]) -> None:
     db = _db(context)
-    board = _board(context)
+    hub = _hub(context)
 
     if action == "ra":
-        context.user_data["await"] = "route"
-        await query.message.reply_text("Yangi yo'nalishni yozing (masalan: Toshkent - Qibray):")
+        context.user_data["await"] = ("route",)
+        await query.message.reply_text(
+            "Yangi yo'nalishni yozing. Bir nechta bo'lsa, har birini yangi qatordan yozing.\n"
+            "Masalan:\nToshkent - Qibray\nQibray - Toshkent"
+        )
         return
 
     if action == "rtg":
@@ -472,14 +528,14 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
         await db.set_route_open(route_id, now_open)
         if not now_open:
             await db.stop_route_entries(route_id)
-        board.request_update()
+        hub.request_update_all()
         body, markup = await _routes_view(db)
         await _safe_edit(query, body, markup)
         return
 
     if action == "rdl":
         await db.delete_route(int(parts[1]))
-        board.request_update()
+        hub.request_update_all()
         body, markup = await _routes_view(db)
         await _safe_edit(query, body, markup)
         return
@@ -491,9 +547,16 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
             return
         await db.update_user_fields(target, status="approved")
         await _notify(context, target,
-                      "✅ Arizangiz tasdiqlandi! Endi 🚗 haydovchi panelidan foydalanishingiz mumkin.",
+                      "✅ Arizangiz tasdiqlandi! Obuna muddatini admin belgilagach ishlashingiz mumkin.",
                       driver_menu_kb())
-        await _safe_edit(query, f"✅ Tasdiqlandi: {user.full_name} — {user.phone}")
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"📅 +{SUB_CHOICES[0]} kun", callback_data=f"sub:{target}:{SUB_CHOICES[0]}"),
+            InlineKeyboardButton(f"📅 +{SUB_CHOICES[1]} kun", callback_data=f"sub:{target}:{SUB_CHOICES[1]}"),
+            InlineKeyboardButton("📅 Sana", callback_data=f"sd:{target}"),
+        ]])
+        await _safe_edit(query,
+                         f"✅ Tasdiqlandi: {user.full_name} — {user.phone}\n"
+                         "Obuna muddatini belgilang:", markup)
         return
 
     if action == "dno":
@@ -507,9 +570,8 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
 
     if action == "dblk":
         target = int(parts[1])
-        user = await db.get_user(target)
         await db.block_driver(target)
-        board.request_update()
+        hub.request_update_all()
         await _notify(context, target, "⛔ Huquqingiz cheklandi. E'lonlaringiz oynadan olib tashlandi.")
         body, markup = await _drivers_view(db)
         await _safe_edit(query, body, markup)
@@ -521,6 +583,25 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
         await _notify(context, target, "✅ Huquqingiz qayta tiklandi.")
         body, markup = await _drivers_view(db)
         await _safe_edit(query, body, markup)
+        return
+
+    if action == "sub":
+        target, days = int(parts[1]), int(parts[2])
+        await db.extend_subscription(target, days)
+        user = await db.get_user(target)
+        await _notify(context, target,
+                      f"📅 Obuna yangilandi: {_sub_status(user.paid_until)}")
+        hub.request_update_all()
+        body, markup = await _drivers_view(db)
+        await _safe_edit(query, body, markup)
+        return
+
+    if action == "sd":
+        target = int(parts[1])
+        context.user_data["await"] = ("sub", target)
+        await query.message.reply_text(
+            "Obuna tugash sanasini yozing (YYYY-MM-DD), masalan: 2026-11-30"
+        )
         return
 
     if action == "sauto":
@@ -542,54 +623,53 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
 
 async def _driver_callback(query, context, uid: int, action: str, parts: list[str]) -> None:
     db = _db(context)
-    board = _board(context)
+    hub = _hub(context)
+    user = await db.get_user(uid)
 
-    # Yo'nalish tanlandi -> bo'sh joy tanlash
+    if action in ("rt", "ns") and not _subscribed(user):
+        await _safe_edit(query, f"⛔ Obuna tugagan yoki belgilanmagan.\n{_sub_status(user.paid_until)}")
+        return
+
     if action == "rt":
         route_id = int(parts[1])
         route = await db.get_route(route_id)
         if not route or not route["is_open"]:
             await _safe_edit(query, "Bu yo'nalish hozir yopiq.")
             return
-        rows = _seat_rows(f"ns:{route_id}")
         await _safe_edit(
             query,
             f"📍 {route['from_place']} → {route['to_place']}\n\nNechta bo'sh joy bor?",
-            InlineKeyboardMarkup(rows),
+            InlineKeyboardMarkup(_seat_rows(f"ns:{route_id}")),
         )
         return
 
-    # Yangi e'lon: yo'nalish + bo'sh joy
     if action == "ns":
         route_id, seats = int(parts[1]), int(parts[2])
         route = await db.get_route(route_id)
         if not route or not route["is_open"]:
             await _safe_edit(query, "Bu yo'nalish hozir yopiq.")
             return
-        await db.start_entry(uid, route_id, seats)
-        board.request_update()
-        await _safe_edit(
-            query,
-            f"🟢 E'lon guruhga joylandi:\n📍 {route['from_place']} → {route['to_place']}\n"
-            f"{seats_label(seats)}",
-        )
+        _, replaced = await db.start_entry(uid, route_id, seats)
+        hub.request_update_all()
+        text = (f"🟢 E'lon guruhga joylandi:\n📍 {route['from_place']} → {route['to_place']}\n"
+                f"{seats_label(seats)}")
+        if replaced:
+            text += "\n\nℹ️ Oldingi e'loningiz to'xtatildi: " + ", ".join(replaced)
+        await _safe_edit(query, text)
         return
 
-    # Bo'sh joy +1 / -1
     if action == "ea":
         entry = await db.get_entry_by_id(int(parts[1]))
         if not entry or entry["driver_id"] != uid or not entry["active"]:
             await _safe_edit(query, "Bu e'lon topilmadi yoki to'xtatilgan.")
             return
-        delta = int(parts[2])
-        new_seats = min(max(entry["seats"] + delta, 0), max(SEAT_OPTIONS))
+        new_seats = min(max(entry["seats"] + int(parts[2]), 0), max(SEAT_OPTIONS))
         await db.set_entry_seats(entry["id"], new_seats)
-        board.request_update()
+        hub.request_update_all()
         body, markup = await _my_entries_view(db, uid)
         await _safe_edit(query, body, markup)
         return
 
-    # Aniq son tanlash menyusi
     if action == "ee":
         entry = await db.get_entry_by_id(int(parts[1]))
         if not entry or entry["driver_id"] != uid or not entry["active"]:
@@ -599,43 +679,38 @@ async def _driver_callback(query, context, uid: int, action: str, parts: list[st
                          InlineKeyboardMarkup(_seat_rows(f"es:{entry['id']}")))
         return
 
-    # Aniq son saqlash
     if action == "es":
         entry = await db.get_entry_by_id(int(parts[1]))
         if not entry or entry["driver_id"] != uid or not entry["active"]:
             await _safe_edit(query, "Bu e'lon topilmadi yoki to'xtatilgan.")
             return
         await db.set_entry_seats(entry["id"], int(parts[2]))
-        board.request_update()
+        hub.request_update_all()
         body, markup = await _my_entries_view(db, uid)
         await _safe_edit(query, body, markup)
         return
 
-    # Bitta e'lonni to'xtatish
     if action == "st":
         entry = await db.get_entry_by_id(int(parts[1]))
         if not entry or entry["driver_id"] != uid:
             await _safe_edit(query, "Bu e'lon topilmadi.")
             return
         await db.stop_entry(entry["id"])
-        board.request_update()
+        hub.request_update_all()
         await _safe_edit(query, "🔴 E'lon to'xtatildi va guruh oynasidan olib tashlandi.")
         return
 
-    # Hammasini to'xtatish
     if action == "sa":
         count = await db.stop_all_for_driver(uid)
         if count:
-            board.request_update()
+            hub.request_update_all()
         await _safe_edit(query, f"🔴 {count} ta e'lon to'xtatildi.")
         return
 
 
 def _seat_rows(prefix: str) -> list[list[InlineKeyboardButton]]:
     """0..8 raqamli tugmalar, 3 tadan qator. prefix: 'ns:<rid>' yoki 'es:<eid>'."""
-    buttons = [
-        InlineKeyboardButton(str(n), callback_data=f"{prefix}:{n}") for n in SEAT_OPTIONS
-    ]
+    buttons = [InlineKeyboardButton(str(n), callback_data=f"{prefix}:{n}") for n in SEAT_OPTIONS]
     return [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
 
 
@@ -643,20 +718,23 @@ def _seat_rows(prefix: str) -> list[list[InlineKeyboardButton]]:
 # Guruh xabarlari
 # ══════════════════════════════════════════════════════════════════════════
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Guruhdagi har bir xabar — oxirgi xabar holatini kuzatish uchun."""
     msg = update.effective_message
-    if msg is None:
+    if msg is None or update.effective_user is None:
         return
-    if update.effective_user and update.effective_user.id == context.bot.id:
+    if update.effective_user.id == context.bot.id:
         return
-    await _board(context).on_group_message(msg.message_id)
+    board = _hub(context).get(update.effective_chat.id)
+    if board:
+        await board.on_group_message(msg.message_id)
 
 
 async def cmd_group_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Guruhda /yangila — admin oynani darhol pastga qayta yuboradi."""
+    """Guruhda /yangila — admin shu guruh oynasini darhol pastga qayta yuboradi."""
     if not await is_manager(context.bot, update.effective_user.id):
         return
-    await _board(context).force_repost()
+    board = _hub(context).get(update.effective_chat.id)
+    if board:
+        await board.force_repost()
     try:
         await update.effective_message.delete()
     except TelegramError:
