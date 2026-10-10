@@ -70,13 +70,14 @@ def test_expired_subscription_hidden_from_board(tmp_path):
     run(go())
 
 
-def test_extend_subscription_stacks_from_current_end(tmp_path):
+def test_set_subscription_days_replaces_old_end(tmp_path):
     async def go():
         db = await _db(tmp_path)
         await _driver(db, 1, paid_days=10)
-        before = (await db.get_user(1)).paid_until
-        new_until = await db.extend_subscription(1, 30)
-        assert new_until - before == 30 * DAY
+        until = await db.set_subscription_days(1, 30)
+        now = int(time.time())
+        assert abs((until - now) - 30 * DAY) < 5          # hozirdan boshlab, eskisi bekor
+        assert (await db.get_user(1)).paid_until == until
         await db.close()
     run(go())
 
@@ -168,4 +169,32 @@ def test_same_board_content_for_all_groups(tmp_path):
         t2 = render_parts(routes_to_views(rows), now_local())
         assert t1 == t2
         await db.close()
+    run(go())
+
+
+def test_repost_threshold_default_and_change(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        try:
+            assert await db.repost_after_msgs() == 3
+            await db.set_setting("repost_after_msgs", "5")
+            assert await db.repost_after_msgs() == 5
+        finally:
+            await db.close()
+    run(go())
+
+
+def test_group_pause_flag(tmp_path):
+    async def go():
+        db = await _db(tmp_path)
+        try:
+            await db.add_group(-100333, "G3")
+            await db.set_group_paused(-100333, True)
+            g = [x for x in await db.list_groups() if x["chat_id"] == -100333][0]
+            assert g["paused"] == 1 or g["paused"] is True
+            await db.set_group_paused(-100333, False)
+            g = [x for x in await db.list_groups() if x["chat_id"] == -100333][0]
+            assert not g["paused"]
+        finally:
+            await db.close()
     run(go())

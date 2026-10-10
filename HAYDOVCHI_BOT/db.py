@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
     first_name  TEXT NOT NULL DEFAULT '',
     last_name   TEXT NOT NULL DEFAULT '',
     phone       TEXT NOT NULL DEFAULT '',
-    status      TEXT NOT NULL DEFAULT 'new',      -- new | pending | approved | blocked
+    status      TEXT NOT NULL DEFAULT 'new',      -- new | pending | approved | paused | blocked
     paid_until  INTEGER NOT NULL DEFAULT 0,       -- obuna tugash vaqti (epoch), 0 = yo'q
     warned_for  INTEGER NOT NULL DEFAULT 0,       -- qaysi muddat uchun ogohlantirilgan
     created_at  INTEGER NOT NULL
@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS groups (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- qo'shilish tartibi uchun
     chat_id     INTEGER NOT NULL UNIQUE,
     title       TEXT NOT NULL DEFAULT '',
+    paused      INTEGER NOT NULL DEFAULT 0,           -- 1 = avtomatik yangilanish to'xtatilgan
     created_at  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (
@@ -73,12 +74,10 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 DEFAULT_SETTINGS = {
-    "auto_stop_hours": "2",      # avtomatik to'xtash (1..4 soat)
-    "periodic_minutes": "15",    # vaqt bo'yicha tekshiruv oralig'i
+    "auto_stop_hours": "2",       # avtomatik to'xtash (1..4 soat)
+    "repost_after_msgs": "3",     # guruhda shuncha yangi xabar bo'lsa, oyna pastga tushadi
 }
 
-DEBOUNCE_SEC = 30          # o'zgarishlarni shu vaqt yig'ib bitta yangilanish
-REPOST_MIN_SEC = 120       # ikki qayta yuborish orasidagi minimal vaqt
 WARN_BEFORE_SEC = 3 * 86400  # obuna tugashidan necha kun oldin ogohlantirish
 
 
@@ -156,8 +155,11 @@ class Database:
 
     # ── guruhlar (admin botdan qo'shadi/o'chiradi) ─────────────────────
     async def list_groups(self) -> list[dict]:
-        rows = await self._all("SELECT chat_id, title FROM groups ORDER BY id")
+        rows = await self._all("SELECT chat_id, title, paused FROM groups ORDER BY id")
         return [dict(r) for r in rows]
+
+    async def set_group_paused(self, chat_id: int, paused: bool) -> None:
+        await self._exec("UPDATE groups SET paused=? WHERE chat_id=?", (1 if paused else 0, chat_id))
 
     async def group_ids(self) -> list[int]:
         return [g["chat_id"] for g in await self.list_groups()]
@@ -192,8 +194,8 @@ class Database:
     async def auto_stop_hours(self) -> int:
         return int(await self.get_setting("auto_stop_hours"))
 
-    async def periodic_minutes(self) -> int:
-        return int(await self.get_setting("periodic_minutes"))
+    async def repost_after_msgs(self) -> int:
+        return int(await self.get_setting("repost_after_msgs"))
 
     # ── guruh holati (har bir guruh uchun) ─────────────────────────────
     async def get_chat_value(self, chat_id: int, key: str, default: int = 0) -> int:
@@ -241,12 +243,13 @@ class Database:
         rows = await self._all("SELECT status, COUNT(*) AS c FROM users GROUP BY status")
         return {r["status"]: r["c"] for r in rows}
 
-    async def extend_subscription(self, tg_id: int, days: int) -> int:
-        """Obunani 'days' kunga uzaytiradi: hozirgi tugashidan (yoki hozirdan) boshlab."""
-        user = await self.get_user(tg_id)
-        base = max(int(time.time()), user.paid_until if user else 0)
-        new_until = base + days * 86400
-        await self.update_user_fields(tg_id, paid_until=new_until)
+    async def set_subscription_days(self, tg_id: int, days: int) -> int:
+        """
+        Obuna muddatini belgilaydi: hozirdan boshlab 'days' kun.
+        Eski muddat bekor bo'ladi (qo'shilmaydi).
+        """
+        new_until = int(time.time()) + days * 86400
+        await self.update_user_fields(tg_id, paid_until=new_until, warned_for=0)
         return new_until
 
     async def set_subscription_end(self, tg_id: int, ts: int) -> None:

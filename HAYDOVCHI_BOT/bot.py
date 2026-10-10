@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from board import BoardHub, BoardManager
+from board import SCAN_SEC, BoardHub, BoardManager
 from config import ADMIN_ID, BOT_TOKEN, DB_PATH, GROUP_CHAT_IDS
 from db import WARN_BEFORE_SEC, Database, ts_to_date_str
 from handlers import (
@@ -43,7 +43,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("haydovchi")
 
-CHECK_SEC = 60  # avto-to'xtash va obuna tekshiruvi oralig'i
+MAINTENANCE_SEC = 60  # avto-to'xtash va obuna tekshiruvi
 
 
 async def _notify_driver(app: Application, uid: int, text: str) -> None:
@@ -58,7 +58,7 @@ async def _maintenance_loop(app: Application) -> None:
     Har daqiqada:
     1) Uzoq yangilanmagan e'lonlarni avtomatik to'xtatadi.
     2) Obuna muddati tugagan haydovchilarning e'lonlarini to'xtatadi.
-    3) Obuna tugashiga 3 kun qolganda ogohlantiradi.
+    3) Obuna tugashiga 3 kun qolganda bir marta ogohlantiradi.
     """
     db: Database = app.bot_data["db"]
     hub: BoardHub = app.bot_data["hub"]
@@ -68,8 +68,7 @@ async def _maintenance_loop(app: Application) -> None:
             changed = False
 
             hours = await db.auto_stop_hours()
-            stale = await db.stale_entries(now - hours * 3600)
-            for e in stale:
+            for e in await db.stale_entries(now - hours * 3600):
                 await db.stop_entry(e["id"])
                 await _notify_driver(
                     app, e["driver_id"],
@@ -79,8 +78,7 @@ async def _maintenance_loop(app: Application) -> None:
                 )
                 changed = True
 
-            expired = await db.subscription_expired_with_entries(now)
-            for e in expired:
+            for e in await db.subscription_expired_with_entries(now):
                 await db.stop_entry(e["id"])
                 await _notify_driver(
                     app, e["driver_id"],
@@ -99,24 +97,23 @@ async def _maintenance_loop(app: Application) -> None:
                 await db.update_user_fields(u.tg_id, warned_for=u.paid_until)
 
             if changed:
-                log.info("Avtomatik to'xtatildi: %d ta e'lon", len(stale) + len(expired))
-                hub.request_update_all()
+                hub.mark_all_dirty()
         except Exception:
             log.exception("Tekshiruv tsiklida xato")
-        await asyncio.sleep(CHECK_SEC)
+        await asyncio.sleep(MAINTENANCE_SEC)
 
 
-async def _periodic_loop(app: Application) -> None:
-    """Guruhlarda yangi xabar bo'lsa, oynalarni vaqti-vaqti bilan tekshiradi."""
+async def _scanner_loop(app: Application) -> None:
+    """Har 30 soniyada: o'zgarish bo'lsa yoki yetarli yangi xabar bo'lsa oynani yangilaydi."""
     db: Database = app.bot_data["db"]
     hub: BoardHub = app.bot_data["hub"]
     while True:
         try:
-            minutes = await db.periodic_minutes()
+            threshold = await db.repost_after_msgs()
+            await hub.scan_all(threshold)
         except Exception:
-            minutes = 15
-        await asyncio.sleep(minutes * 60)
-        await hub.periodic_all()
+            log.exception("Skaner tsiklida xato")
+        await asyncio.sleep(SCAN_SEC)
 
 
 async def post_init(app: Application) -> None:
@@ -127,17 +124,16 @@ async def post_init(app: Application) -> None:
     for chat_id in GROUP_CHAT_IDS:
         await db.add_group(chat_id, "")
     hub = BoardHub()
-    for chat_id in await db.group_ids():
-        hub.add(BoardManager(app.bot, db, chat_id, me.username))
+    for g in await db.list_groups():
+        hub.add(BoardManager(app.bot, db, g["chat_id"], me.username, paused=bool(g["paused"])))
     app.bot_data["db"] = db
     app.bot_data["hub"] = hub
+    app.bot_data["bot_username"] = me.username
     app.bot_data["tasks"] = [
         asyncio.create_task(_maintenance_loop(app)),
-        asyncio.create_task(_periodic_loop(app)),
+        asyncio.create_task(_scanner_loop(app)),
     ]
-    # Qayta ishga tushganda oynalarni darhol holatga keltiramiz
-    hub.request_update_all()
-    log.info("Bot ishga tushdi: @%s, guruhlar=%s", me.username, await db.group_ids())
+    log.info("Bot ishga tushdi: @%s, guruhlar=%s", me.username, list(hub.boards))
 
 
 async def post_shutdown(app: Application) -> None:

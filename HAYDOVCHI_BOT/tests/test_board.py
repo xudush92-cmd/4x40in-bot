@@ -1,13 +1,12 @@
 """
-Guruh oynasi qoidalarini tekshiradi: tahrirlash vs pastga qayta yuborish,
-eski nusxani o'chirish, jim yuborish.
+Guruh oynasi qoidalarini tekshiradi: 30 soniyalik skaner, tahrirlash vs pastga
+qayta yuborish, eski nusxani o'chirish, jim yuborish, to'xtatilgan guruh.
 """
 
 import asyncio
 import time
 from types import SimpleNamespace
 
-import board as board_mod
 from board import BoardManager
 from db import Database
 
@@ -47,19 +46,22 @@ async def _seed(db):
     await db.start_entry(1, 1, 2)
 
 
-def test_first_sync_sends_pinless_message_silently(tmp_path, monkeypatch):
+def test_first_sync_sends_silently(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
-        bot = FakeBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()
-        assert len(bot.sent) == 1
-        assert bot.sent[0][2] is True               # disable_notification
-        assert "Ali Valiyev" in bot.sent[0][1]
-        assert await db.get_board(-100) == [(0, bot.sent[0][0])]
-        await db.close()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            assert len(bot.sent) == 1
+            assert bot.sent[0][2] is True               # disable_notification
+            assert "Ali Valiyev" in bot.sent[0][1]
+            assert "+998901234567" in bot.sent[0][1]    # to'liq telefon
+            assert await db.get_board(-100) == [(0, bot.sent[0][0])]
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
@@ -68,79 +70,144 @@ def test_edit_in_place_when_board_is_last_message(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
-        bot = FakeBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()                              # yuborildi
-        sent_before = len(bot.sent)
-        await db.start_entry(1, 1, 3)                # o'zgarish
-        await bm.sync()                              # oyna hali pastda -> tahrir
-        assert len(bot.sent) == sent_before          # yangi xabar yo'q
-        assert len(bot.edited) == 1
-        assert bot.edited[0][0] == (await db.get_board(-100))[0][1]
-        await db.close()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            sent_before = len(bot.sent)
+            await db.start_entry(1, 1, 3)           # o'zgarish
+            bm.mark_dirty()
+            await bm.scan(3)                        # oyna hali pastda -> tahrir
+            assert len(bot.sent) == sent_before     # yangi xabar yo'q
+            assert len(bot.edited) == 1
+            assert bot.edited[0][0] == (await db.get_board(-100))[0][1]
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
 
-def test_repost_when_other_messages_came_after(tmp_path, monkeypatch):
-    monkeypatch.setattr(board_mod, "REPOST_MIN_SEC", 0)
-
+def test_no_change_no_update(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
-        bot = FakeBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()
-        old_mid = (await db.get_board(-100))[0][1]
-        await bm.on_group_message(9001)              # boshqa odam yozdi
-        await bm.sync()
-        new_mid = (await db.get_board(-100))[0][1]
-        assert new_mid != old_mid                    # qayta yuborildi
-        assert old_mid in bot.deleted                # eskisi o'chirildi
-        assert bot.sent[-1][2] is True               # jim yuborildi
-        assert await db.get_chat_value(-100, "msgs_since_repost") == 0
-        await db.close()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            sent, edited = len(bot.sent), len(bot.edited)
+            await bm.scan(3)                        # na o'zgarish, na 3 ta xabar
+            assert len(bot.sent) == sent and len(bot.edited) == edited
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
 
-def test_min_interval_defers_repost(tmp_path, monkeypatch):
-    monkeypatch.setattr(board_mod, "REPOST_MIN_SEC", 3600)
-
+def test_two_messages_do_not_repost_three_do(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
-        bot = FakeBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()
-        sent_before = len(bot.sent)
-        await bm.on_group_message(9001)
-        await bm.sync()                              # oraliq hali o'tmagan -> qayta yubormaydi
-        assert len(bot.sent) == sent_before
-        assert bm._timer is not None                 # keyinroq rejalashtirildi
-        bm._timer.cancel()
-        await db.close()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            old_mid = (await db.get_board(-100))[0][1]
+            await bm.on_group_message(9001)
+            await bm.on_group_message(9002)
+            await bm.scan(3)                        # 2 < 3 -> qayta yubormaydi
+            assert (await db.get_board(-100))[0][1] == old_mid
+            await bm.on_group_message(9003)
+            await bm.scan(3)                        # 3 >= 3 -> pastga tushadi
+            new_mid = (await db.get_board(-100))[0][1]
+            assert new_mid != old_mid
+            assert old_mid in bot.deleted           # eskisi o'chirildi
+            assert bot.sent[-1][2] is True          # jim yuborildi
+            assert await db.get_chat_value(-100, "msgs_since_repost") == 0
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
 
-def test_force_repost_always_resends(tmp_path, monkeypatch):
-    monkeypatch.setattr(board_mod, "REPOST_MIN_SEC", 3600)
-
+def test_driver_change_during_busy_chat_updates_on_scan(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
-        bot = FakeBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()
-        await bm.force_repost()
-        assert len(bot.sent) == 2
-        assert len(bot.deleted) == 1
-        await db.close()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            old_mid = (await db.get_board(-100))[0][1]
+            await bm.on_group_message(9001)         # boshqa xabar: oyna endi oxirgi emas
+            await db.update_user_fields(1, first_name="Anvar")
+            bm.mark_dirty()
+            await bm.scan(3)                        # o'zgarish bor -> yangilanadi (repost)
+            assert "Anvar Valiyev" in bot.sent[-1][1]
+            assert old_mid in bot.deleted
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_paused_group_is_not_scanned(tmp_path):
+    async def scenario():
+        db = _setup(tmp_path)
+        await db.open()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot", paused=True)
+            await bm.scan(3)
+            assert bot.sent == [] and bot.edited == []
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_failed_update_keeps_dirty_flag(tmp_path):
+    async def scenario():
+        db = _setup(tmp_path)
+        await db.open()
+        try:
+            await _seed(db)
+
+            class DownBot(FakeBot):
+                async def send_message(self, *a, **kw):
+                    raise RuntimeError("network down")
+
+            bm = BoardManager(DownBot(), db, -100, "haydovchi_bot")
+            try:
+                await bm.sync()
+            except RuntimeError:
+                pass
+            assert bm.dirty is True                 # keyingi skanerda qayta urinadi
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_force_repost_always_resends(tmp_path):
+    async def scenario():
+        db = _setup(tmp_path)
+        await db.open()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            await bm.force_repost()
+            assert len(bot.sent) == 2
+            assert len(bot.deleted) == 1
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
@@ -149,19 +216,22 @@ def test_manual_delete_recovers_by_repost(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
+        try:
+            await _seed(db)
 
-        class FlakyBot(FakeBot):
-            async def edit_message_text(self, chat_id, message_id, text, **kw):
-                from telegram.error import BadRequest
-                raise BadRequest("Message to edit not found")
+            class FlakyBot(FakeBot):
+                async def edit_message_text(self, chat_id, message_id, text, **kw):
+                    from telegram.error import BadRequest
+                    raise BadRequest("Message to edit not found")
 
-        bot = FlakyBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()                              # 1-marta yuborildi
-        await bm.sync()                              # edit xato -> qayta yuboradi
-        assert len(bot.sent) == 2
-        await db.close()
+            bot = FlakyBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()                         # 1-marta yuborildi
+            bm.mark_dirty()
+            await bm.sync()                         # edit xato -> qayta yuboradi
+            assert len(bot.sent) == 2
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
 
@@ -170,14 +240,17 @@ def test_stopped_entry_disappears_from_board(tmp_path):
     async def scenario():
         db = _setup(tmp_path)
         await db.open()
-        await _seed(db)
-        bot = FakeBot()
-        bm = BoardManager(bot, db, -100, "haydovchi_bot")
-        await bm.sync()
-        await db.stop_entry((await db.get_entry(1, 1))["id"])
-        await bm.sync()
-        assert "Ali Valiyev" not in bot.edited[-1][1]
-        assert "Hozircha faol haydovchi yo'q" in bot.edited[-1][1]
-        await db.close()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            await db.stop_entry((await db.get_entry(1, 1))["id"])
+            bm.mark_dirty()
+            await bm.sync()
+            assert "Ali Valiyev" not in bot.edited[-1][1]
+            assert "Hozircha faol haydovchi yo'q" in bot.edited[-1][1]
+        finally:
+            await db.close()
 
     asyncio.run(scenario())
