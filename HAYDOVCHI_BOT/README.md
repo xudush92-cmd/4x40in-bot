@@ -23,7 +23,7 @@ python bot.py
 
 ## Guruhlarni boshqarish
 
-Guruhlarni `.env` ga yozish shart emas. Super admin yoki guruh admini botda
+Guruhlarni `.env` ga yozish shart emas. Faqat super admin (`ADMIN_ID`) botda
 **🏘 Guruhlar** bo'limidan boshqaradi:
 
 - **➕ Yangi guruh** — Telegram botlar guruh yarata olmaydi. Avval Telegram'da guruh oching,
@@ -60,9 +60,10 @@ Hech qanday o'zgarish va yetarli yangi xabar bo'lmasa — yangilanmaydi.
 
 ## Rollar
 
-### Boshqaruv paneli (super admin va guruh adminlari)
+### Boshqaruv paneli (faqat super admin)
 
-- Super admin (`ADMIN_ID`) va guruhlardagi admin/creator avtomatik boshqaruvchi hisoblanadi.
+- Boshqaruv faqat super admin (`ADMIN_ID`) uchun. Guruh adminlari botda boshqaruv huquqiga ega emas.
+- Guruhda `/yangila` buyrug'i ham faqat super admin uchun ishlaydi.
 - **🛣 Yo'nalishlar** — qo'shish (`Toshkent - Qibray`), ochish/yopish, o'chirish (Ha/Yo'q).
   Ajratuvchi sifatida `-`, `–`, `—`, `->`, `→`, `/`, `|` ishlaydi.
   Yo'nalish yopilsa, uning e'lonlari to'xtaydi.

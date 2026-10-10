@@ -2,7 +2,7 @@
 handlers.py — bot buyruqlari, tugmalar, ro'yxatdan o'tish, boshqaruv paneli, guruh xabarlari.
 
 Rollar:
-- Super admin (ADMIN_ID) va guruhlardagi adminlar (Telegram admin huquqi) — boshqaruv paneli.
+- Super admin (ADMIN_ID) — boshqaruv paneli (guruh adminlari boshqaruvga kirmaydi).
   Admin haydovchi ism/telefonini o'zgartira olmaydi.
 - Haydovchi — ro'yxatdan o'tadi, admin tasdiqlaydi, muddatni admin belgilaydi, so'ng e'lon beradi.
   Ism va telefonini faqat o'zi tahrirlaydi.
@@ -99,17 +99,8 @@ def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 async def is_manager(context, uid: int) -> bool:
-    """Super admin, yoki boshqariladigan guruhlardan birida admin/creator."""
-    if uid == ADMIN_ID:
-        return True
-    for g in await _db(context).list_groups():
-        try:
-            member = await context.bot.get_chat_member(g["chat_id"], uid)
-            if member.status in ("creator", "administrator"):
-                return True
-        except TelegramError:
-            continue
-    return False
+    """Boshqaruv faqat super admin (ADMIN_ID) uchun. Guruh adminlari boshqaruvga kirmaydi."""
+    return uid == ADMIN_ID
 
 
 async def _safe_edit(query, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
@@ -416,7 +407,7 @@ async def _profile_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Boshqaruv paneli (super admin + guruh adminlari)
+# Boshqaruv paneli (faqat super admin)
 # ══════════════════════════════════════════════════════════════════════════
 async def _manager_text(update, context, text: str) -> None:
     db = _db(context)
