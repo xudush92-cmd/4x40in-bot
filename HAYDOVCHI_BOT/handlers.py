@@ -45,9 +45,13 @@ BTN_CANCEL = "❌ Bekor qilish"
 
 A_GROUPS = "🏘 Guruhlar"
 A_DRIVERS = "👥 Haydovchilar"
+A_ROUTES = "🛣 Yo'nalishlar"
+A_SETTINGS = "⚙️ Sozlamalar"
+A_REFRESH = "📢 Oynani yangilash"
 A_STATS = "📊 Statistika"
 
-MENU_BUTTONS = {BTN_START, BTN_STOP, BTN_MY, BTN_PROFILE, A_GROUPS, A_DRIVERS, A_STATS}
+MENU_BUTTONS = {BTN_START, BTN_STOP, BTN_MY, BTN_PROFILE,
+                A_GROUPS, A_DRIVERS, A_ROUTES, A_SETTINGS, A_REFRESH, A_STATS}
 
 AUTO_STOP_CHOICES = [1, 2, 3, 4]     # soat
 REPOST_CHOICES = [3, 5, 10]          # yangi xabar soni
@@ -66,7 +70,10 @@ def driver_menu_kb() -> ReplyKeyboardMarkup:
 
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([[A_GROUPS, A_DRIVERS], [A_STATS]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        [[A_GROUPS, A_DRIVERS], [A_ROUTES, A_SETTINGS], [A_REFRESH, A_STATS]],
+        resize_keyboard=True,
+    )
 
 
 def cancel_kb() -> ReplyKeyboardMarkup:
@@ -475,6 +482,15 @@ async def _manager_text(update, context, text: str) -> None:
     if text == A_GROUPS:
         body, markup = await _groups_list_view(db)
         await msg.reply_text(body, reply_markup=markup)
+    elif text == A_ROUTES:
+        body, markup = await _group_picker(db, "gr", "🛣 Qaysi guruh yo'nalishlari?")
+        await msg.reply_text(body, reply_markup=markup)
+    elif text == A_SETTINGS:
+        body, markup = await _group_picker(db, "gs", "⚙️ Qaysi guruh sozlamalari?")
+        await msg.reply_text(body, reply_markup=markup)
+    elif text == A_REFRESH:
+        await _hub(context).force_all()
+        await msg.reply_text("✅ Barcha guruh oynalari pastga qayta yuborildi.")
     elif text == A_DRIVERS:
         body, markup = await _drivers_overview(db)
         await msg.reply_text(body, reply_markup=markup)
@@ -482,6 +498,19 @@ async def _manager_text(update, context, text: str) -> None:
         await msg.reply_text(await _stats_text(db))
     else:
         await msg.reply_text("🛠 Boshqaruv paneli", reply_markup=admin_menu_kb())
+
+
+# ── Guruh tanlash (yo'nalish / sozlama bo'limlari uchun) ──────────────
+async def _group_picker(db, prefix: str, title: str) -> tuple[str, InlineKeyboardMarkup]:
+    groups = await db.list_groups()
+    if not groups:
+        return ("Avval guruh qo'shing (🏘 Guruhlar).",
+                InlineKeyboardMarkup([[InlineKeyboardButton("🏘 Guruhlar", callback_data="gl")]]))
+    rows = []
+    for i, g in enumerate(groups, start=1):
+        label = f"{i}. {(g['title'] or str(g['chat_id']))[:28]}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"{prefix}:{g['chat_id']}")])
+    return title, InlineKeyboardMarkup(rows)
 
 
 # ── Guruhlar ro'yxati va guruh menyusi ─────────────────────────────────
