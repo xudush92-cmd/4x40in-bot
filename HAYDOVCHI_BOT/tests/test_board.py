@@ -38,10 +38,11 @@ def _setup(tmp_path):
 
 
 async def _seed(db):
-    await db.add_route("Toshkent", "Qibray")
+    await db.add_group(-100, "Guruh 1")
+    await db.add_route(-100, "Toshkent", "Qibray")
     await db.ensure_user(1)
     await db.update_user_fields(1, first_name="Ali", last_name="Valiyev",
-                                phone="+998901234567", status="approved",
+                                phone="+998901234567", status="approved", group_id=-100,
                                 paid_until=int(time.time()) + 30 * 86400)
     await db.start_entry(1, 1, 2)
 
@@ -78,7 +79,7 @@ def test_edit_in_place_when_board_is_last_message(tmp_path):
             sent_before = len(bot.sent)
             await db.start_entry(1, 1, 3)           # o'zgarish
             bm.mark_dirty()
-            await bm.scan(3)                        # oyna hali pastda -> tahrir
+            await bm.scan()                        # oyna hali pastda -> tahrir
             assert len(bot.sent) == sent_before     # yangi xabar yo'q
             assert len(bot.edited) == 1
             assert bot.edited[0][0] == (await db.get_board(-100))[0][1]
@@ -98,7 +99,7 @@ def test_no_change_no_update(tmp_path):
             bm = BoardManager(bot, db, -100, "haydovchi_bot")
             await bm.sync()
             sent, edited = len(bot.sent), len(bot.edited)
-            await bm.scan(3)                        # na o'zgarish, na 3 ta xabar
+            await bm.scan()                        # na o'zgarish, na 3 ta xabar
             assert len(bot.sent) == sent and len(bot.edited) == edited
         finally:
             await db.close()
@@ -118,10 +119,10 @@ def test_two_messages_do_not_repost_three_do(tmp_path):
             old_mid = (await db.get_board(-100))[0][1]
             await bm.on_group_message(9001)
             await bm.on_group_message(9002)
-            await bm.scan(3)                        # 2 < 3 -> qayta yubormaydi
+            await bm.scan()                        # 2 < 3 -> qayta yubormaydi
             assert (await db.get_board(-100))[0][1] == old_mid
             await bm.on_group_message(9003)
-            await bm.scan(3)                        # 3 >= 3 -> pastga tushadi
+            await bm.scan()                        # 3 >= 3 -> pastga tushadi
             new_mid = (await db.get_board(-100))[0][1]
             assert new_mid != old_mid
             assert old_mid in bot.deleted           # eskisi o'chirildi
@@ -146,7 +147,7 @@ def test_driver_change_during_busy_chat_updates_on_scan(tmp_path):
             await bm.on_group_message(9001)         # boshqa xabar: oyna endi oxirgi emas
             await db.update_user_fields(1, first_name="Anvar")
             bm.mark_dirty()
-            await bm.scan(3)                        # o'zgarish bor -> yangilanadi (repost)
+            await bm.scan()                        # o'zgarish bor -> yangilanadi (repost)
             assert "Anvar Valiyev" in bot.sent[-1][1]
             assert old_mid in bot.deleted
         finally:
@@ -162,8 +163,9 @@ def test_paused_group_is_not_scanned(tmp_path):
         try:
             await _seed(db)
             bot = FakeBot()
-            bm = BoardManager(bot, db, -100, "haydovchi_bot", paused=True)
-            await bm.scan(3)
+            await db.set_group_paused(-100, True)
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.scan()
             assert bot.sent == [] and bot.edited == []
         finally:
             await db.close()
@@ -250,6 +252,45 @@ def test_stopped_entry_disappears_from_board(tmp_path):
             await bm.sync()
             assert "Ali Valiyev" not in bot.edited[-1][1]
             assert "Hozircha faol haydovchi yo'q" in bot.edited[-1][1]
+        finally:
+            await db.close()
+
+    asyncio.run(scenario())
+
+
+def test_board_keyboard_has_taxi_button_when_enabled(tmp_path):
+    async def scenario():
+        db = _setup(tmp_path)
+        await db.open()
+        try:
+            await _seed(db)
+            bot = FakeBot()
+            captured = []
+            orig = bot.send_message
+
+            async def spy(chat_id, text, reply_markup=None, **kw):
+                captured.append(reply_markup)
+                return await orig(chat_id, text, reply_markup=reply_markup, **kw)
+
+            orig_edit = bot.edit_message_text
+
+            async def edit_spy(chat_id, message_id, text, reply_markup=None, **kw):
+                captured.append(reply_markup)
+                return await orig_edit(chat_id, message_id, text, reply_markup=reply_markup, **kw)
+
+            bot.send_message = spy
+            bot.edit_message_text = edit_spy
+            bm = BoardManager(bot, db, -100, "haydovchi_bot")
+            await bm.sync()
+            labels = [b.text for row in captured[-1].inline_keyboard for b in row]
+            assert "🚕 Taksi chaqirish" in labels
+            assert "🚗 Haydovchi bo'lish" in labels
+
+            await db.set_group_field(-100, "taxi_enabled", 0)
+            bm.mark_dirty()
+            await bm.sync()                      # oyna oxirgi xabar -> tahrirlanadi
+            labels = [b.text for row in captured[-1].inline_keyboard for b in row]
+            assert "🚕 Taksi chaqirish" not in labels
         finally:
             await db.close()
 

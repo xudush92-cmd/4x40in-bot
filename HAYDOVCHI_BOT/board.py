@@ -4,7 +4,7 @@ board.py — guruh ma'lumot oynalarini boshqarish (bir nechta guruh uchun).
 Qoida (skaner):
 - Har SCAN_SEC (30) soniyada skaner ishlaydi.
 - Haydovchi ma'lumoti o'zgargan bo'lsa (dirty) — oyna yangilanadi.
-- Guruhda REPOST_AFTER_MSGS (standart 3) ta yangi xabar yozilgan bo'lsa — oyna pastga tushadi.
+- Guruhda o'z sozlamasidagi (standart 3) ta yangi xabar yozilgan bo'lsa — oyna pastga tushadi.
 - Yangi xabar bo'lmasa va o'zgarish bo'lmasa — hech narsa qilinmaydi.
 
 Yangilash turi:
@@ -12,6 +12,8 @@ Yangilash turi:
 - Aks holda — PASTGA QAYTA YUBORILADI, eskisi o'chadi, yangisi jim yuboriladi.
 - Oyna qo'lda o'chirilgan bo'lsa — darhol tiklanadi.
 - To'xtatib qo'yilgan (paused) guruh avtomatik yangilanmaydi; qo'lda yangilash mumkin.
+- Oyna ostida "🚕 Taksi chaqirish" tugmasi bo'ladi (guruh sozlamasi yoqilgan bo'lsa).
+- Har guruh o'z yo'nalish va haydovchilari bilan alohida oyna chiqaradi.
 """
 
 from __future__ import annotations
@@ -53,13 +55,11 @@ def routes_to_views(rows: list[dict]) -> list[RouteView]:
 class BoardManager:
     """Bitta guruh oynasi."""
 
-    def __init__(self, bot: Bot, db: Database, chat_id: int, bot_username: str,
-                 paused: bool = False):
+    def __init__(self, bot: Bot, db: Database, chat_id: int, bot_username: str):
         self.bot = bot
         self.db = db
         self.chat_id = chat_id
         self.bot_username = bot_username
-        self.paused = paused
         self.dirty = True          # boshlanishda bir marta yangilanadi
         self._lock = asyncio.Lock()
 
@@ -75,12 +75,13 @@ class BoardManager:
         cnt = await self.db.get_chat_value(self.chat_id, KEY_MSGS_SINCE, 0)
         await self.db.set_chat_value(self.chat_id, KEY_MSGS_SINCE, cnt + 1)
 
-    async def scan(self, threshold: int) -> None:
-        """Skaner: kerak bo'lsa yangilaydi."""
-        if self.paused:
+    async def scan(self) -> None:
+        """Skaner: kerak bo'lsa yangilaydi (guruhning o'z sozlamasi bo'yicha)."""
+        group = await self.db.get_group(self.chat_id)
+        if group is None or group["paused"]:
             return
         msgs = await self.db.get_chat_value(self.chat_id, KEY_MSGS_SINCE, 0)
-        if self.dirty or msgs >= threshold:
+        if self.dirty or msgs >= group["repost_after_msgs"]:
             await self.sync()
 
     async def force_repost(self) -> None:
@@ -102,16 +103,25 @@ class BoardManager:
 
     # ── ichki mantiq ──────────────────────────────────────────────────
 
-    def _keyboard(self) -> InlineKeyboardMarkup:
+    def _keyboard(self, taxi_enabled: bool) -> InlineKeyboardMarkup:
+        """Oxirgi qism tagidagi tugmalar: taksi (ixtiyoriy) va haydovchi bo'lish."""
         url = f"https://t.me/{self.bot_username}?start=driver"
-        return InlineKeyboardMarkup([[InlineKeyboardButton("🚗 Haydovchi bo'lish", url=url)]])
+        rows = []
+        if taxi_enabled:
+            rows.append([InlineKeyboardButton("🚕 Taksi chaqirish", callback_data=f"tx:{self.chat_id}")])
+        rows.append([InlineKeyboardButton("🚗 Haydovchi bo'lish", url=url)])
+        return InlineKeyboardMarkup(rows)
 
     async def _build_parts(self) -> list[str]:
-        rows = await self.db.board_routes()
+        rows = await self.db.board_routes(self.chat_id)
         return render_parts(routes_to_views(rows), now_local())
 
     async def sync(self, force: bool = False) -> None:
         async with self._lock:
+            group = await self.db.get_group(self.chat_id)
+            if group is None:          # guruh olib tashlangan
+                return
+            taxi = bool(group["taxi_enabled"])
             parts = await self._build_parts()
             stored = await self.db.get_board(self.chat_id)
 
@@ -119,17 +129,17 @@ class BoardManager:
             if not force and stored and len(stored) == len(parts):
                 last_msg = await self.db.get_chat_value(self.chat_id, KEY_LAST_MSG, 0)
                 if stored[-1][1] == last_msg:
-                    done = await self._edit_all(stored, parts) == "ok"
+                    done = await self._edit_all(stored, parts, taxi) == "ok"
             if not done:
-                await self._repost(parts, stored)
+                await self._repost(parts, stored, taxi)
             # Muvaffaqiyatli bo'lgandagina "o'zgargan" belgisini olib tashlaymiz
             self.dirty = False
 
-    async def _edit_all(self, stored: list[tuple[int, int]], parts: list[str]) -> str:
+    async def _edit_all(self, stored: list[tuple[int, int]], parts: list[str], taxi: bool) -> str:
         """'ok' | 'missing' | 'fail'. Oyna ortda qolgan bo'lsa, qayta yuborish kerak."""
         last_idx = len(stored) - 1
         for (idx, mid), text in zip(stored, parts):
-            markup = self._keyboard() if idx == last_idx else None
+            markup = self._keyboard(taxi) if idx == last_idx else None
             try:
                 await self.bot.edit_message_text(
                     chat_id=self.chat_id,
@@ -152,11 +162,11 @@ class BoardManager:
                 return "fail"
         return "ok"
 
-    async def _repost(self, parts: list[str], stored: list[tuple[int, int]]) -> None:
+    async def _repost(self, parts: list[str], stored: list[tuple[int, int]], taxi: bool) -> None:
         new_ids: list[int] = []
         last_idx = len(parts) - 1
         for i, text in enumerate(parts):
-            markup = self._keyboard() if i == last_idx else None
+            markup = self._keyboard(taxi) if i == last_idx else None
             msg = await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=text,
@@ -200,10 +210,10 @@ class BoardHub:
         for b in self.boards.values():
             b.mark_dirty()
 
-    async def scan_all(self, threshold: int) -> None:
+    async def scan_all(self) -> None:
         for b in list(self.boards.values()):
             try:
-                await b.scan(threshold)
+                await b.scan()
             except Exception:
                 log.exception("Skaner xatosi (guruh %s)", b.chat_id)
 

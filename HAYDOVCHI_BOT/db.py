@@ -1,13 +1,20 @@
 """
 db.py — SQLite ma'lumotlar bazasi (aiosqlite).
 
+Asosiy g'oya: har bir guruh o'z "dunyosi". Guruh kaliti — Telegram chat_id (group_id).
+
 Jadvallar:
-- users       : haydovchilar (ism, familiya, telefon, holat, obuna muddati)
-- routes      : yo'nalishlar (qayerdan, qayerga, ochiq/yopiq)
-- entries     : haydovchining faol e'loni (bo'sh joylar). Bir haydovchida bitta faol e'lon.
-- board       : har bir guruh oynasining xabar bo'laklari (chat_id bo'yicha)
-- chat_state  : har bir guruh holati (oxirgi xabar id, oxirgi qayta yuborish vaqti)
-- settings    : umumiy sozlamalar (kalit-qiymat)
+- groups     : guruhlar va ularning sozlamalari (avto-to'xtash, repost chegarasi, taksi, pauza)
+- users      : haydovchilar (profil, holat, obuna, biriktirilgan guruh, taksi so'rovlari)
+- routes     : yo'nalishlar (har guruhniki alohida)
+- entries    : haydovchining faol e'loni (bo'sh joylar). Bir haydovchida bitta faol e'lon.
+- board      : har bir guruh oynasining xabar bo'laklari
+- chat_state : guruh holati (oxirgi xabar id, oxirgi qayta yuborish, yangi xabarlar soni)
+- taxi_log   : yo'lovchi taksi so'rovlari (spamdan himoya uchun)
+- settings   : eski versiya qoldig'i (faqat migratsiyada o'qiladi)
+
+Eski (guruhsiz) bazani ochganda `_migrate()` ustunlarni qo'shadi va ma'lumotni
+birinchi guruhga ko'chiradi. Ma'lumot o'chmaydi.
 """
 
 from __future__ import annotations
@@ -22,6 +29,16 @@ import aiosqlite
 from utils import LOCAL_TZ
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS groups (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,   -- qo'shilish tartibi (1-guruh, 2-guruh...)
+    chat_id           INTEGER NOT NULL UNIQUE,
+    title             TEXT NOT NULL DEFAULT '',
+    paused            INTEGER NOT NULL DEFAULT 0,          -- 1 = avtomatik yangilanish to'xtatilgan
+    auto_stop_hours   INTEGER NOT NULL DEFAULT 2,          -- avto-to'xtash (1..4 soat)
+    repost_after_msgs INTEGER NOT NULL DEFAULT 3,          -- shuncha yangi xabardan keyin pastga tushadi
+    taxi_enabled      INTEGER NOT NULL DEFAULT 1,          -- oyna ostida "Taksi chaqirish" tugmasi
+    created_at        INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS users (
     tg_id       INTEGER PRIMARY KEY,
     first_name  TEXT NOT NULL DEFAULT '',
@@ -30,10 +47,13 @@ CREATE TABLE IF NOT EXISTS users (
     status      TEXT NOT NULL DEFAULT 'new',      -- new | pending | approved | paused | blocked
     paid_until  INTEGER NOT NULL DEFAULT 0,       -- obuna tugash vaqti (epoch), 0 = yo'q
     warned_for  INTEGER NOT NULL DEFAULT 0,       -- qaysi muddat uchun ogohlantirilgan
+    group_id    INTEGER,                          -- biriktirilgan guruh (chat_id), NULL = yo'q
+    taxi_on     INTEGER NOT NULL DEFAULT 1,       -- taksi so'rovlarini olsinmi
     created_at  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS routes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id    INTEGER,                          -- qaysi guruhniki (chat_id)
     from_place  TEXT NOT NULL,
     to_place    TEXT NOT NULL,
     is_open     INTEGER NOT NULL DEFAULT 1,
@@ -60,12 +80,11 @@ CREATE TABLE IF NOT EXISTS chat_state (
     value       INTEGER NOT NULL,
     PRIMARY KEY (chat_id, key)
 );
-CREATE TABLE IF NOT EXISTS groups (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- qo'shilish tartibi uchun
-    chat_id     INTEGER NOT NULL UNIQUE,
-    title       TEXT NOT NULL DEFAULT '',
-    paused      INTEGER NOT NULL DEFAULT 0,           -- 1 = avtomatik yangilanish to'xtatilgan
-    created_at  INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS taxi_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id     INTEGER NOT NULL,
+    passenger_id INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (
     key         TEXT PRIMARY KEY,
@@ -73,10 +92,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-DEFAULT_SETTINGS = {
-    "auto_stop_hours": "2",       # avtomatik to'xtash (1..4 soat)
-    "repost_after_msgs": "3",     # guruhda shuncha yangi xabar bo'lsa, oyna pastga tushadi
-}
+GROUP_FIELDS = {"paused", "auto_stop_hours", "repost_after_msgs", "taxi_enabled", "title"}
 
 WARN_BEFORE_SEC = 3 * 86400  # obuna tugashidan necha kun oldin ogohlantirish
 
@@ -100,13 +116,16 @@ class User:
     status: str
     paid_until: int = 0
     warned_for: int = 0
+    group_id: int | None = None
+    taxi_on: int = 1
 
     @property
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
 
 
-_USER_COLS = "tg_id, first_name, last_name, phone, status, paid_until, warned_for"
+_USER_COLS = ("tg_id, first_name, last_name, phone, status, paid_until, warned_for, "
+              "group_id, taxi_on")
 
 
 class Database:
@@ -121,10 +140,7 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.executescript(SCHEMA)
-        for k, v in DEFAULT_SETTINGS.items():
-            await self._conn.execute(
-                "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v)
-            )
+        await self._migrate()
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -153,51 +169,117 @@ class Database:
             await cur.close()
             return rows
 
-    # ── guruhlar (admin botdan qo'shadi/o'chiradi) ─────────────────────
+    async def _columns(self, table: str) -> set[str]:
+        rows = await self._all(f"PRAGMA table_info({table})")
+        return {r["name"] for r in rows}
+
+    async def _migrate(self) -> None:
+        """Eski (guruhsiz) sxemadan yangisiga. Idempotent: faqat yetishmayotgan ustunlarni qo'shadi."""
+        c = self._conn
+        gcols = await self._columns("groups")
+        added_settings = False
+        for col, ddl in [
+            ("auto_stop_hours", "INTEGER NOT NULL DEFAULT 2"),
+            ("repost_after_msgs", "INTEGER NOT NULL DEFAULT 3"),
+            ("taxi_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ]:
+            if col not in gcols:
+                await c.execute(f"ALTER TABLE groups ADD COLUMN {col} {ddl}")
+                added_settings = True
+        if added_settings:
+            # eski umumiy sozlamalarni barcha mavjud guruhlarga ko'chiramiz
+            cur = await c.execute("SELECT key, value FROM settings")
+            old = {r["key"]: r["value"] for r in await cur.fetchall()}
+            await cur.close()
+            if "auto_stop_hours" in old:
+                await c.execute("UPDATE groups SET auto_stop_hours=?", (int(old["auto_stop_hours"]),))
+            if "repost_after_msgs" in old:
+                await c.execute("UPDATE groups SET repost_after_msgs=?",
+                                (int(old["repost_after_msgs"]),))
+
+        rcols = await self._columns("routes")
+        if "group_id" not in rcols:
+            await c.execute("ALTER TABLE routes ADD COLUMN group_id INTEGER")
+            await c.execute(
+                "UPDATE routes SET group_id=(SELECT chat_id FROM groups ORDER BY id LIMIT 1) "
+                "WHERE group_id IS NULL"
+            )
+
+        ucols = await self._columns("users")
+        if "group_id" not in ucols:
+            await c.execute("ALTER TABLE users ADD COLUMN group_id INTEGER")
+            await c.execute(
+                "UPDATE users SET group_id=(SELECT chat_id FROM groups ORDER BY id LIMIT 1) "
+                "WHERE status='approved' AND group_id IS NULL"
+            )
+        if "taxi_on" not in ucols:
+            await c.execute("ALTER TABLE users ADD COLUMN taxi_on INTEGER NOT NULL DEFAULT 1")
+
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_routes_group ON routes(group_id)")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_users_group ON users(group_id)")
+        await c.execute("CREATE INDEX IF NOT EXISTS idx_taxi_group ON taxi_log(group_id, passenger_id)")
+        await c.commit()
+
+    # ── guruhlar ───────────────────────────────────────────────────────
     async def list_groups(self) -> list[dict]:
-        rows = await self._all("SELECT chat_id, title, paused FROM groups ORDER BY id")
+        rows = await self._all(
+            "SELECT chat_id, title, paused, auto_stop_hours, repost_after_msgs, taxi_enabled "
+            "FROM groups ORDER BY id"
+        )
         return [dict(r) for r in rows]
 
-    async def set_group_paused(self, chat_id: int, paused: bool) -> None:
-        await self._exec("UPDATE groups SET paused=? WHERE chat_id=?", (1 if paused else 0, chat_id))
+    async def get_group(self, chat_id: int) -> dict | None:
+        row = await self._one(
+            "SELECT chat_id, title, paused, auto_stop_hours, repost_after_msgs, taxi_enabled "
+            "FROM groups WHERE chat_id=?",
+            (chat_id,),
+        )
+        return dict(row) if row else None
 
     async def group_ids(self) -> list[int]:
         return [g["chat_id"] for g in await self.list_groups()]
 
     async def add_group(self, chat_id: int, title: str = "") -> bool:
-        """Yangi guruh qo'shadi. Yangi bo'lsa True, allaqachon bo'lsa False."""
-        rc = await self._exec(
-            "INSERT OR IGNORE INTO groups(chat_id, title, created_at) VALUES (?, ?, ?)",
-            (chat_id, title, int(time.time())),
-        )
-        return rc == 1
+        """Yangi guruh qo'shadi. Yangi bo'lsa True, allaqachon bo'lsa False.
+        Guruhsiz qolgan yo'nalishlar yangi guruhga biriktiriladi (migratsiyadan keyingi holat)."""
+        async with self._lock:
+            cur = await self._conn.execute(
+                "INSERT OR IGNORE INTO groups(chat_id, title, created_at) VALUES (?, ?, ?)",
+                (chat_id, title, int(time.time())),
+            )
+            created = cur.rowcount == 1
+            if created:
+                await self._conn.execute(
+                    "UPDATE routes SET group_id=? WHERE group_id IS NULL", (chat_id,)
+                )
+            await self._conn.commit()
+            return created
+
+    async def set_group_field(self, chat_id: int, field: str, value) -> None:
+        if field not in GROUP_FIELDS:
+            raise ValueError(f"Noma'lum guruh maydoni: {field}")
+        await self._exec(f"UPDATE groups SET {field}=? WHERE chat_id=?", (value, chat_id))
+
+    async def set_group_paused(self, chat_id: int, paused: bool) -> None:
+        await self.set_group_field(chat_id, "paused", 1 if paused else 0)
 
     async def remove_group(self, chat_id: int) -> None:
+        """Guruhni o'chiradi: yo'nalishlar, e'lonlar, oyna yozuvlari; haydovchilar guruhsiz qoladi."""
         async with self._lock:
-            await self._conn.execute("DELETE FROM groups WHERE chat_id=?", (chat_id,))
-            await self._conn.execute("DELETE FROM board WHERE chat_id=?", (chat_id,))
-            await self._conn.execute("DELETE FROM chat_state WHERE chat_id=?", (chat_id,))
-            await self._conn.commit()
+            c = self._conn
+            await c.execute(
+                "UPDATE entries SET active=0 WHERE route_id IN "
+                "(SELECT id FROM routes WHERE group_id=?)", (chat_id,)
+            )
+            await c.execute("DELETE FROM routes WHERE group_id=?", (chat_id,))
+            await c.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (chat_id,))
+            await c.execute("DELETE FROM groups WHERE chat_id=?", (chat_id,))
+            await c.execute("DELETE FROM board WHERE chat_id=?", (chat_id,))
+            await c.execute("DELETE FROM chat_state WHERE chat_id=?", (chat_id,))
+            await c.execute("DELETE FROM taxi_log WHERE group_id=?", (chat_id,))
+            await c.commit()
 
-    # ── sozlamalar ─────────────────────────────────────────────────────
-    async def get_setting(self, key: str) -> str:
-        row = await self._one("SELECT value FROM settings WHERE key=?", (key,))
-        return row["value"] if row else DEFAULT_SETTINGS[key]
-
-    async def set_setting(self, key: str, value: str) -> None:
-        await self._exec(
-            "INSERT INTO settings(key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, value),
-        )
-
-    async def auto_stop_hours(self) -> int:
-        return int(await self.get_setting("auto_stop_hours"))
-
-    async def repost_after_msgs(self) -> int:
-        return int(await self.get_setting("repost_after_msgs"))
-
-    # ── guruh holati (har bir guruh uchun) ─────────────────────────────
+    # ── guruh holati (chat_state) ──────────────────────────────────────
     async def get_chat_value(self, chat_id: int, key: str, default: int = 0) -> int:
         row = await self._one(
             "SELECT value FROM chat_state WHERE chat_id=? AND key=?", (chat_id, key)
@@ -223,7 +305,8 @@ class Database:
         )
 
     async def update_user_fields(self, tg_id: int, **fields) -> None:
-        allowed = {"first_name", "last_name", "phone", "status", "paid_until", "warned_for"}
+        allowed = {"first_name", "last_name", "phone", "status", "paid_until", "warned_for",
+                   "group_id", "taxi_on"}
         cols = [k for k in fields if k in allowed]
         if not cols:
             return
@@ -239,15 +322,21 @@ class Database:
         )
         return [User(**dict(r)) for r in rows]
 
+    async def group_drivers(self, group_id: int) -> list[User]:
+        """Guruhga biriktirilgan haydovchilar (tasdiqlangan, to'xtatilgan, bloklangan)."""
+        rows = await self._all(
+            f"SELECT {_USER_COLS} FROM users WHERE group_id=? AND status IN "
+            "('approved','paused','blocked') ORDER BY created_at",
+            (group_id,),
+        )
+        return [User(**dict(r)) for r in rows]
+
     async def count_users_by_status(self) -> dict[str, int]:
         rows = await self._all("SELECT status, COUNT(*) AS c FROM users GROUP BY status")
         return {r["status"]: r["c"] for r in rows}
 
     async def set_subscription_days(self, tg_id: int, days: int) -> int:
-        """
-        Obuna muddatini belgilaydi: hozirdan boshlab 'days' kun.
-        Eski muddat bekor bo'ladi (qo'shilmaydi).
-        """
+        """Obuna muddatini belgilaydi: hozirdan boshlab 'days' kun. Eski muddat bekor bo'ladi."""
         new_until = int(time.time()) + days * 86400
         await self.update_user_fields(tg_id, paid_until=new_until, warned_for=0)
         return new_until
@@ -274,25 +363,37 @@ class Database:
         )
         return [dict(r) for r in rows]
 
-    # ── yo'nalishlar ───────────────────────────────────────────────────
-    async def add_route(self, from_place: str, to_place: str) -> int:
+    async def block_driver(self, driver_id: int) -> None:
+        await self.update_user_fields(driver_id, status="blocked")
+        await self.stop_all_for_driver(driver_id)
+
+    async def change_driver_group(self, driver_id: int, group_id: int | None) -> None:
+        """Haydovchini boshqa guruhga o'tkazadi. Eski guruhdagi e'lonlari to'xtaydi."""
+        await self.stop_all_for_driver(driver_id)
+        await self.update_user_fields(driver_id, group_id=group_id)
+
+    # ── yo'nalishlar (har guruhniki alohida) ───────────────────────────
+    async def add_route(self, group_id: int, from_place: str, to_place: str) -> int:
         async with self._lock:
             cur = await self._conn.execute(
-                "INSERT INTO routes(from_place, to_place, created_at) VALUES (?, ?, ?)",
-                (from_place, to_place, int(time.time())),
+                "INSERT INTO routes(group_id, from_place, to_place, created_at) VALUES (?, ?, ?, ?)",
+                (group_id, from_place, to_place, int(time.time())),
             )
             await self._conn.commit()
             return cur.lastrowid
 
-    async def list_routes(self) -> list[dict]:
+    async def list_routes(self, group_id: int) -> list[dict]:
         rows = await self._all(
-            "SELECT id, from_place, to_place, is_open FROM routes ORDER BY id"
+            "SELECT id, group_id, from_place, to_place, is_open FROM routes "
+            "WHERE group_id=? ORDER BY id",
+            (group_id,),
         )
         return [dict(r) for r in rows]
 
     async def get_route(self, route_id: int) -> dict | None:
         row = await self._one(
-            "SELECT id, from_place, to_place, is_open FROM routes WHERE id=?", (route_id,)
+            "SELECT id, group_id, from_place, to_place, is_open FROM routes WHERE id=?",
+            (route_id,),
         )
         return dict(row) if row else None
 
@@ -326,14 +427,14 @@ class Database:
         """
         now = int(time.time())
         async with self._lock:
-            rows = await self._conn.execute(
+            cur = await self._conn.execute(
                 "SELECT e.id, r.from_place, r.to_place FROM entries e "
                 "JOIN routes r ON r.id = e.route_id "
                 "WHERE e.driver_id=? AND e.active=1 AND e.route_id != ?",
                 (driver_id, route_id),
             )
-            others = await rows.fetchall()
-            await rows.close()
+            others = await cur.fetchall()
+            await cur.close()
             replaced = [f"{r['from_place']} → {r['to_place']}" for r in others]
             await self._conn.execute(
                 "UPDATE entries SET active=0, updated_at=? WHERE driver_id=? AND active=1 "
@@ -382,31 +483,43 @@ class Database:
 
     async def driver_entries(self, driver_id: int) -> list[dict]:
         rows = await self._all(
-            "SELECT e.id, e.route_id, e.seats, e.active, r.from_place, r.to_place "
+            "SELECT e.id, e.route_id, e.seats, e.active, r.group_id, r.from_place, r.to_place "
             "FROM entries e JOIN routes r ON r.id = e.route_id "
             "WHERE e.driver_id=? AND e.active=1 ORDER BY e.id",
             (driver_id,),
         )
         return [dict(r) for r in rows]
 
-    async def stale_entries(self, older_than_ts: int) -> list[dict]:
-        """Muddati o'tgan faol yozuvlar (haydovchi ma'lumotini yangilamagan)."""
+    async def group_active_entries(self, group_id: int) -> list[dict]:
         rows = await self._all(
-            "SELECT e.id, e.driver_id, e.route_id, r.from_place, r.to_place "
-            "FROM entries e JOIN routes r ON r.id = e.route_id "
-            "WHERE e.active=1 AND e.updated_at < ?",
-            (older_than_ts,),
+            "SELECT e.id, e.driver_id, e.seats, u.first_name, u.last_name, u.phone, "
+            "r.from_place, r.to_place FROM entries e "
+            "JOIN routes r ON r.id = e.route_id JOIN users u ON u.tg_id = e.driver_id "
+            "WHERE r.group_id=? AND e.active=1 ORDER BY e.updated_at",
+            (group_id,),
         )
         return [dict(r) for r in rows]
 
-    async def board_routes(self, now_ts: int | None = None) -> list[dict]:
+    async def stale_entries(self, now_ts: int) -> list[dict]:
+        """Har guruhning o'z avto-to'xtash vaqti bo'yicha muddati o'tgan faol e'lonlar."""
+        rows = await self._all(
+            "SELECT e.id, e.driver_id, e.route_id, r.group_id, r.from_place, r.to_place "
+            "FROM entries e JOIN routes r ON r.id = e.route_id "
+            "JOIN groups g ON g.chat_id = r.group_id "
+            "WHERE e.active=1 AND e.updated_at < ? - g.auto_stop_hours * 3600",
+            (now_ts,),
+        )
+        return [dict(r) for r in rows]
+
+    async def board_routes(self, group_id: int, now_ts: int | None = None) -> list[dict]:
         """
-        Oynada ko'rinadigan ma'lumot: ochiq yo'nalishlar, har birida faol haydovchilar.
-        Faqat tasdiqlangan va obunasi amal qilayotgan haydovchilar chiqadi.
+        Guruh oynasida ko'rinadigan ma'lumot: guruhning ochiq yo'nalishlari, har birida
+        faol haydovchilar. Faqat shu guruhga biriktirilgan, tasdiqlangan, obunasi amal qilayotgan.
         """
         now_ts = int(time.time()) if now_ts is None else now_ts
         routes = await self._all(
-            "SELECT id, from_place, to_place FROM routes WHERE is_open=1 ORDER BY id"
+            "SELECT id, from_place, to_place FROM routes WHERE group_id=? AND is_open=1 ORDER BY id",
+            (group_id,),
         )
         out = []
         for r in routes:
@@ -414,29 +527,64 @@ class Database:
                 "SELECT u.first_name, u.last_name, u.phone, e.seats "
                 "FROM entries e JOIN users u ON u.tg_id = e.driver_id "
                 "WHERE e.route_id=? AND e.active=1 AND u.status='approved' AND u.paid_until > ? "
-                "ORDER BY e.updated_at",
-                (r["id"], now_ts),
+                "AND u.group_id=? ORDER BY e.updated_at",
+                (r["id"], now_ts, group_id),
             )
-            out.append(
-                {
-                    "from_place": r["from_place"],
-                    "to_place": r["to_place"],
-                    "entries": [dict(x) for x in rows],
-                }
-            )
+            out.append({
+                "from_place": r["from_place"],
+                "to_place": r["to_place"],
+                "entries": [dict(x) for x in rows],
+            })
         return out
 
-    async def active_entry_count(self) -> int:
-        row = await self._one(
-            "SELECT COUNT(*) AS c FROM entries e JOIN users u ON u.tg_id = e.driver_id "
-            "WHERE e.active=1 AND u.status='approved' AND u.paid_until > ?",
-            (int(time.time()),),
-        )
+    async def active_entry_count(self, group_id: int | None = None) -> int:
+        if group_id is None:
+            row = await self._one(
+                "SELECT COUNT(*) AS c FROM entries e JOIN users u ON u.tg_id = e.driver_id "
+                "WHERE e.active=1 AND u.status='approved' AND u.paid_until > ?",
+                (int(time.time()),),
+            )
+        else:
+            row = await self._one(
+                "SELECT COUNT(*) AS c FROM entries e JOIN users u ON u.tg_id = e.driver_id "
+                "JOIN routes r ON r.id = e.route_id "
+                "WHERE e.active=1 AND u.status='approved' AND u.paid_until > ? AND r.group_id=?",
+                (int(time.time()), group_id),
+            )
         return row["c"]
 
-    async def block_driver(self, driver_id: int) -> None:
-        await self.update_user_fields(driver_id, status="blocked")
-        await self.stop_all_for_driver(driver_id)
+    # ── taksi so'rovlari ───────────────────────────────────────────────
+    async def taxi_recipients(self, group_id: int, now_ts: int) -> list[int]:
+        """Guruhda hozir faol e'loni bor, taksi yoqqan, obunasi amal qilayotgan haydovchilar."""
+        rows = await self._all(
+            "SELECT DISTINCT u.tg_id FROM users u "
+            "JOIN entries e ON e.driver_id = u.tg_id AND e.active=1 "
+            "JOIN routes r ON r.id = e.route_id AND r.group_id = ? "
+            "WHERE u.status='approved' AND u.taxi_on=1 AND u.paid_until > ? AND u.group_id=?",
+            (group_id, now_ts, group_id),
+        )
+        return [r["tg_id"] for r in rows]
+
+    async def taxi_last_request(self, group_id: int, passenger_id: int) -> int:
+        row = await self._one(
+            "SELECT MAX(created_at) AS t FROM taxi_log WHERE group_id=? AND passenger_id=?",
+            (group_id, passenger_id),
+        )
+        return row["t"] or 0
+
+    async def add_taxi_log(self, group_id: int, passenger_id: int, now_ts: int) -> None:
+        await self._exec(
+            "INSERT INTO taxi_log(group_id, passenger_id, created_at) VALUES (?, ?, ?)",
+            (group_id, passenger_id, now_ts),
+        )
+
+    # ── statistika ─────────────────────────────────────────────────────
+    async def taxi_requests_count(self, group_id: int | None = None) -> int:
+        if group_id is None:
+            row = await self._one("SELECT COUNT(*) AS c FROM taxi_log")
+        else:
+            row = await self._one("SELECT COUNT(*) AS c FROM taxi_log WHERE group_id=?", (group_id,))
+        return row["c"]
 
     # ── guruh oynasi (board) ───────────────────────────────────────────
     async def get_board(self, chat_id: int) -> list[tuple[int, int]]:

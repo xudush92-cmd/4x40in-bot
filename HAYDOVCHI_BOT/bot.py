@@ -67,13 +67,13 @@ async def _maintenance_loop(app: Application) -> None:
             now = int(time.time())
             changed = False
 
-            hours = await db.auto_stop_hours()
-            for e in await db.stale_entries(now - hours * 3600):
+            # har guruhning o'z avto-to'xtash vaqti bo'yicha
+            for e in await db.stale_entries(now):
                 await db.stop_entry(e["id"])
                 await _notify_driver(
                     app, e["driver_id"],
                     f"⏰ {e['from_place']} → {e['to_place']} yo'nalishidagi e'loningiz "
-                    f"{hours} soat yangilanmagani uchun to'xtatildi.\n"
+                    "uzoq yangilanmagani uchun to'xtatildi.\n"
                     "Qayta boshlash uchun 🟢 Ishni boshlash tugmasini bosing.",
                 )
                 changed = True
@@ -105,12 +105,10 @@ async def _maintenance_loop(app: Application) -> None:
 
 async def _scanner_loop(app: Application) -> None:
     """Har 30 soniyada: o'zgarish bo'lsa yoki yetarli yangi xabar bo'lsa oynani yangilaydi."""
-    db: Database = app.bot_data["db"]
     hub: BoardHub = app.bot_data["hub"]
     while True:
         try:
-            threshold = await db.repost_after_msgs()
-            await hub.scan_all(threshold)
+            await hub.scan_all()
         except Exception:
             log.exception("Skaner tsiklida xato")
         await asyncio.sleep(SCAN_SEC)
@@ -125,7 +123,7 @@ async def post_init(app: Application) -> None:
         await db.add_group(chat_id, "")
     hub = BoardHub()
     for g in await db.list_groups():
-        hub.add(BoardManager(app.bot, db, g["chat_id"], me.username, paused=bool(g["paused"])))
+        hub.add(BoardManager(app.bot, db, g["chat_id"], me.username))
     app.bot_data["db"] = db
     app.bot_data["hub"] = hub
     app.bot_data["bot_username"] = me.username
