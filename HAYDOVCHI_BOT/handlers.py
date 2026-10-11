@@ -45,11 +45,10 @@ BTN_CONTACT = "📱 Raqamni yuborish"
 BTN_CANCEL = "❌ Bekor qilish"
 
 A_COLLS = "🏘 Jamlanmalar"
-A_NEW = "➕ Yangi jamlanma"
 A_DRIVERS = "👥 Haydovchilar"
 A_STATS = "📊 Statistika"
 
-MENU_BUTTONS = {BTN_START, BTN_STOP, BTN_MY, BTN_PROFILE, A_COLLS, A_NEW, A_DRIVERS, A_STATS}
+MENU_BUTTONS = {BTN_START, BTN_STOP, BTN_MY, BTN_PROFILE, A_COLLS, A_DRIVERS, A_STATS}
 
 AUTO_STOP_CHOICES = [1, 2, 3, 4]     # soat
 REPOST_CHOICES = [3, 5, 10]          # yangi xabar soni
@@ -70,7 +69,7 @@ def driver_menu_kb() -> ReplyKeyboardMarkup:
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[A_COLLS, A_NEW], [A_DRIVERS, A_STATS]],
+        [[A_COLLS, A_DRIVERS], [A_STATS]],
         resize_keyboard=True,
     )
 
@@ -502,11 +501,6 @@ async def _manager_text(update, context, text: str) -> None:
     if text == A_COLLS:
         body, markup = await _collections_list_view(db)
         await msg.reply_text(body, reply_markup=markup)
-    elif text == A_NEW:
-        context.user_data["await"] = ("coll",)
-        await msg.reply_text(
-            "Yangi jamlanma nomini yozing (masalan: Toshkent–Qibray haydovchilari):",
-            reply_markup=cancel_kb())
     elif text == A_DRIVERS:
         body, markup = await _drivers_overview(db)
         await msg.reply_text(body, reply_markup=markup)
