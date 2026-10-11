@@ -9,7 +9,9 @@ Oqim:
    "🔕 So'rovlarni to'xtatish" bilan barcha taksi so'rovlarini o'chiradi
    (qayta yoqish haydovchi menyusida).
 
-Spamdan himoya: bir yo'lovchi har guruhda TAXI_COOLDOWN_SEC da bir marta so'rov yuboradi.
+Haydovchilar — yo'lovchi bosgan guruh jamlanmasidagi faol e'lonli va taksi yoqqan haydovchilar.
+
+Spamdan himoya: bir yo'lovchi har jamlanmada TAXI_COOLDOWN_SEC da bir marta so'rov yuboradi.
 """
 
 from __future__ import annotations
@@ -63,20 +65,21 @@ async def passenger_request(bot: Bot, db: Database, chat_id: int, passenger: TgU
     Yo'lovchi so'rovini qayta ishlaydi. Yo'lovchiga ko'rsatiladigan matnni qaytaradi.
     """
     now = int(time.time())
-    group = await db.get_group(chat_id)
-    if group is None or not group["taxi_enabled"]:
+    ctx = await db.get_chat_ctx(chat_id)
+    if ctx is None or not ctx["taxi_enabled"]:
         return "Bu guruhda taksi xizmati yoqilmagan."
+    cid = ctx["collection_id"]
 
-    last = await db.taxi_last_request(chat_id, passenger.id)
+    last = await db.taxi_last_request(cid, passenger.id)
     wait = TAXI_COOLDOWN_SEC - (now - last)
     if last and wait > 0:
         return f"⏳ Iltimos, {wait} soniyadan keyin qayta urinib ko'ring."
 
-    recipients = await db.taxi_recipients(chat_id, now)
+    recipients = await db.taxi_recipients(cid, now)
     if not recipients:
         return "Hozir faol taksi haydovchi yo'q."
 
-    text = _request_text(group["title"], passenger, now)
+    text = _request_text(ctx["title"], passenger, now)
     kb = _request_kb(passenger)
     sent = 0
     for uid in recipients:
@@ -88,7 +91,7 @@ async def passenger_request(bot: Bot, db: Database, chat_id: int, passenger: TgU
 
     if sent == 0:
         return "Hozir taksi haydovchiga yetkazib bo'lmadi. Keyinroq urinib ko'ring."
-    await db.add_taxi_log(chat_id, passenger.id, now)
+    await db.add_taxi_log(cid, passenger.id, now)
     return "✅ So'rov taksi haydovchilariga yuborildi."
 
 

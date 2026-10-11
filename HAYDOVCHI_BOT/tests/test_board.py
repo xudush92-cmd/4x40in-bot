@@ -38,11 +38,12 @@ def _setup(tmp_path):
 
 
 async def _seed(db):
-    await db.add_group(-100, "Guruh 1")
-    await db.add_route(-100, "Toshkent", "Qibray")
+    cid = await db.add_collection("Jamlanma 1")
+    await db.add_chat(-100, "Guruh 1", cid)
+    await db.add_route(cid, "Toshkent", "Qibray")
     await db.ensure_user(1)
     await db.update_user_fields(1, first_name="Ali", last_name="Valiyev",
-                                phone="+998901234567", status="approved", group_id=-100,
+                                phone="+998901234567", status="approved", group_id=cid,
                                 paid_until=int(time.time()) + 30 * 86400)
     await db.start_entry(1, 1, 2)
 
@@ -163,7 +164,8 @@ def test_paused_group_is_not_scanned(tmp_path):
         try:
             await _seed(db)
             bot = FakeBot()
-            await db.set_group_paused(-100, True)
+            cid = (await db.get_chat(-100))["collection_id"]
+            await db.set_collection_field(cid, "paused", 1)
             bm = BoardManager(bot, db, -100, "haydovchi_bot")
             await bm.scan()
             assert bot.sent == [] and bot.edited == []
@@ -286,7 +288,8 @@ def test_board_keyboard_has_taxi_button_when_enabled(tmp_path):
             assert "🚕 Taksi chaqirish" in labels
             assert "🚗 Haydovchi bo'lish" in labels
 
-            await db.set_group_field(-100, "taxi_enabled", 0)
+            cid = (await db.get_chat(-100))["collection_id"]
+            await db.set_collection_field(cid, "taxi_enabled", 0)
             bm.mark_dirty()
             await bm.sync()                      # oyna oxirgi xabar -> tahrirlanadi
             labels = [b.text for row in captured[-1].inline_keyboard for b in row]

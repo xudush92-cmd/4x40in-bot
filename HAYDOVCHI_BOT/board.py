@@ -1,5 +1,9 @@
 """
-board.py — guruh ma'lumot oynalarini boshqarish (bir nechta guruh uchun).
+board.py — Telegram guruhlaridagi ma'lumot oynalarini boshqarish.
+
+Har Telegram guruhning o'z oynasi bor; oynada shu guruh jamlanmasining ma'lumoti chiqadi.
+Sozlamalar (pauza, repost chegarasi, taksi) jamlanma darajasida. Repost hisoblagichi esa
+har guruhda o'zining.
 
 Qoida (skaner):
 - Har SCAN_SEC (30) soniyada skaner ishlaydi.
@@ -77,11 +81,11 @@ class BoardManager:
 
     async def scan(self) -> None:
         """Skaner: kerak bo'lsa yangilaydi (guruhning o'z sozlamasi bo'yicha)."""
-        group = await self.db.get_group(self.chat_id)
-        if group is None or group["paused"]:
+        ctx = await self.db.get_chat_ctx(self.chat_id)
+        if ctx is None or ctx["paused"]:
             return
         msgs = await self.db.get_chat_value(self.chat_id, KEY_MSGS_SINCE, 0)
-        if self.dirty or msgs >= group["repost_after_msgs"]:
+        if self.dirty or msgs >= ctx["repost_after_msgs"]:
             await self.sync()
 
     async def force_repost(self) -> None:
@@ -112,17 +116,17 @@ class BoardManager:
         rows.append([InlineKeyboardButton("🚗 Haydovchi bo'lish", url=url)])
         return InlineKeyboardMarkup(rows)
 
-    async def _build_parts(self) -> list[str]:
-        rows = await self.db.board_routes(self.chat_id)
+    async def _build_parts(self, collection_id: int) -> list[str]:
+        rows = await self.db.board_routes(collection_id)
         return render_parts(routes_to_views(rows), now_local())
 
     async def sync(self, force: bool = False) -> None:
         async with self._lock:
-            group = await self.db.get_group(self.chat_id)
-            if group is None:          # guruh olib tashlangan
+            ctx = await self.db.get_chat_ctx(self.chat_id)
+            if ctx is None:            # guruh jamlanmadan olib tashlangan
                 return
-            taxi = bool(group["taxi_enabled"])
-            parts = await self._build_parts()
+            taxi = bool(ctx["taxi_enabled"])
+            parts = await self._build_parts(ctx["collection_id"])
             stored = await self.db.get_board(self.chat_id)
 
             done = False
@@ -192,7 +196,7 @@ class BoardManager:
 
 
 class BoardHub:
-    """Barcha guruh oynalari bir joyda."""
+    """Barcha Telegram guruh oynalari bir joyda."""
 
     def __init__(self):
         self.boards: dict[int, BoardManager] = {}

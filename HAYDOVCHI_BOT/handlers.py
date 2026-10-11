@@ -2,11 +2,12 @@
 handlers.py — bot buyruqlari, tugmalar, ro'yxatdan o'tish, boshqaruv paneli, guruh xabarlari.
 
 Rollar:
-- Super admin (ADMIN_ID) — yagona boshqaruvchi. Guruhlarni, yo'nalishlarni, haydovchilarni,
-  e'lonlarni va sozlamalarni har guruh uchun alohida boshqaradi.
+- Super admin (ADMIN_ID) — yagona boshqaruvchi. Jamlanmalarni yaratadi (nomini o'zi beradi),
+  jamlanmaga Telegram guruhlarini qo'shadi/ko'chiradi/olib tashlaydi, yo'nalish, haydovchi,
+  e'lon va sozlamalarni har jamlanma uchun alohida boshqaradi.
   Admin haydovchi ism/telefonini o'zgartira olmaydi.
-- Haydovchi — ro'yxatdan o'tadi, admin tasdiqlab guruhga biriktiradi, muddatni admin belgilaydi.
-  Ism va telefonini faqat o'zi tahrirlaydi. O'z guruhining yo'nalishlarida e'lon beradi.
+- Haydovchi — ro'yxatdan o'tadi, admin tasdiqlab jamlanmaga biriktiradi, muddatni admin belgilaydi.
+  Ism va telefonini faqat o'zi tahrirlaydi. O'z jamlanmasining yo'nalishlarida e'lon beradi.
 - Yo'lovchi — botdan foydalanmaydi; faqat guruh oynasidagi "🚕 Taksi chaqirish" tugmasini bosadi.
 """
 
@@ -43,19 +44,17 @@ BTN_PROFILE = "✏️ Ma'lumotlarim"
 BTN_CONTACT = "📱 Raqamni yuborish"
 BTN_CANCEL = "❌ Bekor qilish"
 
-A_GROUPS = "🏘 Guruhlar"
+A_COLLS = "🏘 Jamlanmalar"
+A_NEW = "➕ Yangi jamlanma"
 A_DRIVERS = "👥 Haydovchilar"
-A_ROUTES = "🛣 Yo'nalishlar"
-A_SETTINGS = "⚙️ Sozlamalar"
-A_REFRESH = "📢 Oynani yangilash"
 A_STATS = "📊 Statistika"
 
-MENU_BUTTONS = {BTN_START, BTN_STOP, BTN_MY, BTN_PROFILE,
-                A_GROUPS, A_DRIVERS, A_ROUTES, A_SETTINGS, A_REFRESH, A_STATS}
+MENU_BUTTONS = {BTN_START, BTN_STOP, BTN_MY, BTN_PROFILE, A_COLLS, A_NEW, A_DRIVERS, A_STATS}
 
 AUTO_STOP_CHOICES = [1, 2, 3, 4]     # soat
 REPOST_CHOICES = [3, 5, 10]          # yangi xabar soni
 MAX_SUB_DAYS = 365
+MAX_COLL_NAME = 60
 
 STATUS_LABEL = {
     "pending": "⏳ kutilmoqda",
@@ -71,7 +70,7 @@ def driver_menu_kb() -> ReplyKeyboardMarkup:
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [[A_GROUPS, A_DRIVERS], [A_ROUTES, A_SETTINGS], [A_REFRESH, A_STATS]],
+        [[A_COLLS, A_NEW], [A_DRIVERS, A_STATS]],
         resize_keyboard=True,
     )
 
@@ -133,11 +132,15 @@ def _clear_await(context) -> None:
     context.user_data.pop("await", None)
 
 
-async def _group_title(db, group_id: int | None) -> str:
-    if not group_id:
+async def _collection_name(db, cid: int | None) -> str:
+    if not cid:
         return "biriktirilmagan"
-    g = await db.get_group(group_id)
-    return (g["title"] or str(group_id)) if g else "o'chirilgan guruh"
+    c = await db.get_collection(cid)
+    return c["name"] if c else "o'chirilgan jamlanma"
+
+
+def _last_update_txt(ts: int) -> str:
+    return time.strftime("%d.%m %H:%M", time.localtime(ts)) if ts else "hali yo'q"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -336,11 +339,12 @@ async def _driver_text(update, context, uid: int, text: str) -> None:
             )
             return
         if not user.group_id:
-            await msg.reply_text("Sizga guruh biriktirilmagan. Admin bilan bog'laning.")
+            await msg.reply_text("Sizga jamlanma biriktirilmagan. Admin bilan bog'laning.")
             return
         routes = [r for r in await db.list_routes(user.group_id) if r["is_open"]]
         if not routes:
-            await msg.reply_text("Bu guruhda hozircha ochiq yo'nalish yo'q. Admin yo'nalish ochishini kuting.")
+            await msg.reply_text("Bu jamlanmada hozircha ochiq yo'nalish yo'q. "
+                                 "Admin yo'nalish ochishini kuting.")
             return
         rows = [[InlineKeyboardButton(f"📍 {r['from_place']} → {r['to_place']}",
                                       callback_data=f"rt:{r['id']}")] for r in routes]
@@ -404,7 +408,7 @@ async def _profile_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
         f"👤 Ism: {user.first_name}\n"
         f"👤 Familiya: {user.last_name}\n"
         f"📞 Telefon: {user.phone}\n"
-        f"🏘 Guruh: {await _group_title(db, user.group_id)}\n"
+        f"🏘 Jamlanma: {await _collection_name(db, user.group_id)}\n"
         f"📅 Muddat: {_sub_status(user.paid_until)}\n"
         f"🚕 Taksi so'rovlari: {taxi}\n"
         f"🟢 Faol e'lon: {len(entries)} ta\n\n"
@@ -423,40 +427,56 @@ async def _profile_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Boshqaruv paneli (faqat super admin)
+# Boshqaruv paneli — matn tugmalari (faqat super admin)
 # ══════════════════════════════════════════════════════════════════════════
 async def _manager_text(update, context, text: str) -> None:
     db = _db(context)
+    hub = _hub(context)
     msg = update.effective_message
     pending = context.user_data.get("await")
 
     if pending and pending[0] == "route":
         _clear_await(context)
-        group_id = pending[1]
+        cid = pending[1]
         added, bad = [], []
         for line in text.splitlines():
             if not line.strip():
                 continue
             parsed = parse_route(line)
             if parsed:
-                await db.add_route(group_id, parsed[0], parsed[1])
+                await db.add_route(cid, parsed[0], parsed[1])
                 added.append(f"{parsed[0]} → {parsed[1]}")
             else:
                 bad.append(line.strip())
         out = []
         if added:
             out.append("✅ Qo'shildi:\n" + "\n".join(f"• {a}" for a in added))
-            _hub(context).mark_all_dirty()
+            hub.mark_all_dirty()
         if bad:
             out.append("⚠️ Tushunilmadi (format: Toshkent - Qibray):\n" + "\n".join(bad))
         await msg.reply_text("\n\n".join(out) or "Hech narsa qo'shilmadi.")
-        body, markup = await _routes_view(db, group_id)
+        body, markup = await _routes_view(db, cid)
         await msg.reply_text(body, reply_markup=markup)
         return
 
-    if pending and pending[0] == "group":
+    if pending and pending[0] == "chat":
         _clear_await(context)
-        await _add_group_from_message(update, context)
+        await _add_chat_from_message(update, context, pending[1])
+        return
+
+    if pending and pending[0] == "coll":
+        name = text.strip()
+        if len(name) < 2 or len(name) > MAX_COLL_NAME:
+            context.user_data["await"] = ("coll",)
+            await msg.reply_text(
+                f"Jamlanma nomi 2 dan {MAX_COLL_NAME} belgigacha bo'lsin. Qaytadan yozing:",
+                reply_markup=cancel_kb())
+            return
+        _clear_await(context)
+        cid = await db.add_collection(name)
+        await msg.reply_text(f"✅ Jamlanma yaratildi: {name}", reply_markup=admin_menu_kb())
+        body, markup = await _collection_menu_view(db, hub, cid)
+        await msg.reply_text(body, reply_markup=markup)
         return
 
     if pending and pending[0] == "sub":
@@ -472,25 +492,21 @@ async def _manager_text(update, context, text: str) -> None:
         await _notify(context, uid,
                       f"📅 Muddat belgilandi: {ts_to_date_str(until)} gacha ({days} kun). "
                       "Eski muddat bekor qilindi.")
-        _hub(context).mark_all_dirty()
+        hub.mark_all_dirty()
         await msg.reply_text(f"✅ {user.full_name}: {days} kun, {ts_to_date_str(until)} gacha.",
                              reply_markup=admin_menu_kb())
         body, markup = await _driver_detail(db, uid)
         await msg.reply_text(body, reply_markup=markup)
         return
 
-    if text == A_GROUPS:
-        body, markup = await _groups_list_view(db)
+    if text == A_COLLS:
+        body, markup = await _collections_list_view(db)
         await msg.reply_text(body, reply_markup=markup)
-    elif text == A_ROUTES:
-        body, markup = await _group_picker(db, "gr", "🛣 Qaysi guruh yo'nalishlari?")
-        await msg.reply_text(body, reply_markup=markup)
-    elif text == A_SETTINGS:
-        body, markup = await _group_picker(db, "gs", "⚙️ Qaysi guruh sozlamalari?")
-        await msg.reply_text(body, reply_markup=markup)
-    elif text == A_REFRESH:
-        await _hub(context).force_all()
-        await msg.reply_text("✅ Barcha guruh oynalari pastga qayta yuborildi.")
+    elif text == A_NEW:
+        context.user_data["await"] = ("coll",)
+        await msg.reply_text(
+            "Yangi jamlanma nomini yozing (masalan: Toshkent–Qibray haydovchilari):",
+            reply_markup=cancel_kb())
     elif text == A_DRIVERS:
         body, markup = await _drivers_overview(db)
         await msg.reply_text(body, reply_markup=markup)
@@ -500,82 +516,71 @@ async def _manager_text(update, context, text: str) -> None:
         await msg.reply_text("🛠 Boshqaruv paneli", reply_markup=admin_menu_kb())
 
 
-# ── Guruh tanlash (yo'nalish / sozlama bo'limlari uchun) ──────────────
-async def _group_picker(db, prefix: str, title: str) -> tuple[str, InlineKeyboardMarkup]:
-    groups = await db.list_groups()
-    if not groups:
-        return ("Avval guruh qo'shing (🏘 Guruhlar).",
-                InlineKeyboardMarkup([[InlineKeyboardButton("🏘 Guruhlar", callback_data="gl")]]))
+# ── Jamlanmalar ro'yxati va jamlanma menyusi ───────────────────────────
+async def _collections_list_view(db) -> tuple[str, InlineKeyboardMarkup]:
+    colls = await db.list_collections()
     rows = []
-    for i, g in enumerate(groups, start=1):
-        label = f"{i}. {(g['title'] or str(g['chat_id']))[:28]}"
-        rows.append([InlineKeyboardButton(label, callback_data=f"{prefix}:{g['chat_id']}")])
-    return title, InlineKeyboardMarkup(rows)
-
-
-# ── Guruhlar ro'yxati va guruh menyusi ─────────────────────────────────
-async def _groups_list_view(db) -> tuple[str, InlineKeyboardMarkup]:
-    groups = await db.list_groups()
-    rows = []
-    lines = ["🏘 Guruhlar:"]
-    if not groups:
-        lines.append("Hozircha guruh yo'q.")
-    for i, g in enumerate(groups, start=1):
-        title = (g["title"] or str(g["chat_id"]))[:28]
-        state = "⏸" if g["paused"] else "🟢"
-        rows.append([InlineKeyboardButton(f"{state} {i}. {title}", callback_data=f"g:{g['chat_id']}")])
-    rows.append([InlineKeyboardButton("➕ Yangi guruh", callback_data="gadd")])
+    lines = ["🏘 Jamlanmalar:"]
+    if not colls:
+        lines.append("Hozircha jamlanma yo'q. ➕ Yangi jamlanma tugmasi bilan yarating.")
+    for i, c in enumerate(colls, start=1):
+        state = "⏸" if c["paused"] else "🟢"
+        rows.append([InlineKeyboardButton(
+            f"{state} {c['name'][:26]} · {c['chat_count']} guruh", callback_data=f"c:{c['id']}")])
+    rows.append([InlineKeyboardButton("➕ Yangi jamlanma", callback_data="jadd")])
     rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="back")])
-    lines.append(
-        "\nHar guruhning yo'nalishlari, haydovchilari, e'lonlari va sozlamalari alohida.\n"
-        "Yangi guruh: Telegram botlar guruh yarata olmaydi. Avval Telegram'da guruh oching, "
-        "botni admin qiling (xabarlarni o'chirish huquqi bilan), so'ng ➕ tugmasini bosing."
-    )
+    lines.append("\nHar jamlanmaning yo'nalishlari, haydovchilari, e'lonlari va sozlamalari "
+                 "alohida. Haydovchi bitta jamlanmaga biriktiriladi.")
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-async def _group_menu_view(db, hub, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    g = await db.get_group(chat_id)
-    if g is None:
-        return "Bu guruh topilmadi.", InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⬅️ Guruhlar", callback_data="gl")]])
-    routes = await db.list_routes(chat_id)
-    drivers = await db.group_drivers(chat_id)
+async def _collection_menu_view(db, hub, cid: int) -> tuple[str, InlineKeyboardMarkup]:
+    c = await db.get_collection(cid)
+    if c is None:
+        return "Bu jamlanma topilmadi.", InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Jamlanmalar", callback_data="jl")]])
+    routes = await db.list_routes(cid)
+    drivers = await db.collection_drivers(cid)
     approved = sum(1 for d in drivers if d.status == "approved")
-    active = await db.active_entry_count(chat_id)
-    board: BoardManager | None = hub.get(chat_id)
-    last_ts = (await board.last_update_info())[0] if board else 0
-    last_txt = time.strftime("%d.%m %H:%M", time.localtime(last_ts)) if last_ts else "hali yo'q"
-    state_txt = "⏸ to'xtatilgan" if g["paused"] else "🟢 faol"
-    taxi_txt = "yoqilgan" if g["taxi_enabled"] else "o'chirilgan"
+    active = await db.active_entry_count(cid)
+    last_ts = 0
+    for ch in await db.list_chats(cid):
+        board: BoardManager | None = hub.get(ch["chat_id"])
+        if board:
+            last_ts = max(last_ts, (await board.last_update_info())[0])
+    state_txt = "⏸ to'xtatilgan" if c["paused"] else "🟢 faol"
+    taxi_txt = "yoqilgan" if c["taxi_enabled"] else "o'chirilgan"
     text = (
-        f"🏘 {g['title'] or chat_id}\n"
+        f"🏘 {c['name']}\n"
         f"Holat: {state_txt}\n"
+        f"🏘 Guruhlar: {c['chat_count']} ta\n"
         f"🛣 Yo'nalishlar: {len(routes)} ta\n"
         f"👥 Haydovchilar: {approved} ta faol\n"
         f"📢 Faol e'lonlar: {active} ta\n"
         f"🚕 Taksi tugmasi: {taxi_txt}\n"
-        f"⏰ Avto-to'xtash: {g['auto_stop_hours']} soat · 📌 pastga tushish: {g['repost_after_msgs']} xabar\n"
-        f"🕐 Oxirgi yangilanish: {last_txt}"
+        f"⏰ Avto-to'xtash: {c['auto_stop_hours']} soat · 📌 pastga tushish: "
+        f"{c['repost_after_msgs']} xabar\n"
+        f"🕐 Oxirgi yangilanish: {_last_update_txt(last_ts)}"
     )
     rows = [
-        [InlineKeyboardButton("🛣 Yo'nalishlar", callback_data=f"gr:{chat_id}"),
-         InlineKeyboardButton("👥 Haydovchilar", callback_data=f"gd:{chat_id}")],
-        [InlineKeyboardButton("📢 E'lonlar", callback_data=f"ge:{chat_id}"),
-         InlineKeyboardButton("⚙️ Sozlamalar", callback_data=f"gs:{chat_id}")],
-        [InlineKeyboardButton("🚕 Taksi: " + ("o'chirish" if g["taxi_enabled"] else "yoqish"),
-                              callback_data=f"gtx:{chat_id}"),
-         InlineKeyboardButton("🔄 Oynani yangilash", callback_data=f"gref:{chat_id}")],
-        [InlineKeyboardButton("▶️ Davom ettirish" if g["paused"] else "⏸ Avtomatikni to'xtatish",
-                              callback_data=f"gpz:{chat_id}")],
-        [InlineKeyboardButton("🗑 Guruhni olib tashlash", callback_data=f"grm:{chat_id}")],
-        [InlineKeyboardButton("⬅️ Guruhlar", callback_data="gl")],
+        [InlineKeyboardButton("🛣 Yo'nalishlar", callback_data=f"cr:{cid}"),
+         InlineKeyboardButton("👥 Haydovchilar", callback_data=f"cd:{cid}")],
+        [InlineKeyboardButton("📢 E'lonlar", callback_data=f"ce:{cid}"),
+         InlineKeyboardButton("⚙️ Sozlamalar", callback_data=f"cs:{cid}")],
+        [InlineKeyboardButton("🏘 Guruhlar", callback_data=f"cg:{cid}"),
+         InlineKeyboardButton("🔄 Oynalarni yangilash", callback_data=f"cref:{cid}")],
+        [InlineKeyboardButton("🚕 Taksi: " + ("o'chirish" if c["taxi_enabled"] else "yoqish"),
+                              callback_data=f"ctx:{cid}")],
+        [InlineKeyboardButton("▶️ Davom ettirish" if c["paused"] else "⏸ Avtomatikni to'xtatish",
+                              callback_data=f"cpz:{cid}")],
+        [InlineKeyboardButton("🗑 Jamlanmani o'chirish", callback_data=f"crm:{cid}")],
+        [InlineKeyboardButton("⬅️ Jamlanmalar", callback_data="jl")],
     ]
     return text, InlineKeyboardMarkup(rows)
 
 
-async def _routes_view(db, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    routes = await db.list_routes(chat_id)
+async def _routes_view(db, cid: int) -> tuple[str, InlineKeyboardMarkup]:
+    routes = await db.list_routes(cid)
     rows = []
     lines = ["🛣 Yo'nalishlar:"]
     if not routes:
@@ -585,62 +590,101 @@ async def _routes_view(db, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
         lines.append(f"• {r['from_place']} → {r['to_place']} ({state})")
         rows.append([
             InlineKeyboardButton("⛔ Yopish" if r["is_open"] else "🟢 Ochish",
-                                 callback_data=f"grt:{r['id']}"),
-            InlineKeyboardButton("🗑 O'chirish", callback_data=f"grd:{r['id']}"),
+                                 callback_data=f"crt:{r['id']}"),
+            InlineKeyboardButton("🗑 O'chirish", callback_data=f"crd:{r['id']}"),
         ])
-    rows.append([InlineKeyboardButton("➕ Yangi yo'nalish", callback_data=f"gra:{chat_id}")])
-    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"g:{chat_id}")])
-    lines.append("\nYangi yo'nalish: har qatorga bitta, masalan \"Toshkent - Qibray\".")
+    rows.append([InlineKeyboardButton("➕ Yangi yo'nalish", callback_data=f"cra:{cid}")])
+    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"c:{cid}")])
+    lines.append('\nYangi yo\'nalish: har qatorga bitta, masalan "Toshkent - Qibray".')
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-async def _group_drivers_view(db, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    drivers = await db.group_drivers(chat_id)
-    title = await _group_title(db, chat_id)
+async def _chats_view(db, hub, cid: int) -> tuple[str, InlineKeyboardMarkup]:
+    chats = await db.list_chats(cid)
+    name = await _collection_name(db, cid)
     rows = []
-    lines = [f"👥 {title} haydovchilari: {len(drivers)} ta"]
+    lines = [f"🏘 {name} — Telegram guruhlari: {len(chats)} ta"]
+    if not chats:
+        lines.append("Hozircha guruh yo'q. Guruhni qo'shish uchun ➕ tugmasini bosing.")
+    for i, ch in enumerate(chats, start=1):
+        title = (ch["title"] or str(ch["chat_id"]))[:30]
+        board: BoardManager | None = hub.get(ch["chat_id"])
+        last = _last_update_txt((await board.last_update_info())[0]) if board else "hali yo'q"
+        lines.append(f"{i}. {title} · oxirgi yangilanish: {last}")
+        rows.append([InlineKeyboardButton(f"{i}. {title}", callback_data=f"cgc:{ch['chat_id']}")])
+    rows.append([InlineKeyboardButton("➕ Guruh qo'shish", callback_data=f"cga:{cid}")])
+    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"c:{cid}")])
+    lines.append(
+        "\nGuruh qo'shish: guruhdan bitta xabarni shu botga forward qiling yoki guruh ID sini "
+        "yozing (-100...). Bot o'sha guruhda admin bo'lishi shart. "
+        "Telegram botlar guruh yarata olmaydi — avval guruhni o'zingiz oching.")
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def _chat_menu_view(db, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    ch = await db.get_chat(chat_id)
+    if ch is None:
+        return "Bu guruh topilmadi.", InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Jamlanmalar", callback_data="jl")]])
+    name = await _collection_name(db, ch["collection_id"])
+    text = (f"🏘 {ch['title'] or chat_id}\n"
+            f"Jamlanma: {name}\n\n"
+            "Guruh oynasi shu jamlanma ma'lumotini ko'rsatadi.")
+    rows = [
+        [InlineKeyboardButton("🔀 Boshqa jamlanmaga ko'chirish", callback_data=f"cgm:{chat_id}")],
+        [InlineKeyboardButton("🗑 Jamlanmadan olib tashlash", callback_data=f"cgr:{chat_id}")],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data=f"cg:{ch['collection_id']}")],
+    ]
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def _collection_drivers_view(db, cid: int) -> tuple[str, InlineKeyboardMarkup]:
+    drivers = await db.collection_drivers(cid)
+    name = await _collection_name(db, cid)
+    rows = []
+    lines = [f"👥 {name} haydovchilari: {len(drivers)} ta"]
     if not drivers:
         lines.append("Hozircha haydovchi yo'q. Yangi arizalar 👥 Haydovchilar bo'limida.")
     for u in drivers[:30]:
         label = (u.full_name or str(u.tg_id))[:24]
         rows.append([InlineKeyboardButton(f"{label} · {STATUS_LABEL.get(u.status, u.status)}",
                                           callback_data=f"dv:{u.tg_id}")])
-    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"g:{chat_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"c:{cid}")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-async def _group_entries_view(db, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    entries = await db.group_active_entries(chat_id)
-    title = await _group_title(db, chat_id)
-    lines = [f"📢 {title} — faol e'lonlar: {len(entries)} ta"]
+async def _collection_entries_view(db, cid: int) -> tuple[str, InlineKeyboardMarkup]:
+    entries = await db.collection_active_entries(cid)
+    name = await _collection_name(db, cid)
+    lines = [f"📢 {name} — faol e'lonlar: {len(entries)} ta"]
     for e in entries:
         lines.append(f"• {e['first_name']} {e['last_name']} · {e['from_place']} → {e['to_place']} · "
                      f"{seats_label(e['seats'])}")
     if not entries:
         lines.append("Hozir faol e'lon yo'q.")
-    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data=f"g:{chat_id}")]])
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Orqaga", callback_data=f"c:{cid}")]])
     return "\n".join(lines), markup
 
 
-async def _group_settings_view(db, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    g = await db.get_group(chat_id)
+async def _collection_settings_view(db, cid: int) -> tuple[str, InlineKeyboardMarkup]:
+    c = await db.get_collection(cid)
     text = (
-        f"⚙️ {g['title'] or chat_id} sozlamalari\n\n"
-        f"⏰ Avtomatik to'xtash: {g['auto_stop_hours']} soat (yangilanmagan e'lon)\n"
-        f"📌 Oyna pastga tushishi: {g['repost_after_msgs']} ta yangi xabardan keyin\n"
+        f"⚙️ {c['name']} sozlamalari\n\n"
+        f"⏰ Avtomatik to'xtash: {c['auto_stop_hours']} soat (yangilanmagan e'lon)\n"
+        f"📌 Oyna pastga tushishi: {c['repost_after_msgs']} ta yangi xabardan keyin\n"
         "\nTanlang:"
     )
     rows = [
-        [InlineKeyboardButton(("✔ " if h == g["auto_stop_hours"] else "") + f"{h} soat",
-                              callback_data=f"gsa:{chat_id}:{h}") for h in AUTO_STOP_CHOICES],
-        [InlineKeyboardButton(("✔ " if n == g["repost_after_msgs"] else "") + f"{n} xabar",
-                              callback_data=f"gsb:{chat_id}:{n}") for n in REPOST_CHOICES],
-        [InlineKeyboardButton("⬅️ Orqaga", callback_data=f"g:{chat_id}")],
+        [InlineKeyboardButton(("✔ " if h == c["auto_stop_hours"] else "") + f"{h} soat",
+                              callback_data=f"csa:{cid}:{h}") for h in AUTO_STOP_CHOICES],
+        [InlineKeyboardButton(("✔ " if n == c["repost_after_msgs"] else "") + f"{n} xabar",
+                              callback_data=f"csb:{cid}:{n}") for n in REPOST_CHOICES],
+        [InlineKeyboardButton("⬅️ Orqaga", callback_data=f"c:{cid}")],
     ]
     return text, InlineKeyboardMarkup(rows)
 
 
-async def _add_group_from_message(update, context) -> None:
+async def _add_chat_from_message(update, context, cid: int) -> None:
     db = _db(context)
     hub = _hub(context)
     msg = update.effective_message
@@ -649,7 +693,7 @@ async def _add_group_from_message(update, context) -> None:
         try:
             chat_id = int((msg.text or "").strip())
         except ValueError:
-            context.user_data["await"] = ("group",)
+            context.user_data["await"] = ("chat", cid)
             await msg.reply_text("Guruh ID si noto'g'ri. Guruhdan xabar forward qiling yoki "
                                  "-100 bilan boshlanadigan raqamni yozing.",
                                  reply_markup=cancel_kb())
@@ -657,8 +701,14 @@ async def _add_group_from_message(update, context) -> None:
     if chat_id >= 0:
         await msg.reply_text("Bu guruh emas. Guruh ID si manfiy raqam bo'ladi (-100...).")
         return
-    if chat_id in hub.boards:
-        await msg.reply_text("Bu guruh allaqachon qo'shilgan.")
+    existing = await db.get_chat(chat_id)
+    if existing:
+        if existing["collection_id"] == cid:
+            await msg.reply_text("Bu guruh allaqachon shu jamlanmada.")
+        else:
+            other = await _collection_name(db, existing["collection_id"])
+            await msg.reply_text(f"Bu guruh boshqa jamlanmada: {other}. Uni o'sha jamlanma "
+                                 "guruhlari bo'limidan ko'chiring yoki olib tashlang.")
         return
 
     bot_user = await context.bot.get_me()
@@ -673,12 +723,12 @@ async def _add_group_from_message(update, context) -> None:
                              "(xabarlarni o'chirish huquqi bilan), keyin qayta urinib ko'ring.")
         return
 
-    await db.add_group(chat_id, chat.title or "")
+    await db.add_chat(chat_id, chat.title or "", cid)
     board = BoardManager(context.bot, db, chat_id, bot_user.username)
     hub.add(board)
     await board.sync()  # darhol chiqadi
     await msg.reply_text(f"✅ Guruh qo'shildi: {chat.title or chat_id}. Oyna shu yerda chiqdi.")
-    body, markup = await _groups_list_view(db)
+    body, markup = await _chats_view(db, hub, cid)
     await msg.reply_text(body, reply_markup=markup)
 
 
@@ -705,8 +755,8 @@ async def _drivers_overview(db) -> tuple[str, InlineKeyboardMarkup]:
     lines.append(f"\n👥 Barcha haydovchilar: {len(others)} ta")
     for u in others[:25]:
         label = (u.full_name or str(u.tg_id))[:20]
-        g = await _group_title(db, u.group_id)
-        rows.append([InlineKeyboardButton(f"{label} · {g[:12]} · {STATUS_LABEL.get(u.status, u.status)}",
+        c = await _collection_name(db, u.group_id)
+        rows.append([InlineKeyboardButton(f"{label} · {c[:12]} · {STATUS_LABEL.get(u.status, u.status)}",
                                           callback_data=f"dv:{u.tg_id}")])
     rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data="back")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
@@ -716,18 +766,18 @@ async def _driver_detail(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
     user = await db.get_user(uid)
     entries = await db.driver_entries(uid)
     route_txt = (f"{entries[0]['from_place']} → {entries[0]['to_place']}" if entries else "yo'q")
-    group_title = await _group_title(db, user.group_id)
+    coll_name = await _collection_name(db, user.group_id)
     taxi_txt = "yoqilgan" if user.taxi_on else "o'chirilgan"
     text = (
         f"👤 {user.full_name}\n"
         f"📞 {user.phone}\n"
-        f"🏘 Guruh: {group_title}\n"
+        f"🏘 Jamlanma: {coll_name}\n"
         f"Holat: {STATUS_LABEL.get(user.status, user.status)}\n"
         f"📅 Muddat: {_sub_status(user.paid_until)}\n"
         f"🚕 Taksi so'rovlari: {taxi_txt}\n"
         f"📍 Faol e'lon: {route_txt}"
     )
-    back = f"gd:{user.group_id}" if user.group_id else "back"
+    back = f"cd:{user.group_id}" if user.group_id else "dl"
     rows = []
     if user.status == "pending":
         rows.append([
@@ -735,7 +785,7 @@ async def _driver_detail(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton("❌ Rad etish", callback_data=f"dno:{uid}"),
         ])
     else:
-        rows.append([InlineKeyboardButton("🔀 Guruhni o'zgartirish", callback_data=f"dgp:{uid}")])
+        rows.append([InlineKeyboardButton("🔀 Jamlanmani o'zgartirish", callback_data=f"dcp:{uid}")])
         rows.append([InlineKeyboardButton("📅 Muddat berish (kun)", callback_data=f"dsub:{uid}")])
         if user.status == "approved":
             rows.append([InlineKeyboardButton("⏸ Vaqtincha to'xtatib qo'yish", callback_data=f"dpz:{uid}")])
@@ -749,24 +799,25 @@ async def _driver_detail(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
     return text, InlineKeyboardMarkup(rows)
 
 
-async def _group_picker_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
-    groups = await db.list_groups()
+async def _collection_picker_view(db, uid: int) -> tuple[str, InlineKeyboardMarkup]:
+    colls = await db.list_collections()
     rows = []
-    for i, g in enumerate(groups, start=1):
-        rows.append([InlineKeyboardButton(f"{i}. {(g['title'] or str(g['chat_id']))[:28]}",
-                                          callback_data=f"dgo:{uid}:{g['chat_id']}")])
+    for i, c in enumerate(colls, start=1):
+        rows.append([InlineKeyboardButton(f"{i}. {c['name'][:28]}",
+                                          callback_data=f"dco:{uid}:{c['id']}")])
     rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"dv:{uid}")])
-    if not groups:
-        return "Avval guruh qo'shing (🏘 Guruhlar).", InlineKeyboardMarkup(rows)
-    return "Haydovchi qaysi guruhga biriktirilsin?", InlineKeyboardMarkup(rows)
+    if not colls:
+        return "Avval jamlanma yarating (🏘 Jamlanmalar → ➕ Yangi jamlanma).", InlineKeyboardMarkup(rows)
+    return "Haydovchi qaysi jamlanmaga biriktirilsin?", InlineKeyboardMarkup(rows)
 
 
-# ── Sozlamalar / statistika ────────────────────────────────────────────
+# ── Statistika ─────────────────────────────────────────────────────────
 async def _stats_text(db) -> str:
     counts = await db.count_users_by_status()
-    groups = await db.list_groups()
+    colls = await db.list_collections()
     active = await db.active_entry_count()
-    paused = sum(1 for g in groups if g["paused"])
+    paused = sum(1 for c in colls if c["paused"])
+    chats_total = sum(c["chat_count"] for c in colls)
     lines = [
         "📊 Statistika\n",
         f"✅ Faol haydovchilar: {counts.get('approved', 0)}",
@@ -775,14 +826,14 @@ async def _stats_text(db) -> str:
         f"⛔ Bloklangan: {counts.get('blocked', 0)}",
         f"🟢 Jami faol e'lonlar: {active}",
         f"🚕 Taksi so'rovlari (jami): {await db.taxi_requests_count()}",
-        f"🏘 Guruhlar: {len(groups)} ta (to'xtatilgan: {paused})",
+        f"🏘 Jamlanmalar: {len(colls)} ta (to'xtatilgan: {paused}) · Telegram guruhlari: {chats_total} ta",
         "",
     ]
-    for i, g in enumerate(groups, start=1):
-        routes = await db.list_routes(g["chat_id"])
-        lines.append(f"{i}. {g['title'] or g['chat_id']}: {len(routes)} yo'nalish, "
-                     f"{await db.active_entry_count(g['chat_id'])} faol e'lon, "
-                     f"{await db.taxi_requests_count(g['chat_id'])} taksi so'rovi")
+    for i, c in enumerate(colls, start=1):
+        routes = await db.list_routes(c["id"])
+        lines.append(f"{i}. {c['name']}: {c['chat_count']} guruh, {len(routes)} yo'nalish, "
+                     f"{await db.active_entry_count(c['id'])} faol e'lon, "
+                     f"{await db.taxi_requests_count(c['id'])} taksi so'rovi")
     return "\n".join(lines)
 
 
@@ -790,9 +841,11 @@ async def _stats_text(db) -> str:
 # Inline tugmalar (callback)
 # ══════════════════════════════════════════════════════════════════════════
 MANAGER_ACTIONS = {
-    "gl", "g", "gadd", "gr", "gra", "grt", "grd", "grdy", "gd", "ge", "gtx", "gs", "gsa", "gsb",
-    "gref", "gpz", "grm", "grmy",
-    "dl", "dv", "dok", "dno", "dgp", "dgo", "dsub", "dpz", "dblk", "dblky", "dunb",
+    "jl", "jadd",
+    "c", "cr", "crt", "crd", "crdy", "cra", "cd", "ce", "cs", "csa", "csb", "ctx", "cref",
+    "cpz", "crm", "crmy",
+    "cg", "cga", "cgc", "cgm", "cgmo", "cgr", "cgry",
+    "dl", "dv", "dok", "dno", "dcp", "dco", "dsub", "dpz", "dblk", "dblky", "dunb",
 }
 
 
@@ -851,91 +904,92 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
     hub = _hub(context)
     msg = query.message
 
-    # ── guruhlar ──
-    if action == "gl":
-        body, markup = await _groups_list_view(db)
+    # ── jamlanmalar ──
+    if action == "jl":
+        body, markup = await _collections_list_view(db)
         await _safe_edit(query, body, markup)
         return
-    if action == "g":
-        body, markup = await _group_menu_view(db, hub, int(parts[1]))
-        await _safe_edit(query, body, markup)
-        return
-    if action == "gadd":
-        context.user_data["await"] = ("group",)
+    if action == "jadd":
+        context.user_data["await"] = ("coll",)
         await msg.reply_text(
-            "Guruhdan bitta xabarni shu botga forward qiling, yoki guruh ID sini yozing (-100...).",
-            reply_markup=cancel_kb(),
-        )
+            "Yangi jamlanma nomini yozing (masalan: Toshkent–Qibray haydovchilari):",
+            reply_markup=cancel_kb())
         return
-    if action == "gtx":
-        chat_id = int(parts[1])
-        g = await db.get_group(chat_id)
-        if g:
-            await db.set_group_field(chat_id, "taxi_enabled", 0 if g["taxi_enabled"] else 1)
-            board = hub.get(chat_id)
+    if action == "c":
+        body, markup = await _collection_menu_view(db, hub, int(parts[1]))
+        await _safe_edit(query, body, markup)
+        return
+    if action == "ctx":
+        cid = int(parts[1])
+        c = await db.get_collection(cid)
+        if c:
+            await db.set_collection_field(cid, "taxi_enabled", 0 if c["taxi_enabled"] else 1)
+            hub.mark_all_dirty()
+        body, markup = await _collection_menu_view(db, hub, cid)
+        await _safe_edit(query, body, markup)
+        return
+    if action == "cpz":
+        cid = int(parts[1])
+        c = await db.get_collection(cid)
+        if c:
+            now_paused = not bool(c["paused"])
+            await db.set_collection_field(cid, "paused", 1 if now_paused else 0)
+            if not now_paused:
+                hub.mark_all_dirty()
+        body, markup = await _collection_menu_view(db, hub, cid)
+        await _safe_edit(query, body, markup)
+        return
+    if action == "cref":
+        cid = int(parts[1])
+        for ch in await db.list_chats(cid):
+            board = hub.get(ch["chat_id"])
             if board:
-                board.mark_dirty()
-        body, markup = await _group_menu_view(db, hub, chat_id)
+                await board.force_repost()
+        body, markup = await _collection_menu_view(db, hub, cid)
         await _safe_edit(query, body, markup)
         return
-    if action == "gref":
-        chat_id = int(parts[1])
-        board = hub.get(chat_id)
-        if board:
-            await board.force_repost()
-        body, markup = await _group_menu_view(db, hub, chat_id)
-        await _safe_edit(query, body, markup)
-        return
-    if action == "gpz":
-        chat_id = int(parts[1])
-        g = await db.get_group(chat_id)
-        if g:
-            now_paused = not bool(g["paused"])
-            await db.set_group_paused(chat_id, now_paused)
-            board = hub.get(chat_id)
-            if board and not now_paused:
-                board.mark_dirty()
-        body, markup = await _group_menu_view(db, hub, chat_id)
-        await _safe_edit(query, body, markup)
-        return
-    if action == "grm":
-        chat_id = int(parts[1])
+    if action == "crm":
+        cid = int(parts[1])
+        c = await db.get_collection(cid)
+        name = c["name"] if c else str(cid)
         await _safe_edit(
             query,
-            "🗑 Guruh ro'yxatdan olib tashlansinmi?\n"
-            "Bu guruhning yo'nalishlari va e'lonlari o'chadi, oynasi ham o'chadi. "
-            "Haydovchilar guruhsiz qoladi.",
+            f"🗑 Jamlanma o'chirilsinmi?\n🏘 {name}\n"
+            "Yo'nalishlar, e'lonlar va guruh oynalari o'chadi. Guruhlar jamlanmadan ajratiladi "
+            "(Telegram guruhlarining o'zi qoladi). Haydovchilar jamlanmasiz qoladi.",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Ha, olib tashlash", callback_data=f"grmy:{chat_id}"),
-                InlineKeyboardButton("❌ Yo'q", callback_data=f"g:{chat_id}"),
+                InlineKeyboardButton("✅ Ha, o'chirish", callback_data=f"crmy:{cid}"),
+                InlineKeyboardButton("❌ Yo'q", callback_data=f"c:{cid}"),
             ]]),
         )
         return
-    if action == "grmy":
-        chat_id = int(parts[1])
-        board = hub.remove(chat_id)
-        if board:
-            await board.delete_all()
-        await db.remove_group(chat_id)
-        body, markup = await _groups_list_view(db)
+    if action == "crmy":
+        cid = int(parts[1])
+        # oynalarni o'chirish uchun guruhlarni DB o'chirilishidan oldin olamiz
+        for ch in await db.list_chats(cid):
+            board = hub.remove(ch["chat_id"])
+            if board:
+                await board.delete_all()
+        await db.delete_collection(cid)
+        body, markup = await _collections_list_view(db)
         await _safe_edit(query, body, markup)
         return
 
-    # ── guruh ichidagi yo'nalishlar ──
-    if action == "gr":
+    # ── jamlanma ichidagi yo'nalishlar ──
+    if action == "cr":
         body, markup = await _routes_view(db, int(parts[1]))
         await _safe_edit(query, body, markup)
         return
-    if action == "gra":
-        chat_id = int(parts[1])
-        context.user_data["await"] = ("route", chat_id)
+    if action == "cra":
+        cid = int(parts[1])
+        context.user_data["await"] = ("route", cid)
         await msg.reply_text(
             "Yangi yo'nalishni yozing. Bir nechta bo'lsa, har birini yangi qatordan yozing.\n"
             "Masalan:\nToshkent - Qibray\nQibray - Toshkent",
             reply_markup=cancel_kb(),
         )
         return
-    if action == "grt":
+    if action == "crt":
         route = await db.get_route(int(parts[1]))
         if route:
             now_open = not route["is_open"]
@@ -946,7 +1000,7 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
             body, markup = await _routes_view(db, route["group_id"])
             await _safe_edit(query, body, markup)
         return
-    if action == "grd":
+    if action == "crd":
         route = await db.get_route(int(parts[1]))
         if route:
             await _safe_edit(
@@ -954,12 +1008,12 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
                 f"🗑 Yo'nalish o'chirilsinmi?\n📍 {route['from_place']} → {route['to_place']}\n"
                 "Bu yo'nalishdagi e'lonlar ham to'xtatiladi.",
                 InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Ha, o'chirish", callback_data=f"grdy:{route['id']}"),
-                    InlineKeyboardButton("❌ Yo'q", callback_data=f"gr:{route['group_id']}"),
+                    InlineKeyboardButton("✅ Ha, o'chirish", callback_data=f"crdy:{route['id']}"),
+                    InlineKeyboardButton("❌ Yo'q", callback_data=f"cr:{route['group_id']}"),
                 ]]),
             )
         return
-    if action == "grdy":
+    if action == "crdy":
         route = await db.get_route(int(parts[1]))
         if route:
             await db.delete_route(route["id"])
@@ -968,30 +1022,100 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
             await _safe_edit(query, body, markup)
         return
 
-    # ── guruh ichidagi haydovchilar, e'lonlar, sozlamalar ──
-    if action == "gd":
-        body, markup = await _group_drivers_view(db, int(parts[1]))
+    # ── jamlanma ichidagi guruhlar ──
+    if action == "cg":
+        body, markup = await _chats_view(db, hub, int(parts[1]))
         await _safe_edit(query, body, markup)
         return
-    if action == "ge":
-        body, markup = await _group_entries_view(db, int(parts[1]))
+    if action == "cga":
+        cid = int(parts[1])
+        context.user_data["await"] = ("chat", cid)
+        await msg.reply_text(
+            "Guruhdan bitta xabarni shu botga forward qiling, yoki guruh ID sini yozing (-100...).",
+            reply_markup=cancel_kb(),
+        )
+        return
+    if action == "cgc":
+        body, markup = await _chat_menu_view(db, int(parts[1]))
         await _safe_edit(query, body, markup)
         return
-    if action == "gs":
-        body, markup = await _group_settings_view(db, int(parts[1]))
+    if action == "cgm":
+        chat_id = int(parts[1])
+        ch = await db.get_chat(chat_id)
+        if ch is None:
+            return
+        others = [c for c in await db.list_collections() if c["id"] != ch["collection_id"]]
+        rows = [[InlineKeyboardButton(f"{i}. {c['name'][:28]}",
+                                      callback_data=f"cgmo:{chat_id}:{c['id']}")]
+                for i, c in enumerate(others, start=1)]
+        rows.append([InlineKeyboardButton("⬅️ Orqaga", callback_data=f"cgc:{chat_id}")])
+        text = ("Guruh qaysi jamlanmaga ko'chirilsin?" if others else
+                "Boshqa jamlanma yo'q. Avval 🏘 Jamlanmalar → ➕ Yangi jamlanma orqali yarating.")
+        await _safe_edit(query, text, InlineKeyboardMarkup(rows))
+        return
+    if action == "cgmo":
+        chat_id, cid = int(parts[1]), int(parts[2])
+        ch = await db.get_chat(chat_id)
+        if ch is not None and await db.get_collection(cid):
+            await db.move_chat(chat_id, cid)
+            board = hub.get(chat_id)
+            if board:
+                board.mark_dirty()
+        body, markup = await _chat_menu_view(db, chat_id)
         await _safe_edit(query, body, markup)
         return
-    if action == "gsa":
-        chat_id, hours = int(parts[1]), int(parts[2])
+    if action == "cgr":
+        chat_id = int(parts[1])
+        ch = await db.get_chat(chat_id)
+        title = (ch["title"] if ch else "") or str(chat_id)
+        await _safe_edit(
+            query,
+            f"🗑 {title} jamlanmadan olib tashlansinmi?\n"
+            "Bu guruhning oynasi o'chadi. Guruhning o'zi Telegram'da qoladi.",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Ha, olib tashlash", callback_data=f"cgry:{chat_id}"),
+                InlineKeyboardButton("❌ Yo'q", callback_data=f"cgc:{chat_id}"),
+            ]]),
+        )
+        return
+    if action == "cgry":
+        chat_id = int(parts[1])
+        ch = await db.get_chat(chat_id)
+        if ch is None:
+            return
+        cid = ch["collection_id"]
+        board = hub.remove(chat_id)
+        if board:
+            await board.delete_all()
+        await db.remove_chat(chat_id)
+        body, markup = await _chats_view(db, hub, cid)
+        await _safe_edit(query, body, markup)
+        return
+
+    # ── jamlanma ichidagi haydovchilar, e'lonlar, sozlamalar ──
+    if action == "cd":
+        body, markup = await _collection_drivers_view(db, int(parts[1]))
+        await _safe_edit(query, body, markup)
+        return
+    if action == "ce":
+        body, markup = await _collection_entries_view(db, int(parts[1]))
+        await _safe_edit(query, body, markup)
+        return
+    if action == "cs":
+        body, markup = await _collection_settings_view(db, int(parts[1]))
+        await _safe_edit(query, body, markup)
+        return
+    if action == "csa":
+        cid, hours = int(parts[1]), int(parts[2])
         if hours in AUTO_STOP_CHOICES:
-            await db.set_group_field(chat_id, "auto_stop_hours", hours)
+            await db.set_collection_field(cid, "auto_stop_hours", hours)
         # tanlangach menyu yopiladi (natija qoladi)
         await _safe_edit(query, f"✅ Saqlandi: avtomatik to'xtash {hours} soat.")
         return
-    if action == "gsb":
-        chat_id, n = int(parts[1]), int(parts[2])
+    if action == "csb":
+        cid, n = int(parts[1]), int(parts[2])
         if n in REPOST_CHOICES:
-            await db.set_group_field(chat_id, "repost_after_msgs", n)
+            await db.set_collection_field(cid, "repost_after_msgs", n)
         await _safe_edit(query, f"✅ Saqlandi: oyna har {n} ta yangi xabardan keyin pastga tushadi.")
         return
 
@@ -1006,32 +1130,32 @@ async def _manager_callback(query, context, action: str, parts: list[str]) -> No
         return
     if action == "dok":
         target = int(parts[1])
-        body, markup = await _group_picker_view(db, target)
+        body, markup = await _collection_picker_view(db, target)
         await _safe_edit(query, f"✅ Arizani tasdiqlash.\n{body}", markup)
         return
-    if action == "dgp":
+    if action == "dcp":
         target = int(parts[1])
-        body, markup = await _group_picker_view(db, target)
+        body, markup = await _collection_picker_view(db, target)
         await _safe_edit(query, body, markup)
         return
-    if action == "dgo":
-        target, chat_id = int(parts[1]), int(parts[2])
+    if action == "dco":
+        target, cid = int(parts[1]), int(parts[2])
         user = await db.get_user(target)
-        g = await db.get_group(chat_id)
-        if user is None or g is None:
+        c = await db.get_collection(cid)
+        if user is None or c is None:
             return
-        title = g["title"] or str(chat_id)
+        name = c["name"]
         if user.status == "pending":
+            await db.change_driver_collection(target, cid)
             await db.update_user_fields(target, status="approved")
-            await db.change_driver_group(target, chat_id)
             await _notify(context, target,
-                          f"✅ Arizangiz tasdiqlandi! Guruh: {title}.\n"
+                          f"✅ Arizangiz tasdiqlandi! Jamlanma: {name}.\n"
                           "Muddatni admin belgilagach ishlashingiz mumkin.",
                           driver_menu_kb())
-        elif user.group_id != chat_id:
-            await db.change_driver_group(target, chat_id)
+        elif user.group_id != cid:
+            await db.change_driver_collection(target, cid)
             await _notify(context, target,
-                          f"🔀 Guruhingiz o'zgartirildi: {title}. Eski e'loningiz to'xtatildi.")
+                          f"🔀 Jamlanmangiz o'zgartirildi: {name}. Eski e'loningiz to'xtatildi.")
         hub.mark_all_dirty()
         body, markup = await _driver_detail(db, target)
         await _safe_edit(query, body, markup)
@@ -1130,7 +1254,7 @@ async def _driver_callback(query, context, uid: int, action: str, parts: list[st
     if action == "rt":
         route = await db.get_route(int(parts[1]))
         if not route or not route["is_open"] or route["group_id"] != user.group_id:
-            await _safe_edit(query, "Bu yo'nalish hozir yopiq yoki sizning guruhingizga tegishli emas.")
+            await _safe_edit(query, "Bu yo'nalish hozir yopiq yoki sizning jamlanmangizga tegishli emas.")
             return
         await _safe_edit(
             query,
@@ -1143,7 +1267,7 @@ async def _driver_callback(query, context, uid: int, action: str, parts: list[st
         route = await db.get_route(int(parts[1]))
         seats = int(parts[2])
         if not route or not route["is_open"] or route["group_id"] != user.group_id:
-            await _safe_edit(query, "Bu yo'nalish hozir yopiq yoki sizning guruhingizga tegishli emas.")
+            await _safe_edit(query, "Bu yo'nalish hozir yopiq yoki sizning jamlanmangizga tegishli emas.")
             return
         _, replaced = await db.start_entry(uid, route["id"], seats)
         hub.mark_all_dirty()

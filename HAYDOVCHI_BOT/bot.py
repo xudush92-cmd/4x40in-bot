@@ -1,5 +1,5 @@
 """
-bot.py — Haydovchilar boti (bir nechta Telegram guruh uchun).
+bot.py — Haydovchilar boti (jamlanmalar va ularning Telegram guruhlari uchun).
 
 Ishga tushirish:
     pip install -r requirements.txt
@@ -118,12 +118,15 @@ async def post_init(app: Application) -> None:
     db = Database(DB_PATH)
     await db.open()
     me = await app.bot.get_me()
-    # .env dagi boshlang'ich guruhlarni bazaga qo'shamiz (agar yo'q bo'lsa)
+    # Jamlanmalar va guruhlar faqat admin tomonidan botdan boshqariladi.
+    # .env dagi GROUP_CHAT_IDS avtomatik jamlanma yaratmaydi — faqat ogohlantiradi.
     for chat_id in GROUP_CHAT_IDS:
-        await db.add_group(chat_id, "")
+        if await db.get_chat(chat_id) is None:
+            log.warning("GROUP_CHAT_IDS dagi %s hech qaysi jamlanmaga biriktirilmagan. "
+                        "Admin uni botdan jamlanmaga qo'shishi kerak.", chat_id)
     hub = BoardHub()
-    for g in await db.list_groups():
-        hub.add(BoardManager(app.bot, db, g["chat_id"], me.username))
+    for chat_id in await db.all_chat_ids():
+        hub.add(BoardManager(app.bot, db, chat_id, me.username))
     app.bot_data["db"] = db
     app.bot_data["hub"] = hub
     app.bot_data["bot_username"] = me.username

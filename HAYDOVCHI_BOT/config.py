@@ -23,7 +23,8 @@ ADMIN_ID: int = int(_require("ADMIN_ID"))
 
 def _group_ids() -> list[int]:
     """
-    Boshlang'ich guruhlar (ixtiyoriy). Guruhlarni asosan admin botning o'zidan qo'shadi.
+    Eski sozlama (ixtiyoriy). Jamlanma va guruhlarni admin botning o'zidan yaratadi;
+    bu ro'yxat faqat hech qaysi jamlanmada bo'lmagan guruhlar haqida ogohlantiradi.
     GROUP_CHAT_IDS=-100111,-100222
     """
     raw = os.getenv("GROUP_CHAT_IDS") or os.getenv("GROUP_CHAT_ID") or ""
