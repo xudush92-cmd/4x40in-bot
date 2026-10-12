@@ -55,9 +55,14 @@ from telethon.errors import (
     UsernameNotOccupiedError,
 )
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import CheckChatInviteRequest
+from telethon.tl.types import ChatInviteAlready
+from telethon.utils import get_peer_id
 from telethon.tl.types import (
     MessageEntityBold,
     MessageEntityBotCommand,
+    Chat,
+    Channel,
     MessageEntityCashtag,
     MessageEntityCode,
     MessageEntityCustomEmoji,
@@ -83,6 +88,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     Update,
 )
+from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -98,6 +104,7 @@ from client_pool import ClientPool, PoolBusyError, SessionInvalidError
 from worker_manager import WorkerManager, MAX_CONCURRENT_WORKERS
 from health import HealthServer, format_status_message, START_TIME, _get_memory_info
 from rate_limiter import RateLimiter
+from chat_parser import extract_chat_targets, extract_invalid_telegram_links
 
 # ─────────────────────────────────────────────────────────────────────────
 # ENV
@@ -144,6 +151,12 @@ START_JITTER_MAX_S = 60     # worker birinchi start: 0-60s tasodifiy kechikish (
 MAX_CHAT_FAILS = 3          # chat ketma-ket shuncha xato bersa — avto-o'chiriladi
 TARIFF_DURATION_DAYS = 30   # default tarif muddati (kun)
 TARIFF_WARN_DAYS = 3        # muddat tugashidan necha kun oldin ogohlantirish
+ADMIN_ACTION_TIMEOUT_S = 600
+ADMIN_USER_PAGE_SIZE = 8
+MAX_ADMIN_TERM_DAYS = 3650
+MAX_ADMIN_MESSAGE_LENGTH = 3500
+MAX_CHAT_BATCH_SIZE = 50
+SUSPENSION_CHECK_INTERVAL_S = 60
 
 ADMIN_CONTACT_PHONE = "+998938670592"
 # Referal link uchun bot username (postlarga qo'shilmaydi, faqat referal linkda).
@@ -298,12 +311,24 @@ class LoginCtx:
 
 user_states: dict[int, dict] = {}
 login_ctx: dict[int, LoginCtx] = {}
+_user_control_locks: dict[int, asyncio.Lock] = {}
+
+
+def _user_control_lock(uid: int) -> asyncio.Lock:
+    """Serialize Start and admin suspension changes for each individual user."""
+    lock = _user_control_locks.get(uid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_control_locks[uid] = lock
+    return lock
+
 
 # Global komponentlar (main() da ishga tushiriladi)
 application: Application | None = None
 client_pool: ClientPool | None = None
 worker_manager: WorkerManager | None = None
 health_server: HealthServer | None = None
+broadcast_task: asyncio.Task | None = None
 rate_limiter: RateLimiter = RateLimiter()
 
 
@@ -703,7 +728,18 @@ async def notify_super_for_approval(uid: int) -> None:
 # POSTING WORKER
 # ─────────────────────────────────────────────────────────────────────────
 async def _resolve_chat(client: TelegramClient, chat: str):
+    """Chat manzilini Telethon entity'ga aylantiradi.
+
+    Private invite link foydalanuvchi akkaunti guruhga oldindan a'zo
+    bo'lgan bo'lsagina qabul qilinadi; bot akkauntni o'zi guruhga qo'shmaydi.
+    """
     s = chat.strip()
+    if s.startswith("invite:"):
+        invite_hash = s.split(":", 1)[1]
+        result = await client(CheckChatInviteRequest(invite_hash))
+        if isinstance(result, ChatInviteAlready):
+            return result.chat
+        raise ValueError("Avval Telegram akkauntingiz bilan guruhga qo'shiling")
     if s.startswith("@"):
         return await client.get_entity(s)
     if s.lstrip("-").isdigit():
@@ -793,6 +829,10 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
 
     try:
         while not stop.is_set():
+            if await db.is_suspended(uid):
+                await db.set_running(uid, False)
+                log(f"⏸ Worker:{uid} admin tomonidan to'xtatilgan", "warning")
+                break
             sess = await db.get_session(uid)
             if not sess:
                 log(f"❌ Worker:{uid} sessiya yo'q — to'xtaydi", "warning")
@@ -840,6 +880,10 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                 removed_chats: list[str] = []
                 for chat in chats:
                     if stop.is_set():
+                        break
+                    if await db.is_suspended(uid):
+                        await db.set_running(uid, False)
+                        stop.set()
                         break
                     try:
                         await asyncio.wait_for(
@@ -954,6 +998,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"⏳ Juda ko'p so'rov. {wait} soniya kuting.")
         return
 
+    if not is_super(uid) and await db.is_suspended(uid):
+        user = await db.get_user(uid)
+        until = user.get("suspended_until") if user else None
+        detail = f"\nQayta faollashish: {until} UTC" if until else "\nAdmin qayta faollashtirguncha."
+        await update.message.reply_text("⏸ Hisobingiz vaqtincha to'xtatilgan." + detail)
+        return
+
     # ── REFERAL: /start ref_<uid> orqali kelganni biriktiramiz ──────────
     # Faqat hali tasdiqlanmagan (yangi) userlar uchun. Hisoblash esa
     # admin tasdiqlaganda amalga oshadi (try_count_referral).
@@ -1058,10 +1109,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # CALLBACK
 # ─────────────────────────────────────────────────────────────────────────
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global broadcast_task
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
     data = q.data or ""
+
+    if not is_super(uid) and await db.is_suspended(uid):
+        user = await db.get_user(uid)
+        until = user.get("suspended_until") if user else None
+        detail = f"\nQayta faollashish: {until} UTC" if until else "\nAdmin qayta faollashtirguncha."
+        with contextlib.suppress(Exception):
+            await q.edit_message_text("⏸ Hisobingiz vaqtincha to'xtatilgan." + detail)
+        return
 
     # NUMPAD
     if data.startswith("np:"):
@@ -1147,9 +1207,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 return
             tariff = int(action[1])  # t1->1 ... t4->4
             await db.add_admin(target)
-            await db.set_tariff(target, tariff)
-            await db.set_tariff_expires(target, calc_expiry())
+            approval_expiry = calc_expiry()
+            await db.set_tariff_and_expiry(target, tariff, approval_expiry)
             await db.set_awaiting_approval(target, False)
+            await db.record_admin_action(
+                uid, target, "approve_user",
+                f"tariff={tariff}; expires={approval_expiry}",
+            )
             # Eski oqim bilan moslik: agar pending sessiya bo'lsa, uni faollashtiraman
             if sess:
                 await db.set_session(target, sess)
@@ -1207,6 +1271,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # shu sababli del_session chaqirilmaydi.
             await db.del_pending(target)
             await db.set_awaiting_approval(target, False)
+            await db.record_admin_action(uid, target, "reject_user", "approval request rejected")
             log(f"❌ Rad etildi: {target}")
             await q.edit_message_text(f"⛔ Rad etildi: {target}")
             with contextlib.suppress(Exception):
@@ -1219,12 +1284,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
         return
 
+    if data == "rmadm:cancel":
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
+
     if data.startswith("rmadm:"):
         if not is_super(uid):
             return
         target = int(data.split(":")[1])
         if worker_manager:
             await worker_manager.stop_worker(target)
+        await db.record_admin_action(uid, target, "user_removed", "user record and data deleted by admin")
         await client_pool.remove(target)
         await db.delete_user(target)
         _wipe_user_media(target)
@@ -1235,10 +1305,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 target,
                 "❌ Sizning huquqingiz bekor qilindi va ma'lumotlaringiz tozalandi.",
             )
-        return
-
-    if data == "rmadm:cancel":
-        await q.edit_message_text("❌ Bekor qilindi.")
         return
 
     if data == "stop:yes":
@@ -1260,26 +1326,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text("❌ Bekor qilindi.")
         return
     if data == "go:yes":
-        if worker_manager and worker_manager.is_running(uid):
-            await q.edit_message_text("⚠️ Allaqachon ishlamoqda.")
-            return
-        if await db.is_tariff_expired(uid):
-            await q.edit_message_text(_waiting_mode_text())
-            return
-        chats = await db.get_chats(uid)
-        posts = await db.get_posts(uid)
-        if not chats or not posts:
-            await q.edit_message_text("❌ Chat yoki post yo'q. Avval qo'shing.")
-            return
-        started = await worker_manager.start_worker(uid) if worker_manager else False
-        if not started:
-            await q.edit_message_text(
-                "⚠️ Hozir tizim band. Bir oz kuting va qaytadan urinib ko'ring."
-            )
-            return
-        await db.set_running(uid, True)
-        interval = await db.get_interval(uid)
-        log(f"▶️ Start: {uid}")
+        async with _user_control_lock(uid):
+            # Recheck under the same lock used by admin suspension: an older
+            # confirmation must not start posting after the account is paused.
+            if await db.is_suspended(uid):
+                user = await db.get_user(uid)
+                until = user.get("suspended_until") if user else None
+                detail = f"\nQayta faollashish: {until} UTC" if until else "\nAdmin qayta faollashtirguncha."
+                await q.edit_message_text("⏸ Hisobingiz vaqtincha to'xtatilgan." + detail)
+                return
+            if worker_manager and worker_manager.is_running(uid):
+                await q.edit_message_text("⚠️ Allaqachon ishlamoqda.")
+                return
+            if await db.is_tariff_expired(uid):
+                await q.edit_message_text(_waiting_mode_text())
+                return
+            chats = await db.get_chats(uid)
+            posts = await db.get_posts(uid)
+            if not chats or not posts:
+                await q.edit_message_text("❌ Chat yoki post yo'q. Avval qo'shing.")
+                return
+            started = await worker_manager.start_worker(uid) if worker_manager else False
+            if not started:
+                await q.edit_message_text(
+                    "⚠️ Hozir tizim band. Bir oz kuting va qaytadan urinib ko'ring."
+                )
+                return
+            await db.set_running(uid, True)
+            interval = await db.get_interval(uid)
+            log(f"▶️ Start: {uid}")
         await q.edit_message_text(
             f"✅ Posting boshlandi!\n"
             f"💬 {len(chats)} ta chat\n"
@@ -1405,6 +1480,453 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text(await format_admin_list(), reply_markup=admin_panel_kb())
         return
 
+    if data in ("adm:users", "adm:tariff"):
+        if not is_super(uid):
+            return
+        user_states[uid] = {"step": "admin_user_search", "ts": time.time(), "query": "*"}
+        await q.edit_message_text(
+            "🔎 Foydalanuvchini ID, ism, username yoki telefon orqali qidiring.\n"
+            "Oxirgi foydalanuvchilar ro'yxati uchun * yuboring.\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
+    if data.startswith("adm:users:page:"):
+        if not is_super(uid):
+            return
+        try:
+            offset = max(0, int(data.rsplit(":", 1)[1]))
+        except ValueError:
+            return
+        state = user_states.get(uid, {})
+        query = state.get("query", "*")
+        text, markup = await _build_user_search_results(query, offset)
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "adm:users:back":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        query = state.get("query", "*")
+        text, markup = await _build_user_search_results(query, 0)
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith("adm:ucard:"):
+        if not is_super(uid):
+            return
+        try:
+            target = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        text, markup = await _build_user_card(target)
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith("adm:suspend:") and data not in {"adm:suspend:confirm", "adm:suspend:cancel"}:
+        if not is_super(uid):
+            return
+        try:
+            target = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        if target == SUPER_ADMIN or not await db.get_user(target):
+            await q.edit_message_text("❌ Bu foydalanuvchini to'xtatib bo'lmaydi.")
+            return
+        user_states[uid] = {
+            "step": "admin_suspend_days",
+            "target": target,
+            "ts": time.time(),
+        }
+        await q.edit_message_text(
+            f"⏸ {target} uchun to'xtatish muddatini kun bilan kiriting.\n"
+            "1–3650 = shu kunlarga to'xtatish, 0 = admin qo'lda yoqmaguncha.\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
+    if data == "adm:suspend:cancel":
+        if not is_super(uid):
+            return
+        user_states.pop(uid, None)
+        await q.edit_message_text("❌ To'xtatish bekor qilindi.")
+        return
+
+    if data == "adm:suspend:confirm":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "admin_suspend_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+            user_states.pop(uid, None)
+            await q.edit_message_text("⚠️ Tasdiqlash vaqti o'tgan. Qaytadan boshlang.")
+            return
+        target = int(state["target"])
+        days = int(state["days"])
+        until = calc_expiry(days) if days > 0 else None
+        if target == SUPER_ADMIN or not await db.get_user(target):
+            user_states.pop(uid, None)
+            await q.edit_message_text("❌ Foydalanuvchi topilmadi yoki bu amal mumkin emas.")
+            return
+        async with _user_control_lock(target):
+            await db.set_user_suspended(target, suspended_until=until)
+            if target in login_ctx:
+                await cleanup_login(target)
+            if worker_manager:
+                await worker_manager.stop_worker(target)
+            await db.set_running(target, False)
+        await db.record_admin_action(
+            uid, target, "suspend", f"days={days}; until={until or 'manual'}"
+        )
+        user_states.pop(uid, None)
+        log(f"⏸ Admin {uid} foydalanuvchini to'xtatdi: {target}, days={days}")
+        until_line = f"\n⏰ Tugash vaqti: {until} UTC" if until else "\nMuddat: qo'lda faollashtirilguncha"
+        await q.edit_message_text(f"✅ {target} vaqtincha to'xtatildi.{until_line}")
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                target,
+                "⏸ Hisobingiz admin tomonidan vaqtincha to'xtatildi."
+                + until_line
+                + "\nSavollar uchun admin bilan bog'laning.",
+            )
+        return
+
+    if data.startswith("adm:resume:") and data not in {"adm:resume:yes", "adm:resume:no"}:
+        if not is_super(uid):
+            return
+        try:
+            target = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        if target == SUPER_ADMIN or not await db.get_user(target):
+            await q.edit_message_text("❌ Bu foydalanuvchini faollashtirib bo'lmaydi.")
+            return
+        user_states[uid] = {
+            "step": "admin_resume_confirm",
+            "target": target,
+            "ts": time.time(),
+        }
+        await q.edit_message_text(
+            f"▶️ {target} hisobini qayta faollashtirasizmi? Posting o'z-o'zidan boshlanmaydi.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Faollashtirish", callback_data="adm:resume:yes"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="adm:resume:no"),
+                ]
+            ]),
+        )
+        return
+
+    if data == "adm:resume:no":
+        if not is_super(uid):
+            return
+        user_states.pop(uid, None)
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
+
+    if data == "adm:resume:yes":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "admin_resume_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+            user_states.pop(uid, None)
+            await q.edit_message_text("⚠️ Tasdiqlash vaqti o'tgan. Qaytadan boshlang.")
+            return
+        target = int(state["target"])
+        if target == SUPER_ADMIN or not await db.get_user(target):
+            user_states.pop(uid, None)
+            await q.edit_message_text("❌ Foydalanuvchi topilmadi.")
+            return
+        async with _user_control_lock(target):
+            await db.resume_user(target)
+            await db.record_admin_action(uid, target, "resume", "posting remains stopped")
+        user_states.pop(uid, None)
+        log(f"▶️ Admin {uid} foydalanuvchini faollashtirdi: {target}")
+        await q.edit_message_text(f"✅ {target} qayta faollashtirildi. Posting avtomatik boshlanmadi.")
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                target,
+                "✅ Hisobingiz qayta faollashtirildi. Postingni davom ettirish uchun ▶️ Start bosing.",
+                reply_markup=await menu_for(target),
+            )
+        return
+
+    if data.startswith("adm:plan:"):
+        if not is_super(uid):
+            return
+        parts = data.split(":")
+        try:
+            target = int(parts[2])
+        except (ValueError, IndexError):
+            return
+        if target == SUPER_ADMIN or not await db.get_user(target):
+            await q.edit_message_text("❌ Tarifni o'zgartirib bo'lmaydi.")
+            return
+        if len(parts) == 3:
+            info = await db.get_user_info(target)
+            name = info.get("name") or str(target)
+            cur_t = await db.get_tariff(target)
+            rows = [
+                [
+                    InlineKeyboardButton("🟢 1-Start (5/10)", callback_data=f"adm:plan:{target}:1"),
+                    InlineKeyboardButton("🔵 2-Biznes (10/25)", callback_data=f"adm:plan:{target}:2"),
+                ],
+                [
+                    InlineKeyboardButton("🟡 3-Pro (20/50)", callback_data=f"adm:plan:{target}:3"),
+                    InlineKeyboardButton("🔴 4-Premium (50/100)", callback_data=f"adm:plan:{target}:4"),
+                ],
+                [InlineKeyboardButton("❌ Bekor", callback_data="adm:term:cancel")],
+            ]
+            await q.edit_message_text(
+                f"🎫 {name} — hozirgi tarif: {cur_t}. Yangi tarifni tanlang:",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+        try:
+            tariff = int(parts[3])
+        except (ValueError, IndexError):
+            return
+        if tariff not in TARIFFS:
+            await q.edit_message_text("❌ Noto'g'ri tarif.")
+            return
+        user_states[uid] = {
+            "step": "admin_term_days",
+            "target": target,
+            "tariff": tariff,
+            "ts": time.time(),
+        }
+        await q.edit_message_text(
+            f"🎫 {target} uchun {tariff_label(tariff)} tanlandi.\n"
+            f"Yangi muddatni kun bilan kiriting (1–{MAX_ADMIN_TERM_DAYS}).\n"
+            "Eski muddat qo'shilmaydi — yangi sana bugundan hisoblanadi.\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
+    # Old admin paneldan qolgan inline tugmalar ham custom muddat oqimiga o'tadi.
+    if data == "tariff:cancel":
+        user_states.pop(uid, None)
+        await q.edit_message_text("❌ Bekor qilindi.")
+        return
+
+    if data.startswith("tariff:") or data.startswith("settar:"):
+        if not is_super(uid):
+            return
+        parts = data.split(":")
+        try:
+            target = int(parts[1])
+        except (ValueError, IndexError):
+            return
+        if data.startswith("tariff:"):
+            if target == SUPER_ADMIN or not await db.get_user(target):
+                await q.edit_message_text("❌ Foydalanuvchi topilmadi.")
+                return
+            cur_t = await db.get_tariff(target)
+            rows = [
+                [
+                    InlineKeyboardButton("🟢 Start", callback_data=f"adm:plan:{target}:1"),
+                    InlineKeyboardButton("🔵 Biznes", callback_data=f"adm:plan:{target}:2"),
+                ],
+                [
+                    InlineKeyboardButton("🟡 Pro", callback_data=f"adm:plan:{target}:3"),
+                    InlineKeyboardButton("🔴 Premium", callback_data=f"adm:plan:{target}:4"),
+                ],
+                [InlineKeyboardButton("❌ Bekor", callback_data="adm:term:cancel")],
+            ]
+            await q.edit_message_text(
+                f"🎫 Foydalanuvchi {target}, hozirgi tarif: {cur_t}.\nYangi tarifni tanlang:",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+        try:
+            tariff = int(parts[2])
+        except (ValueError, IndexError):
+            return
+        if target == SUPER_ADMIN or tariff not in TARIFFS or not await db.get_user(target):
+            await q.edit_message_text("❌ Tarif tanlovi yaroqsiz.")
+            return
+        user_states[uid] = {
+            "step": "admin_term_days",
+            "target": target,
+            "tariff": tariff,
+            "ts": time.time(),
+        }
+        await q.edit_message_text(
+            f"🎫 {target} uchun {tariff_label(tariff)} tanlandi.\n"
+            f"Yangi muddatni kun bilan kiriting (1–{MAX_ADMIN_TERM_DAYS}).\n"
+            "Oldingi muddat almashtiriladi, ustiga qo'shilmaydi."
+        )
+        return
+
+    if data == "adm:term:cancel":
+        if not is_super(uid):
+            return
+        user_states.pop(uid, None)
+        await q.edit_message_text("❌ Tarif/muddat o'zgartirish bekor qilindi.")
+        return
+
+    if data == "adm:term:confirm":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "admin_term_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+            user_states.pop(uid, None)
+            await q.edit_message_text("⚠️ Tasdiqlash vaqti o'tgan. Qaytadan boshlang.")
+            return
+        target = int(state["target"])
+        tariff = int(state["tariff"])
+        days = int(state["days"])
+        expires = state["expires_at"]
+        if target == SUPER_ADMIN or not await db.get_user(target):
+            user_states.pop(uid, None)
+            await q.edit_message_text("❌ Foydalanuvchi topilmadi.")
+            return
+        old_expiry = await db.get_tariff_expires(target)
+        # One atomic update replaces the old date (no stacking) and resets warnings.
+        await db.set_tariff_and_expiry(target, tariff, expires)
+        await db.record_admin_action(
+            uid, target, "set_tariff_term",
+            f"tariff={tariff}; days={days}; old={old_expiry or 'none'}; new={expires}",
+        )
+        user_states.pop(uid, None)
+        log(f"🎫 Admin {uid}: {target} → tariff={tariff}, {days} kun, expires={expires}")
+        await q.edit_message_text(
+            f"✅ {target} uchun tarif yangilandi: {tariff_label(tariff)}\n"
+            f"📅 Yangi tugash: {expires} UTC\n"
+            "Eski muddat almashtirildi; qolgan kunlar qo'shilmadi."
+        )
+        with contextlib.suppress(Exception):
+            max_chats, max_posts = tariff_limits(tariff)
+            await application.bot.send_message(
+                target,
+                f"🎫 Tarifingiz yangilandi: {tariff_label(tariff)}\n"
+                f"📅 Yangi muddat: {days} kun (tugash: {expires} UTC).\n"
+                f"Endi {max_chats} ta chat va {max_posts} ta post qo'sha olasiz.",
+                reply_markup=await menu_for(target),
+            )
+        return
+
+    if data.startswith("adm:dm:") and data not in {"adm:dm:cancel", "adm:dm:send"}:
+        if not is_super(uid):
+            return
+        try:
+            target = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        if not await db.get_user(target):
+            await q.edit_message_text("❌ Foydalanuvchi topilmadi.")
+            return
+        user_states[uid] = {
+            "step": "admin_dm_text",
+            "target": target,
+            "ts": time.time(),
+        }
+        await q.edit_message_text(
+            f"✉️ {target} ga yuboriladigan matnni kiriting ({MAX_ADMIN_MESSAGE_LENGTH} belgigacha).\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
+    if data == "adm:dm:cancel":
+        if not is_super(uid):
+            return
+        user_states.pop(uid, None)
+        await q.edit_message_text("❌ Xabar yuborish bekor qilindi.")
+        return
+
+    if data == "adm:dm:send":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "admin_dm_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+            user_states.pop(uid, None)
+            await q.edit_message_text("⚠️ Xabar yuborish holati topilmadi yoki vaqti o'tdi. Qaytadan boshlang.")
+            return
+        target = int(state["target"])
+        text = state["text"]
+        try:
+            await application.bot.send_message(target, text)
+            result = "✅ Xabar yuborildi."
+            action = "direct_message_sent"
+        except Exception as e:
+            result = "❌ Xabar yuborilmadi (foydalanuvchi botni bloklagan yoki xatolik)."
+            action = "direct_message_failed"
+            log(f"⚠️ Admin xabari yetmadi {target}: {type(e).__name__}", "warning")
+        await db.record_admin_action(uid, target, action, f"chars={len(text)}")
+        user_states.pop(uid, None)
+        await q.edit_message_text(result)
+        return
+
+    if data == "adm:broadcast":
+        if not is_super(uid):
+            return
+        rows = [
+            [InlineKeyboardButton("📢 Barcha bot foydalanuvchilari", callback_data="adm:broadcast:segment:all")],
+            [InlineKeyboardButton("✅ Faol tarif", callback_data="adm:broadcast:segment:active")],
+            [InlineKeyboardButton("⌛ Muddati tugagan", callback_data="adm:broadcast:segment:expired")],
+            [InlineKeyboardButton("⏸ To'xtatilgan", callback_data="adm:broadcast:segment:suspended")],
+            [InlineKeyboardButton("⏳ Tasdiq kutayotgan", callback_data="adm:broadcast:segment:pending")],
+        ]
+        await q.edit_message_text("📢 Xabar yuboriladigan auditoriyani tanlang:", reply_markup=InlineKeyboardMarkup(rows))
+        return
+
+    if data.startswith("adm:broadcast:segment:"):
+        if not is_super(uid):
+            return
+        segment = data.rsplit(":", 1)[1]
+        if segment not in {"all", "active", "expired", "suspended", "pending"}:
+            return
+        targets = await db.get_broadcast_targets(segment, exclude_uid=SUPER_ADMIN)
+        user_states[uid] = {
+            "step": "admin_broadcast_text",
+            "segment": segment,
+            "target_count": len(targets),
+            "ts": time.time(),
+        }
+        await q.edit_message_text(
+            f"📢 Tanlangan auditoriya: {len(targets)} ta foydalanuvchi.\n"
+            f"Yuboriladigan matnni kiriting ({MAX_ADMIN_MESSAGE_LENGTH} belgigacha).\n"
+            "Bekor qilish: /cancel"
+        )
+        return
+
+    if data == "adm:broadcast:cancel":
+        if not is_super(uid):
+            return
+        user_states.pop(uid, None)
+        await q.edit_message_text("❌ Umumiy xabar bekor qilindi.")
+        return
+
+    if data == "adm:broadcast:send":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "admin_broadcast_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+            user_states.pop(uid, None)
+            await q.edit_message_text("⚠️ Xabar yuborish holati topilmadi yoki vaqti o'tdi. Qaytadan boshlang.")
+            return
+        if broadcast_task and not broadcast_task.done():
+            await q.edit_message_text("⏳ Boshqa umumiy xabar hozir yuborilmoqda. Yakunlanishini kuting.")
+            return
+        segment = state["segment"]
+        text = state["text"]
+        targets = await db.get_broadcast_targets(segment, exclude_uid=SUPER_ADMIN)
+        user_states.pop(uid, None)
+        if not targets:
+            await q.edit_message_text("ℹ️ Bu auditoriyada yuboruvchi topilmadi.")
+            return
+        if q.message is None:
+            await q.answer("Xabar yuborish oynasi topilmadi. Qaytadan boshlang.", show_alert=True)
+            return
+        chat_id = q.message.chat_id
+        message_id = q.message.message_id
+        await q.edit_message_text(f"⏳ Xabar yuborish navbatga olindi: 0/{len(targets)}")
+        broadcast_task = asyncio.create_task(
+            _run_broadcast(uid, segment, text, targets, chat_id, message_id),
+            name="admin-broadcast",
+        )
+        return
+
     if data == "adm:remove":
         if not is_super(uid):
             return
@@ -1424,129 +1946,405 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # Tarif o'zgartirish: foydalanuvchini tanlash
-    if data == "adm:tariff":
-        if not is_super(uid):
-            return
-        admins = await db.get_admins()
-        admins = [a for a in admins if a != SUPER_ADMIN]
-        if not admins:
-            await q.edit_message_text("❌ Tarif o'zgartirish uchun foydalanuvchi yo'q.")
-            return
-        rows = []
-        for a in admins:
-            info = await db.get_user_info(a)
-            name = info.get("name", str(a))
-            t = await db.get_tariff(a)
-            rows.append([InlineKeyboardButton(f"🎫 {name} ({t}-tarif)", callback_data=f"tariff:{a}")])
-        rows.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="tariff:cancel")])
-        await q.edit_message_text(
-            "🎫 Tarifni o'zgartirish uchun foydalanuvchini tanlang:",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        return
-
-    if data == "tariff:cancel":
-        await q.edit_message_text("❌ Bekor qilindi.")
-        return
-
-    # Tanlangan foydalanuvchi uchun tarif variantlari
-    if data.startswith("tariff:"):
-        if not is_super(uid):
-            return
-        target = int(data.split(":")[1])
-        info = await db.get_user_info(target)
-        name = info.get("name", str(target))
-        cur_t = await db.get_tariff(target)
-        rows = [
-            [
-                InlineKeyboardButton("🟢 1-Start (5/10)", callback_data=f"settar:{target}:1"),
-                InlineKeyboardButton("🔵 2-Biznes (10/25)", callback_data=f"settar:{target}:2"),
-            ],
-            [
-                InlineKeyboardButton("🟡 3-Pro (20/50)", callback_data=f"settar:{target}:3"),
-                InlineKeyboardButton("🔴 4-Premium (50/100)", callback_data=f"settar:{target}:4"),
-            ],
-            [InlineKeyboardButton("❌ Bekor", callback_data="tariff:cancel")],
-        ]
-        await q.edit_message_text(
-            f"🎫 {name} — hozirgi: {cur_t}-tarif\nYangi tarifni tanlang:",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        return
-
-    # Tarifni o'rnatish + foydalanuvchiga bildirishnoma
-    if data.startswith("settar:"):
-        if not is_super(uid):
-            return
-        parts = data.split(":")
-        target = int(parts[1])
-        new_t = int(parts[2])
-        await db.set_tariff(target, new_t)
-        await db.set_tariff_expires(target, calc_expiry())
-        log(f"🎫 Tarif o'zgartirildi: {target} → {new_t} (+{TARIFF_DURATION_DAYS} kun)")
-        await q.edit_message_text(
-            f"✅ {target} → {tariff_label(new_t)}\n📅 +{TARIFF_DURATION_DAYS} kun"
-        )
-        with contextlib.suppress(Exception):
-            tmc, tmp = tariff_limits(new_t)
-            await application.bot.send_message(
-                target,
-                f"🎫 Tarifingiz yangilandi: {tariff_label(new_t)}\n"
-                f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n"
-                f"Endi {tmc} ta chat va {tmp} ta post qo'sha olasiz.",
-                reply_markup=await menu_for(target),
-            )
-        return
 
 
 def admin_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("🔄 Yangilash", callback_data="adm:list"),
-                InlineKeyboardButton("🎫 Tarif o'zgartir", callback_data="adm:tariff"),
+                InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="adm:users"),
+                InlineKeyboardButton("📢 Hammaga xabar", callback_data="adm:broadcast"),
             ],
             [
+                InlineKeyboardButton("🎫 Tarif / muddat", callback_data="adm:tariff"),
                 InlineKeyboardButton("➖ Admin o'chir", callback_data="adm:remove"),
             ],
+            [InlineKeyboardButton("🔄 Yangilash", callback_data="adm:list")],
         ]
     )
+
+
+async def _build_user_search_results(query: str, offset: int = 0):
+    total = await db.count_search_users(query)
+    users = await db.search_users(query, limit=ADMIN_USER_PAGE_SIZE, offset=offset)
+    rows = []
+    for user in users:
+        target = int(user["uid"])
+        name = (user.get("name") or "Noma'lum").replace("\n", " ")[:24]
+        username = (user.get("username") or "").lstrip("@")[:18]
+        label = f"👤 {name} · @{username}" if username else f"👤 {name} · {target}"
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"adm:ucard:{target}")])
+
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"adm:users:page:{max(0, offset - ADMIN_USER_PAGE_SIZE)}"))
+    if offset + ADMIN_USER_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("Keyingi ➡️", callback_data=f"adm:users:page:{offset + ADMIN_USER_PAGE_SIZE}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("🔎 Qayta qidirish", callback_data="adm:users")])
+
+    first = offset + 1 if users else 0
+    last = min(offset + len(users), total)
+    display_query = "barchasi / oxirgi ro'yxatdan o'tganlar" if query == "*" else query
+    text = (
+        f"👥 FOYDALANUVCHILAR\n"
+        f"🔎 Qidiruv: {display_query}\n"
+        f"Natija: {first}–{last} / {total}"
+    )
+    if not users:
+        text += "\n\n❌ Mos foydalanuvchi topilmadi."
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _masked_phone(phone: str | None) -> str:
+    phone = (phone or "").strip()
+    if not phone:
+        return "yo'q"
+    return "••••" + phone[-4:] if len(phone) > 4 else "••••"
+
+
+async def _build_user_card(target: int):
+    user = await db.get_user(target)
+    if not user:
+        return "❌ Foydalanuvchi topilmadi.", InlineKeyboardMarkup([])
+
+    info = await db.get_user_info(target)
+    name = info.get("name") or "Noma'lum"
+    username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
+    suspended = await db.is_suspended(target)
+    expired = await db.is_tariff_expired(target)
+    is_approved = bool(user.get("is_admin")) or target == SUPER_ADMIN
+    pending = bool(user.get("awaiting_approval") or user.get("pending_session"))
+    if suspended:
+        status = "⏸ Vaqtincha to'xtatilgan"
+    elif not is_approved:
+        status = "⏳ Tasdiq kutilmoqda" if pending else "⚪ Tasdiqlanmagan"
+    elif expired:
+        status = "⌛ Tarif muddati tugagan"
+    else:
+        status = "✅ Faol"
+
+    expires = user.get("tariff_expires_at")
+    expiry_line = expires or "Muddatsiz"
+    if expires and not expired:
+        remaining = _days_until(expires)
+        if remaining is not None:
+            expiry_line += f" ({remaining} kun qoldi)"
+    tariff = int(user.get("tariff") or DEFAULT_TARIFF)
+    max_chats, max_posts = tariff_limits(tariff)
+    worker = worker_manager.is_running(target) if worker_manager else False
+    session_status = "ha" if user.get("session") else "yo'q"
+    worker_status = "🟢 ishlayapti" if worker else "🔴 to'xtagan"
+    lines = [
+        "🪪 FOYDALANUVCHI KARTASI",
+        f"👤 {name}",
+        f"🔗 {username} | ID: {target}",
+        f"📱 Telefon: {_masked_phone(user.get('phone'))}",
+        f"📌 Hisob: {status}",
+        f"🔐 Sessiya saqlangan: {session_status}",
+        f"⚙️ Posting worker: {worker_status}",
+        f"🎫 Tarif: {tariff_label(tariff)}",
+        f"📅 Tugash: {expiry_line}",
+        f"💬 Chatlar: {await db.count_chats(target)}/{max_chats}",
+        f"📝 Postlar: {await db.count_posts(target)}/{max_posts}",
+    ]
+    suspended_until = user.get("suspended_until")
+    if suspended and suspended_until:
+        lines.append(f"⏰ To'xtatish tugaydi: {suspended_until} UTC")
+    if user.get("suspend_reason"):
+        lines.append(f"📝 Sabab: {user['suspend_reason'][:200]}")
+
+    actions = await db.get_admin_actions(target, limit=3)
+    if actions:
+        lines.extend(["", "🧾 Oxirgi admin amallari:"])
+        for action in actions:
+            lines.append(
+                f"• {action['created_at']} — {action['action']} "
+                f"(admin {action['admin_uid']})"
+            )
+
+    rows = []
+    if target != SUPER_ADMIN:
+        if suspended:
+            rows.append([InlineKeyboardButton("▶️ Faollashtirish", callback_data=f"adm:resume:{target}")])
+        else:
+            rows.append([InlineKeyboardButton("⏸ Vaqtincha to'xtatish", callback_data=f"adm:suspend:{target}")])
+        rows.append([
+            InlineKeyboardButton("🎫 Tarif / muddat", callback_data=f"adm:plan:{target}"),
+            InlineKeyboardButton("✉️ Xabar", callback_data=f"adm:dm:{target}"),
+        ])
+    rows.append([InlineKeyboardButton("⬅️ Foydalanuvchilar", callback_data="adm:users:back")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 async def format_admin_list() -> str:
     admins = await db.get_admins()
     non_super = [a for a in admins if a != SUPER_ADMIN]
     lines = [
-        f"👥 ADMINLAR ({len(admins)} ta — 1 super + {len(non_super)} oddiy):",
+        f"👥 TASDIQLANGAN FOYDALANUVCHILAR ({len(non_super)} ta)",
+        f"👑 Super admin: {SUPER_ADMIN}",
         "",
-        f"• 👑 Super admin ({SUPER_ADMIN})",
     ]
-    for a in non_super:
-        info = await db.get_user_info(a)
+    for target in non_super[:10]:
+        info = await db.get_user_info(target)
         name = info.get("name", "Noma'lum")
         username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
-        phone = await db.get_phone(a)
-        phone_str = phone if phone else "telefon yo'q"
-        s = "✅" if await db.get_session(a) else "❌"
-        ac = "🟢" if (worker_manager and worker_manager.is_running(a)) else "🔴"
-        interval = await db.get_interval(a)
-        tariff = await db.get_tariff(a)
-        expires = await db.get_tariff_expires(a)
-        exp_str = expires[:10] if expires else "cheksiz"
-        chats_n = await db.count_chats(a)
-        posts_n = await db.count_posts(a)
-        lines.append("")
-        lines.append(f"👤 {name}")
-        lines.append(f"   {username} | {a}")
-        lines.append(f"   📱 {phone_str}")
-        lines.append(f"   Sessiya: {s} | Holat: {ac}")
-        lines.append(f"   🎫 {tariff_label(tariff)}")
-        lines.append(f"   📅 Muddat: {exp_str}")
+        session = "✅" if await db.get_session(target) else "❌"
+        running = "🟢" if (worker_manager and worker_manager.is_running(target)) else "🔴"
+        expiry = await db.get_tariff_expires(target)
+        expiry_label = expiry[:10] if expiry else "cheksiz"
         lines.append(
-            f"   💬 {chats_n} | 📝 {posts_n} | ⏱ {interval} daq"
+            f"• {name} ({username}, {target}) — {tariff_label(await db.get_tariff(target))}; "
+            f"muddat {expiry_label}; sessiya {session}; posting {running}"
         )
+    if len(non_super) > 10:
+        lines.append(f"\n… yana {len(non_super) - 10} ta. To'liq ro'yxat: 👥 Foydalanuvchilar.")
+    lines.append("\nBatafsil karta va boshqaruv uchun quyidagi tugmalardan foydalaning.")
     return "\n".join(lines)
+
+
+async def _run_broadcast(
+    admin_uid: int,
+    segment: str,
+    text: str,
+    targets: list[int],
+    progress_chat_id: int,
+    progress_message_id: int,
+) -> None:
+    """Deliver a confirmed broadcast in the background with rate-limit handling."""
+    sent = 0
+    failed = 0
+    try:
+        for index, target in enumerate(targets, 1):
+            try:
+                await application.bot.send_message(target, text)
+                sent += 1
+            except RetryAfter as e:
+                retry_after = getattr(e, "retry_after", 1)
+                delay = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after)
+                await asyncio.sleep(max(1.0, delay))
+                try:
+                    await application.bot.send_message(target, text)
+                    sent += 1
+                except Exception as retry_error:
+                    failed += 1
+                    log(f"⚠️ Broadcast retry yetmadi {target}: {type(retry_error).__name__}", "warning")
+            except Exception as e:
+                failed += 1
+                log(f"⚠️ Broadcast yetmadi {target}: {type(e).__name__}", "warning")
+
+            if index % 25 == 0 or index == len(targets):
+                with contextlib.suppress(Exception):
+                    await application.bot.edit_message_text(
+                        chat_id=progress_chat_id,
+                        message_id=progress_message_id,
+                        text=(
+                            f"⏳ Xabar yuborilmoqda: {index}/{len(targets)}\n"
+                            f"✅ {sent} | ❌ {failed}"
+                        ),
+                    )
+            await asyncio.sleep(0.05)
+
+        with contextlib.suppress(Exception):
+            await db.record_admin_action(
+                admin_uid, None, "broadcast_sent",
+                f"segment={segment}; total={len(targets)}; sent={sent}; failed={failed}; chars={len(text)}",
+            )
+        log(f"📢 Broadcast {admin_uid}: {segment}, total={len(targets)}, sent={sent}, failed={failed}")
+        with contextlib.suppress(Exception):
+            await application.bot.edit_message_text(
+                chat_id=progress_chat_id,
+                message_id=progress_message_id,
+                text=(
+                    f"✅ Umumiy xabar yakunlandi.\n"
+                    f"👥 Auditoriya: {len(targets)}\n"
+                    f"✅ Yuborildi: {sent}\n❌ Yetkazilmadi: {failed}"
+                ),
+            )
+    except asyncio.CancelledError:
+        log(f"🛑 Broadcast bekor qilindi: admin={admin_uid}, sent={sent}/{len(targets)}", "warning")
+        raise
+    except Exception as e:
+        log(f"💥 Broadcast kutilmagan xato: {type(e).__name__}: {e}", "error")
+        with contextlib.suppress(Exception):
+            await application.bot.edit_message_text(
+                chat_id=progress_chat_id,
+                message_id=progress_message_id,
+                text=f"❌ Xabar tarqatishda xato. Hozirgacha yuborildi: {sent}/{len(targets)}.",
+            )
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel the current text-entry flow."""
+    uid = update.effective_user.id
+    state = user_states.get(uid)
+    if not state:
+        await update.message.reply_text("Faol jarayon yo'q.")
+        return
+    if state.get("step") in ("name", "phone", "phone_login", "code", "password"):
+        await cleanup_login(uid)
+    else:
+        user_states.pop(uid, None)
+    await update.message.reply_text("❌ Jarayon bekor qilindi.", reply_markup=await menu_for(uid))
+
+
+async def _handle_admin_input(update: Update, state: dict) -> None:
+    """Handle super-admin text entry steps (search, duration, and messages)."""
+    uid = update.effective_user.id
+    msg = update.message
+    step = state.get("step")
+    if not is_super(uid):
+        user_states.pop(uid, None)
+        return
+    if time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+        user_states.pop(uid, None)
+        await msg.reply_text("⏰ Admin amali vaqti tugadi. Qaytadan boshlang.")
+        return
+
+    if step == "admin_user_search":
+        query = (msg.text or "").strip()
+        if not query:
+            await msg.reply_text("ID, ism, username yoki telefon yuboring. Barchasini ko'rish uchun * yozing.")
+            return
+        if len(query) > 100:
+            await msg.reply_text("❌ Qidiruv matni juda uzun.")
+            return
+        query = "*" if query.lower() in {"all", "hammasi", "*"} else query
+        state["query"] = query
+        state["ts"] = time.time()
+        user_states[uid] = state
+        result_text, markup = await _build_user_search_results(query)
+        await msg.reply_text(result_text, reply_markup=markup)
+        return
+
+    if step == "admin_suspend_days":
+        raw = (msg.text or "").strip().lower()
+        if raw in {"0", "muddatsiz", "manual", "∞"}:
+            days = 0
+        else:
+            try:
+                days = int(raw)
+            except ValueError:
+                await msg.reply_text("❌ Kun sonini raqam bilan kiriting: 1–3650 yoki 0 (qo'lda faollashtirish).")
+                return
+            if not 1 <= days <= MAX_ADMIN_TERM_DAYS:
+                await msg.reply_text(f"❌ Muddat 1–{MAX_ADMIN_TERM_DAYS} kun yoki 0 bo'lishi kerak.")
+                return
+        target = int(state["target"])
+        if not await db.get_user(target) or target == SUPER_ADMIN:
+            user_states.pop(uid, None)
+            await msg.reply_text("❌ Foydalanuvchi topilmadi yoki bu amal mumkin emas.")
+            return
+        state.update({"step": "admin_suspend_confirm", "days": days, "ts": time.time()})
+        user_states[uid] = state
+        until = calc_expiry(days) if days else None
+        period = f"{days} kun — {until} UTC gacha" if until else "qo'lda qayta faollashtirilguncha"
+        await msg.reply_text(
+            f"⏸ {target} ni {period} to'xtatamizmi?\n"
+            "Posting darhol to'xtaydi; sessiya, chat va postlar saqlanadi.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ To'xtatish", callback_data="adm:suspend:confirm"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="adm:suspend:cancel"),
+                ]
+            ]),
+        )
+        return
+
+    if step == "admin_term_days":
+        raw = (msg.text or "").strip()
+        try:
+            days = int(raw)
+        except ValueError:
+            await msg.reply_text(f"❌ Kun sonini raqam bilan kiriting (1–{MAX_ADMIN_TERM_DAYS}).")
+            return
+        if not 1 <= days <= MAX_ADMIN_TERM_DAYS:
+            await msg.reply_text(f"❌ Muddat 1–{MAX_ADMIN_TERM_DAYS} kun bo'lishi kerak.")
+            return
+        target = int(state["target"])
+        tariff = int(state["tariff"])
+        if target == SUPER_ADMIN or tariff not in TARIFFS or not await db.get_user(target):
+            user_states.pop(uid, None)
+            await msg.reply_text("❌ Foydalanuvchi yoki tarif topilmadi.")
+            return
+        old_expiry = await db.get_tariff_expires(target)
+        expires = calc_expiry(days)
+        state.update({
+            "step": "admin_term_confirm",
+            "days": days,
+            "old_expiry": old_expiry,
+            "expires_at": expires,
+            "ts": time.time(),
+        })
+        user_states[uid] = state
+        old_label = old_expiry or "muddatsiz / avval belgilanmagan"
+        await msg.reply_text(
+            f"🎫 Foydalanuvchi: {target}\n"
+            f"Tarif: {tariff_label(tariff)}\n"
+            f"Eski tugash: {old_label}\n"
+            f"Yangi muddat: {days} kun — {expires} UTC\n\n"
+            "⚠️ Tasdiqlansa, eski muddat almashtiriladi; qolgan kunlar qo'shilmaydi.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Muddatni almashtirish", callback_data="adm:term:confirm"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="adm:term:cancel"),
+                ]
+            ]),
+        )
+        return
+
+    if step in {"admin_dm_text", "admin_broadcast_text"}:
+        if msg.photo or not msg.text:
+            await msg.reply_text("❌ Hozircha faqat matnli xabar yuborish mumkin.")
+            return
+        message_text = msg.text.strip()
+        if not message_text:
+            await msg.reply_text("❌ Bo'sh xabar yuborib bo'lmaydi.")
+            return
+        if len(message_text.encode("utf-16-le")) // 2 > MAX_ADMIN_MESSAGE_LENGTH:
+            await msg.reply_text(f"❌ Xabar {MAX_ADMIN_MESSAGE_LENGTH} belgidan oshmasin.")
+            return
+        state["text"] = message_text
+        state["ts"] = time.time()
+        if step == "admin_dm_text":
+            state["step"] = "admin_dm_confirm"
+            user_states[uid] = state
+            preview = (
+                f"✉️ Shaxsiy xabar — {state['target']} ga yuboriladi:\n\n"
+                f"{message_text}"
+            )
+            markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Yuborish", callback_data="adm:dm:send"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="adm:dm:cancel"),
+                ]
+            ])
+        else:
+            state["step"] = "admin_broadcast_confirm"
+            user_states[uid] = state
+            current_targets = await db.get_broadcast_targets(
+                state["segment"], exclude_uid=SUPER_ADMIN
+            )
+            preview = (
+                f"📢 Umumiy xabar — {len(current_targets)} ta foydalanuvchiga yuboriladi:\n\n"
+                f"{message_text}"
+            )
+            markup = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Hammaga yuborish", callback_data="adm:broadcast:send"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="adm:broadcast:cancel"),
+                ]
+            ])
+        await msg.reply_text(preview, reply_markup=markup)
+        return
+
+    if step in {
+        "admin_suspend_confirm", "admin_resume_confirm", "admin_term_confirm",
+        "admin_dm_confirm", "admin_broadcast_confirm",
+    }:
+        await msg.reply_text("Tasdiqlash yoki bekor qilish uchun xabardagi tugmalardan foydalaning. Bekor qilish: /cancel")
+        return
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1562,6 +2360,14 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not rate_limiter.is_allowed(uid, "message"):
         wait = rate_limiter.get_wait_time(uid, "message")
         await msg.reply_text(f"⏳ Juda ko'p xabar. {wait} soniya kuting.")
+        return
+
+    if not is_super(uid) and await db.is_suspended(uid):
+        user_states.pop(uid, None)
+        user = await db.get_user(uid)
+        until = user.get("suspended_until") if user else None
+        detail = f"\n⏰ Qayta faollashish: {until} UTC" if until else "\nAdmin qayta faollashtirguncha."
+        await msg.reply_text("⏸ Hisobingiz vaqtincha to'xtatilgan." + detail)
         return
 
     # LOGIN BOSQICHLARI
@@ -1620,6 +2426,14 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "👥 Adminlar", "🖥 Tizim",
     )
     _is_menu = text in _MENU_BUTTONS or text.startswith("⏱ Interval") or text.startswith("📊 Status")
+
+    if step and step.startswith("admin_"):
+        if _is_menu:
+            user_states.pop(uid, None)
+            step = None
+        else:
+            await _handle_admin_input(update, state)
+            return
 
     if step in ("add_chat", "add_post", "set_interval"):
         if _is_menu:
@@ -1780,7 +2594,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             return
         user_states[uid] = {"step": "add_chat", "ts": time.time()}
         await msg.reply_text(
-            "➕ Chat @username, https://t.me/... yoki ID yuboring.\n\n"
+            "➕ Bir xabarda bir nechta guruh havolasini yuboring.\n"
+            "Qabul qilinadi: @username, t.me/username, Telegram invite havolasi yoki -100... ID.\n"
+            "Izoh, tartib raqami va tinish belgilarini bot ajratib tashlaydi.\n\n"
             f"Hozir: {len(chats)}/{max_chats}"
         )
         return
@@ -2100,39 +2916,192 @@ async def _handle_password(update: Update, text: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 # CHAT / POST / INTERVAL / SCHEDULE INPUT
 # ─────────────────────────────────────────────────────────────────────────
+def _normalized_chat_key(value: str) -> str:
+    """Legacy link, @username and parsed target aliases to one comparison key."""
+    parsed = extract_chat_targets(value)
+    if parsed:
+        target = parsed[0]
+        return target.lower() if target.startswith("@") else target
+    stripped = value.strip()
+    return stripped.lower() if stripped.startswith("invite:") else stripped
+
+
+def _canonical_chat_storage(entity, fallback: str) -> str:
+    """Store public chats as @username and private chats as marked peer IDs."""
+    username = getattr(entity, "username", None)
+    if username:
+        return "@" + username.lower()
+    try:
+        return str(get_peer_id(entity))
+    except Exception:
+        return fallback
+
+
+def _append_samples(lines: list[str], label: str, values: list[str], limit: int = 6) -> None:
+    if not values:
+        return
+    preview = values[:limit]
+    suffix = f" va yana {len(values) - limit} ta" if len(values) > limit else ""
+    lines.append(f"{label}: {len(values)}" + (f" ({', '.join(preview)}{suffix})" if preview else ""))
+
+
 async def _handle_add_chat(update: Update, text: str) -> None:
     uid = update.effective_user.id
     user_states.pop(uid, None)
-    chat = text.strip()
-    if not chat:
-        await update.message.reply_text("❌ Bo'sh.", reply_markup=await menu_for(uid))
+    msg = update.message
+    targets = extract_chat_targets(text)
+    malformed_links = extract_invalid_telegram_links(text)
+    if not targets:
+        if malformed_links:
+            shown = ", ".join(malformed_links[:5])
+            await msg.reply_text(
+                "❌ Yaroqli chat havolasi topilmadi. Noto'g'ri yoki qo'llanmaydigan "
+                f"t.me havolalari: {shown}",
+                reply_markup=await menu_for(uid),
+            )
+        else:
+            await msg.reply_text(
+                "❌ Matndan chat havolasi topilmadi. @username, t.me/username, "
+                "Telegram invite havolasi yoki -100... chat ID yuboring. Izoh matni e'tiborga olinmaydi.",
+                reply_markup=await menu_for(uid),
+            )
         return
 
     max_chats, _ = await user_limits(uid)
-    # Atomic check + insert (race-safe)
-    ok, reason = await db.add_chat(uid, chat, max_chats=max_chats)
-    if not ok:
-        if reason == "limit":
-            await update.message.reply_text(
-                f"❌ Maksimal {max_chats} ta chat (sizning tarifingiz). Avval birini o'chiring.",
-                reply_markup=await menu_for(uid),
-            )
-        elif reason == "duplicate":
-            await update.message.reply_text(
-                "⚠️ Allaqachon mavjud.", reply_markup=await menu_for(uid)
-            )
+    existing = await db.get_chats(uid)
+
+    # Pasted legacy links are compared in canonical form to avoid duplicates
+    # such as @group and https://t.me/group.
+    known_keys = {_normalized_chat_key(value) for value in existing}
+    added: list[str] = []
+    duplicates: list[str] = []
+    invalid: list[str] = list(malformed_links)
+    over_limit: list[str] = []
+    not_checked: list[str] = []
+    rate_limited: str | None = None
+    extra_count = max(0, len(targets) - MAX_CHAT_BATCH_SIZE)
+    targets = targets[:MAX_CHAT_BATCH_SIZE]
+
+    # Avoid API calls when the pasted list only contains existing usernames.
+    candidates: list[str] = []
+    for target in targets:
+        key = _normalized_chat_key(target)
+        if key in known_keys:
+            duplicates.append(target)
         else:
-            await update.message.reply_text(
-                "❌ Qo'shib bo'lmadi.", reply_markup=await menu_for(uid)
-            )
+            candidates.append(target)
+
+    if not candidates:
+        lines = ["📥 Guruh qo'shish natijasi:", "✅ Qo'shildi: 0 ta"]
+        _append_samples(lines, "⚠️ Avvaldan mavjud", duplicates)
+        _append_samples(lines, "❌ Noto'g'ri t.me havolalari", invalid)
+        if extra_count:
+            lines.append(f"⚠️ Tekshirilmagan qo'shimcha manzillar: {extra_count} ta")
+        lines.append(f"📊 Jami: {len(existing)}/{max_chats}")
+        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
         return
 
-    log(f"💬 Chat qo'shildi: {uid} → {chat}")
+    if len(existing) >= max_chats:
+        over_limit.extend(candidates)
+        lines = ["📥 Guruh qo'shish natijasi:", "✅ Qo'shildi: 0 ta"]
+        _append_samples(lines, "⚠️ Avvaldan mavjud", duplicates)
+        _append_samples(lines, "❌ Noto'g'ri t.me havolalari", invalid)
+        _append_samples(lines, "⛔ Tarif limiti sabab qo'shilmagan", over_limit)
+        if extra_count:
+            lines.append(f"⚠️ Tekshirilmagan qo'shimcha manzillar: {extra_count} ta")
+        lines.append(f"📊 Jami: {len(existing)}/{max_chats}")
+        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
+        return
+
+    session = await db.get_session(uid)
+    if not session or client_pool is None:
+        await msg.reply_text(
+            "❌ Telegram sessiyasi topilmadi. Qaytadan Login qiling.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    client = None
+    try:
+        client = await client_pool.acquire(uid, session)
+    except SessionInvalidError:
+        await db.del_session(uid)
+        await db.set_running(uid, False)
+        await client_pool.remove(uid)
+        await msg.reply_text(
+            "🚫 Telegram sessiyasi yaroqsiz. Qaytadan 🔑 Login qiling.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+    except PoolBusyError:
+        await msg.reply_text(
+            "⏳ Telegram ulanishi hozir band. Birozdan keyin qayta urinib ko'ring.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+    except Exception as e:
+        log(f"⚠️ Chatlarni tekshirishda ulanish xatosi {uid}: {type(e).__name__}", "warning")
+        await msg.reply_text(
+            "❌ Telegram akkauntiga ulanib bo'lmadi. Birozdan keyin qayta urinib ko'ring.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    try:
+        for index, target in enumerate(candidates):
+            if len(existing) + len(added) >= max_chats:
+                over_limit.extend(candidates[index:])
+                break
+            try:
+                entity = await _resolve_chat(client, target)
+                # Personal accounts are not destination groups/channels.
+                if not isinstance(entity, (Chat, Channel)):
+                    invalid.append(target)
+                    continue
+                canonical = _canonical_chat_storage(entity, target)
+                key = _normalized_chat_key(canonical)
+                if key in known_keys:
+                    duplicates.append(target)
+                    continue
+                ok, reason = await db.add_chat(
+                    uid, canonical, max_chats=max_chats
+                )
+                if ok:
+                    added.append(canonical)
+                    known_keys.add(key)
+                elif reason == "duplicate":
+                    duplicates.append(target)
+                    known_keys.add(key)
+                elif reason == "limit":
+                    over_limit.extend(candidates[index:])
+                    break
+                else:
+                    invalid.append(target)
+            except FloodWaitError as e:
+                rate_limited = str(int(getattr(e, "seconds", 0)))
+                not_checked.extend(candidates[index + 1:])
+                break
+            except Exception as e:
+                invalid.append(target)
+                log(
+                    f"⚠️ Chat manzili tekshirilmadi {uid} → {target}: {type(e).__name__}",
+                    "warning",
+                )
+    finally:
+        await client_pool.release(uid)
+
     new_count = await db.count_chats(uid)
-    await update.message.reply_text(
-        f"✅ Qo'shildi: {chat}\n💬 Jami: {new_count}/{max_chats}",
-        reply_markup=await menu_for(uid),
-    )
+    lines = ["📥 Guruh qo'shish natijasi:", f"✅ Qo'shildi: {len(added)} ta"]
+    _append_samples(lines, "⚠️ Avvaldan mavjud", duplicates)
+    _append_samples(lines, "❌ Noto'g'ri yoki akkaunt kira olmaydigan", invalid)
+    _append_samples(lines, "⛔ Tarif limiti sabab qo'shilmagan", over_limit)
+    _append_samples(lines, "⏳ Tekshirilmagan", not_checked)
+    if extra_count:
+        lines.append(f"⚠️ Bir xabarda ko'pi bilan {MAX_CHAT_BATCH_SIZE} ta manzil tekshiriladi; ortiqcha: {extra_count} ta")
+    if rate_limited:
+        lines.append(f"⏳ Telegram vaqtinchalik limit qo'ydi ({rate_limited} soniya). Keyin qolganlarini qayta yuboring.")
+    lines.append(f"📊 Jami: {new_count}/{max_chats}")
+    await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
 
 
 async def _handle_add_post(update: Update) -> None:
@@ -2460,6 +3429,35 @@ async def tariff_expiry_loop(stop: asyncio.Event) -> None:
     log("⏰ Tariff expiry janitor to'xtadi")
 
 
+async def suspension_expiry_loop(stop: asyncio.Event) -> None:
+    """Muddatli admin to'xtatishlarini ochadi; postingni avtomatik boshlamaydi."""
+    log("⏸ Suspension expiry janitor boshlandi")
+    try:
+        while not stop.is_set():
+            with contextlib.suppress(Exception):
+                expired_uids = await db.release_expired_suspensions()
+                for target in expired_uids:
+                    with contextlib.suppress(Exception):
+                        await db.record_admin_action(
+                            0, target, "suspension_expired", "automatic resume; posting remains stopped"
+                        )
+                    with contextlib.suppress(Exception):
+                        await application.bot.send_message(
+                            target,
+                            "✅ Vaqtincha to'xtatish muddati tugadi. Hisobingiz faollashdi.\n"
+                            "Postingni davom ettirish uchun ▶️ Start bosing.",
+                            reply_markup=await menu_for(target),
+                        )
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=SUSPENSION_CHECK_INTERVAL_S)
+                break
+            except asyncio.TimeoutError:
+                pass
+    except asyncio.CancelledError:
+        pass
+    log("⏸ Suspension expiry janitor to'xtadi")
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # RESTART-DAN KEYIN AVTO-TIKLASH
 # ─────────────────────────────────────────────────────────────────────────
@@ -2467,19 +3465,24 @@ async def restore_running_workers() -> None:
     running_uids = await db.get_all_running()
     restored = 0
     for uid in running_uids:
-        chats = await db.get_chats(uid)
-        posts = await db.get_posts(uid)
-        if not chats or not posts:
-            await db.set_running(uid, False)
-            continue
-        # Muddati tugagan bo'lsa — tiklamaymiz (kutish rejimida qoladi)
-        if await db.is_tariff_expired(uid):
-            await db.set_running(uid, False)
-            log(f"⏸ Tiklanmadi (muddat tugagan): {uid}")
-            continue
-        if await worker_manager.start_worker(uid):
-            restored += 1
-            log(f"🔁 Tiklandi: {uid}")
+        async with _user_control_lock(uid):
+            if await db.is_suspended(uid):
+                await db.set_running(uid, False)
+                log(f"⏸ Tiklanmadi (admin to'xtatgan): {uid}")
+                continue
+            chats = await db.get_chats(uid)
+            posts = await db.get_posts(uid)
+            if not chats or not posts:
+                await db.set_running(uid, False)
+                continue
+            # Muddati tugagan bo'lsa — tiklamaymiz (kutish rejimida qoladi)
+            if await db.is_tariff_expired(uid):
+                await db.set_running(uid, False)
+                log(f"⏸ Tiklanmadi (muddat tugagan): {uid}")
+                continue
+            if await worker_manager.start_worker(uid):
+                restored += 1
+                log(f"🔁 Tiklandi: {uid}")
     log(f"✅ {restored} ta worker tiklandi")
 
 
@@ -2538,6 +3541,7 @@ async def main() -> None:
     application = app
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(
         MessageHandler(
@@ -2565,6 +3569,10 @@ async def main() -> None:
     tariff_task = asyncio.create_task(
         tariff_expiry_loop(tariff_stop), name="tariff-expiry"
     )
+    suspension_stop = asyncio.Event()
+    suspension_task = asyncio.create_task(
+        suspension_expiry_loop(suspension_stop), name="suspension-expiry"
+    )
 
     # 9. Cheksiz turish (yoki shutdown signali)
     try:
@@ -2576,10 +3584,17 @@ async def main() -> None:
         # Janitorlarni avval to'xtatamiz
         janitor_stop.set()
         tariff_stop.set()
+        suspension_stop.set()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(janitor_task, timeout=5)
         with contextlib.suppress(Exception):
             await asyncio.wait_for(tariff_task, timeout=5)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(suspension_task, timeout=5)
+        if broadcast_task and not broadcast_task.done():
+            broadcast_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(broadcast_task, timeout=5)
         with contextlib.suppress(Exception):
             await worker_manager.stop_all()
         with contextlib.suppress(Exception):

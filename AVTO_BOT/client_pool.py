@@ -58,7 +58,11 @@ class PooledClient:
     uid: int
     client: TelegramClient
     last_used: float = field(default_factory=time.time)
-    in_use: bool = False
+    use_count: int = 0
+
+    @property
+    def in_use(self) -> bool:
+        return self.use_count > 0
 
 
 class ClientPool:
@@ -142,8 +146,8 @@ class ClientPool:
                         # yangi client yaratamiz.
                         current = self._clients.get(uid)
                         if current is pc:
+                            pc.use_count += 1
                             pc.last_used = time.time()
-                            pc.in_use = True
                             return pc.client
                     # pc evict qilingan — yangisini yaratishga o'tamiz (pastda)
                 except (AuthKeyUnregisteredError, UserDeactivatedBanError):
@@ -188,17 +192,18 @@ class ClientPool:
                 raise PoolBusyError()
 
             async with self._lock:
-                pc = PooledClient(uid=uid, client=client, in_use=True)
+                pc = PooledClient(uid=uid, client=client, use_count=1)
                 self._clients[uid] = pc
             return client
 
     async def release(self, uid: int) -> None:
-        """Clientni 'bo'sh' deb belgilash (boshqalar ishlatishi mumkin)."""
+        """Bitta acquire ijarasini bo'shatadi; boshqa borrowerlar himoyalanadi."""
         async with self._lock:
             pc = self._clients.get(uid)
             if pc:
-                pc.in_use = False
-                pc.last_used = time.time()
+                pc.use_count = max(0, pc.use_count - 1)
+                if not pc.in_use:
+                    pc.last_used = time.time()
 
     async def remove(self, uid: int) -> None:
         """Foydalanuvchi logout qilganda yoki sessiya bekor bo'lganda."""

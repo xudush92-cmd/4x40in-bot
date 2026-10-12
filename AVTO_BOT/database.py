@@ -116,6 +116,20 @@ async def init_db() -> None:
         await _ensure_column(db, "users", "phone", "TEXT DEFAULT ''")
         await _ensure_column(db, "users", "awaiting_approval", "INTEGER DEFAULT 0")
         await _ensure_column(db, "users", "expiry_warned", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "users", "suspended", "INTEGER DEFAULT 0")
+        await _ensure_column(db, "users", "suspended_until", "TEXT")
+        await _ensure_column(db, "users", "suspend_reason", "TEXT")
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS admin_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_uid INTEGER NOT NULL,
+                target_uid INTEGER,
+                action TEXT NOT NULL,
+                details TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS chats (
@@ -149,6 +163,10 @@ async def init_db() -> None:
         # Indekslar — tezroq query
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chats_uid ON chats(uid)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_posts_uid ON posts(uid)")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_admin_audit_target_created "
+            "ON admin_audit(target_uid, created_at DESC)"
+        )
 
         await db.commit()
 
@@ -166,6 +184,7 @@ _USER_DEFAULTS = {
     "interval_min": 5,
     "tariff": 1,
     "running": 0,
+    "suspended": 0,
 }
 
 
@@ -300,6 +319,191 @@ async def set_awaiting_approval(uid: int, value: bool) -> None:
     await upsert_user(uid, awaiting_approval=1 if value else 0)
 
 
+async def search_users(query: str = "", limit: int = 8, offset: int = 0) -> list[dict]:
+    """Foydalanuvchilarni ID, ism, username yoki telefon bo'yicha qidiradi."""
+    db = await _get_conn()
+    query = (query or "").strip()
+    params: list = []
+    where = ""
+    if query and query != "*":
+        needle = query.lstrip("@").lower()
+        pattern = f"%{needle}%"
+        clauses = [
+            "lower(COALESCE(name, '')) LIKE ?",
+            "lower(COALESCE(username, '')) LIKE ?",
+            "COALESCE(phone, '') LIKE ?",
+        ]
+        params.extend([pattern, pattern, pattern])
+        if query.isdigit():
+            clauses.insert(0, "uid = ?")
+            params.insert(0, int(query))
+        where = " WHERE " + " OR ".join(clauses)
+
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
+    async with _op_lock:
+        async with db.execute(
+            "SELECT * FROM users" + where +
+            " ORDER BY created_at DESC, uid DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def count_search_users(query: str = "") -> int:
+    """Foydalanuvchilar qidiruvi uchun umumiy natijalar soni."""
+    db = await _get_conn()
+    query = (query or "").strip()
+    params: list = []
+    where = ""
+    if query and query != "*":
+        needle = query.lstrip("@").lower()
+        pattern = f"%{needle}%"
+        clauses = [
+            "lower(COALESCE(name, '')) LIKE ?",
+            "lower(COALESCE(username, '')) LIKE ?",
+            "COALESCE(phone, '') LIKE ?",
+        ]
+        params.extend([pattern, pattern, pattern])
+        if query.isdigit():
+            clauses.insert(0, "uid = ?")
+            params.insert(0, int(query))
+        where = " WHERE " + " OR ".join(clauses)
+    async with _op_lock:
+        async with db.execute("SELECT COUNT(*) FROM users" + where, params) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def set_user_suspended(
+    uid: int, suspended_until: str | None = None, reason: str = ""
+) -> None:
+    """Foydalanuvchini vaqtincha yoki qo'lda qayta yoqilguncha to'xtatadi."""
+    await upsert_user(
+        uid,
+        suspended=1,
+        suspended_until=suspended_until,
+        suspend_reason=reason[:300],
+        running=0,
+    )
+
+
+async def resume_user(uid: int) -> None:
+    """To'xtatishni bekor qiladi. Posting ataylab avtomatik boshlanmaydi."""
+    await upsert_user(
+        uid, suspended=0, suspended_until=None, suspend_reason=None, running=0
+    )
+
+
+async def is_suspended(uid: int) -> bool:
+    """Faol to'xtatishni tekshiradi; muddati o'tgan yozuvni janitor tozalaydi."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT suspended, suspended_until FROM users WHERE uid=?", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row or not row["suspended"]:
+            return False
+        until = row["suspended_until"]
+        if until:
+            async with db.execute(
+                "SELECT datetime(?) <= datetime('now')", (until,)
+            ) as cur:
+                expired = bool((await cur.fetchone())[0])
+            # The expiry loop clears the persisted flag and notifies the user.
+            # Until then, treat an elapsed suspension as inactive without
+            # losing the opportunity to send that one-time notification.
+            if expired:
+                return False
+        return True
+
+
+async def release_expired_suspensions() -> list[int]:
+    """Muddati tugagan to'xtatishlarni ochib, UID ro'yxatini qaytaradi."""
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT uid FROM users WHERE suspended=1 AND suspended_until IS NOT NULL "
+                "AND datetime(suspended_until) <= datetime('now')"
+            ) as cur:
+                uids = [int(row[0]) for row in await cur.fetchall()]
+            if uids:
+                await db.executemany(
+                    "UPDATE users SET suspended=0, suspended_until=NULL, "
+                    "suspend_reason=NULL WHERE uid=?",
+                    [(uid,) for uid in uids],
+                )
+            await db.commit()
+            return uids
+        except Exception:
+            await db.rollback()
+            raise
+
+
+async def get_broadcast_targets(segment: str, exclude_uid: int) -> list[int]:
+    """Xabar yuborish auditoriyasi. Segment nomlari faqat ichki allowlist'dan."""
+    clauses = {
+        "all": "uid != ?",
+        "active": (
+            "uid != ? AND is_admin=1 "
+            "AND (COALESCE(suspended, 0)=0 OR "
+            "(suspended=1 AND suspended_until IS NOT NULL "
+            "AND datetime(suspended_until) <= datetime('now'))) "
+            "AND (tariff_expires_at IS NULL OR datetime(tariff_expires_at) >= datetime('now'))"
+        ),
+        "expired": (
+            "uid != ? AND is_admin=1 AND tariff_expires_at IS NOT NULL "
+            "AND datetime(tariff_expires_at) < datetime('now')"
+        ),
+        "suspended": (
+            "uid != ? AND COALESCE(suspended, 0)=1 "
+            "AND (suspended_until IS NULL OR datetime(suspended_until) > datetime('now'))"
+        ),
+        "pending": (
+            "uid != ? AND is_admin=0 AND "
+            "(COALESCE(awaiting_approval, 0)=1 OR pending_session IS NOT NULL)"
+        ),
+    }
+    if segment not in clauses:
+        raise ValueError("Noma'lum broadcast segmenti")
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT uid FROM users WHERE " + clauses[segment] + " ORDER BY uid",
+            (exclude_uid,),
+        ) as cur:
+            return [int(row[0]) for row in await cur.fetchall()]
+
+
+async def record_admin_action(
+    admin_uid: int, target_uid: int | None, action: str, details: str = ""
+) -> None:
+    """Admin amallarini audit jadvaliga yozadi (xabar mazmunini yozmaydi)."""
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute(
+            "INSERT INTO admin_audit (admin_uid, target_uid, action, details) "
+            "VALUES (?, ?, ?, ?)",
+            (admin_uid, target_uid, action[:80], details[:1000]),
+        )
+        await db.commit()
+
+
+async def get_admin_actions(target_uid: int, limit: int = 5) -> list[dict]:
+    db = await _get_conn()
+    limit = max(1, min(int(limit), 20))
+    async with _op_lock:
+        async with db.execute(
+            "SELECT admin_uid, action, details, created_at FROM admin_audit "
+            "WHERE target_uid=? ORDER BY id DESC LIMIT ?",
+            (target_uid, limit),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Interval
 # ─────────────────────────────────────────────────────────────────────────
@@ -337,6 +541,16 @@ async def set_tariff_expires(uid: int, expires_at: str | None) -> None:
     davrda foydalanuvchi yana bir marta ogohlantiriladi.
     """
     await upsert_user(uid, tariff_expires_at=expires_at, expiry_warned=0)
+
+
+async def set_tariff_and_expiry(uid: int, tariff: int, expires_at: str) -> None:
+    """Tarif va tugash sanasini bitta atomic user update'da almashtiradi."""
+    await upsert_user(
+        uid,
+        tariff=int(tariff),
+        tariff_expires_at=expires_at,
+        expiry_warned=0,
+    )
 
 
 async def get_expiring_users(days: int) -> list[int]:

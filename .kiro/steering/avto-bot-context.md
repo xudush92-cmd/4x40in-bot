@@ -18,6 +18,7 @@ Telegram avto-poster bot. Foydalanuvchilar o'z Telegram hisoblari orqali tanlang
 | worker_manager.py | Workerlar boshqaruvi (max 35, graceful shutdown) |
 | health.py | HTTP /health endpoint (port 8080) — monitoring |
 | rate_limiter.py | Anti-spam (login: 3/5daq, command: 30/min) |
+| chat_parser.py | Bir xabardan ko'p Telegram chat havolasini ajratish va normallashtirish |
 | requirements.txt | python-telegram-bot, telethon, aiosqlite, aiohttp |
 
 ## Texnologiyalar
@@ -37,6 +38,8 @@ Telegram avto-poster bot. Foydalanuvchilar o'z Telegram hisoblari orqali tanlang
 7. **Super admin** uchun '🖥 Tizim' tugmasi — RAM, workers, pool monitoring
 8. **Referal tizimi** — foydalanuvchilar boshqalarni taklif qilishi mumkin
 9. **Tarif muddati nazorati** — muddati tugaganlarga ogohlantirish + avto-to'xtatish
+10. **Admin boshqaruvi** — foydalanuvchi qidiruvi/kartasi, vaqtinchalik to'xtatish va qayta faollashtirish, kun bilan yangi muddat (oldingi sanani almashtiradi), shaxsiy va segmentlangan umumiy xabarlar; amallar audit jurnaliga yoziladi
+11. **Ko'p chat qo'shish** — bitta xabardagi bir nechta Telegram manzilini ajratadi, ortiqcha matnni e'tiborsiz qoldiradi, limit/dublikat/xato natijalarini ko'rsatadi
 
 ## Tariflar
 
