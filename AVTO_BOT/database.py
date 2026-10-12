@@ -323,12 +323,14 @@ async def set_awaiting_approval(uid: int, value: bool) -> None:
     await upsert_user(uid, awaiting_approval=1 if value else 0)
 
 
-async def search_users(query: str = "", limit: int = 8, offset: int = 0) -> list[dict]:
-    """Foydalanuvchilarni ID, ism, username yoki telefon bo'yicha qidiradi."""
+async def search_users(
+    query: str = "", limit: int = 8, offset: int = 0, exclude_uid: int | None = None
+) -> list[dict]:
+    """ID, ism, username yoki telefon bo'yicha izlaydi; natijani ism bo'yicha saralaydi."""
     db = await _get_conn()
     query = (query or "").strip()
     params: list = []
-    where = ""
+    conditions: list[str] = []
     if query and query != "*":
         needle = query.lstrip("@").lower()
         pattern = f"%{needle}%"
@@ -337,11 +339,16 @@ async def search_users(query: str = "", limit: int = 8, offset: int = 0) -> list
             "lower(COALESCE(username, '')) LIKE ?",
             "COALESCE(phone, '') LIKE ?",
         ]
-        params.extend([pattern, pattern, pattern])
+        query_params = [pattern, pattern, pattern]
         if query.isdigit():
             clauses.insert(0, "uid = ?")
-            params.insert(0, int(query))
-        where = " WHERE " + " OR ".join(clauses)
+            query_params.insert(0, int(query))
+        conditions.append("(" + " OR ".join(clauses) + ")")
+        params.extend(query_params)
+    if exclude_uid is not None:
+        conditions.append("uid != ?")
+        params.append(int(exclude_uid))
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
 
     limit = max(1, min(int(limit), 50))
     offset = max(0, int(offset))
@@ -355,12 +362,12 @@ async def search_users(query: str = "", limit: int = 8, offset: int = 0) -> list
             return [dict(row) for row in await cur.fetchall()]
 
 
-async def count_search_users(query: str = "") -> int:
+async def count_search_users(query: str = "", exclude_uid: int | None = None) -> int:
     """Foydalanuvchilar qidiruvi uchun umumiy natijalar soni."""
     db = await _get_conn()
     query = (query or "").strip()
     params: list = []
-    where = ""
+    conditions: list[str] = []
     if query and query != "*":
         needle = query.lstrip("@").lower()
         pattern = f"%{needle}%"
@@ -369,11 +376,16 @@ async def count_search_users(query: str = "") -> int:
             "lower(COALESCE(username, '')) LIKE ?",
             "COALESCE(phone, '') LIKE ?",
         ]
-        params.extend([pattern, pattern, pattern])
+        query_params = [pattern, pattern, pattern]
         if query.isdigit():
             clauses.insert(0, "uid = ?")
-            params.insert(0, int(query))
-        where = " WHERE " + " OR ".join(clauses)
+            query_params.insert(0, int(query))
+        conditions.append("(" + " OR ".join(clauses) + ")")
+        params.extend(query_params)
+    if exclude_uid is not None:
+        conditions.append("uid != ?")
+        params.append(int(exclude_uid))
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
     async with _op_lock:
         async with db.execute("SELECT COUNT(*) FROM users" + where, params) as cur:
             row = await cur.fetchone()

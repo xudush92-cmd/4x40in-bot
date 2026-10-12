@@ -153,6 +153,7 @@ TARIFF_DURATION_DAYS = 30   # default tarif muddati (kun)
 TARIFF_WARN_DAYS = 3        # muddat tugashidan necha kun oldin ogohlantirish
 ADMIN_ACTION_TIMEOUT_S = 600
 ADMIN_USER_PAGE_SIZE = 8
+ADMIN_ROSTER_PAGE_SIZE = 6
 MAX_ADMIN_TERM_DAYS = 3650
 MAX_ADMIN_MESSAGE_LENGTH = 3500
 MAX_CHAT_BATCH_SIZE = 50
@@ -1474,22 +1475,24 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await q.edit_message_text("❌ Chat topilmadi.")
         return
 
-    if data == "adm:list":
+    if data == "adm:list" or data.startswith("adm:list:page:"):
         if not is_super(uid):
             return
-        await q.edit_message_text(await format_admin_list(), reply_markup=admin_panel_kb())
+        offset = 0
+        if data.startswith("adm:list:page:"):
+            try:
+                offset = max(0, int(data.rsplit(":", 1)[1]))
+            except ValueError:
+                return
+        text, markup = await format_admin_list(offset)
+        await q.edit_message_text(text, reply_markup=markup)
         return
 
     if data in ("adm:users", "adm:tariff"):
         if not is_super(uid):
             return
-        user_states[uid] = {"step": "admin_user_search", "ts": time.time(), "query": "*"}
-        await q.edit_message_text(
-            "🔎 Ism/familiya bo'yicha qidiring; ID, username va telefon orqali ham qidirish mumkin.\n"
-            "Barcha foydalanuvchilar ro'yxati uchun * yuboring (ism bo'yicha A–Z).\n"
-            "Ro'yxat tugmasida ism va to'liq telefon ko'rinadi; tugmani bossangiz karta ochiladi.\n"
-            "Bekor qilish: /cancel"
-        )
+        text, markup = await _build_user_list(0)
+        await q.edit_message_text(text, reply_markup=markup)
         return
 
     if data.startswith("adm:users:page:"):
@@ -1499,18 +1502,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             offset = max(0, int(data.rsplit(":", 1)[1]))
         except ValueError:
             return
-        state = user_states.get(uid, {})
-        query = state.get("query", "*")
-        text, markup = await _build_user_search_results(query, offset)
+        text, markup = await _build_user_list(offset)
         await q.edit_message_text(text, reply_markup=markup)
         return
 
     if data == "adm:users:back":
         if not is_super(uid):
             return
-        state = user_states.get(uid, {})
-        query = state.get("query", "*")
-        text, markup = await _build_user_search_results(query, 0)
+        text, markup = await _build_user_list(0)
         await q.edit_message_text(text, reply_markup=markup)
         return
 
@@ -1949,63 +1948,133 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 
-def admin_panel_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+def _admin_display_name(value: str | None) -> str:
+    """Normalize legacy names and mark records that only contain a Login label."""
+    name = " ".join((value or "").split())
+    if not name or name.casefold() in {"login", "🔑 login"}:
+        return "Ism/familiya kiritilmagan"
+    return name
+
+
+def _admin_phone(phone: str | None) -> str:
+    return " ".join((phone or "").split()) or "telefon yo'q"
+
+
+def admin_panel_kb(offset: int = 0, total: int = 0) -> InlineKeyboardMarkup:
+    rows = [
         [
-            [
-                InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="adm:users"),
-                InlineKeyboardButton("📢 Hammaga xabar", callback_data="adm:broadcast"),
-            ],
-            [
-                InlineKeyboardButton("🎫 Tarif / muddat", callback_data="adm:tariff"),
-                InlineKeyboardButton("➖ Admin o'chir", callback_data="adm:remove"),
-            ],
-            [InlineKeyboardButton("🔄 Yangilash", callback_data="adm:list")],
-        ]
+            InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="adm:users"),
+            InlineKeyboardButton("📢 Hammaga xabar", callback_data="adm:broadcast"),
+        ],
+        [
+            InlineKeyboardButton("🎫 Tarif / muddat", callback_data="adm:tariff"),
+            InlineKeyboardButton("➖ Admin o'chir", callback_data="adm:remove"),
+        ],
+    ]
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(
+            "⬅️ Oldingi", callback_data=f"adm:list:page:{max(0, offset - ADMIN_ROSTER_PAGE_SIZE)}"
+        ))
+    if offset + ADMIN_ROSTER_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton(
+            "Keyingi ➡️", callback_data=f"adm:list:page:{offset + ADMIN_ROSTER_PAGE_SIZE}"
+        ))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("🔄 Yangilash", callback_data=f"adm:list:page:{offset}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _build_user_list(offset: int = 0):
+    total = await db.count_search_users("*", exclude_uid=SUPER_ADMIN)
+    max_offset = ((total - 1) // ADMIN_USER_PAGE_SIZE) * ADMIN_USER_PAGE_SIZE if total else 0
+    offset = min(max_offset, max(0, (int(offset) // ADMIN_USER_PAGE_SIZE) * ADMIN_USER_PAGE_SIZE))
+    users = await db.search_users(
+        "*", limit=ADMIN_USER_PAGE_SIZE, offset=offset, exclude_uid=SUPER_ADMIN
     )
-
-
-async def _build_user_search_results(query: str, offset: int = 0):
-    total = await db.count_search_users(query)
-    users = await db.search_users(query, limit=ADMIN_USER_PAGE_SIZE, offset=offset)
     rows = []
     for user in users:
         target = int(user["uid"])
-        name = " ".join((user.get("name") or "Noma'lum").split())
-        phone = " ".join((user.get("phone") or "").split()) or "telefon yo'q"
-        # Keep the whole phone visible; shorten the name first to fit the button.
-        name_limit = max(1, 60 - len("👤  · ") - len(phone))
-        name = name[:min(24, name_limit)]
-        label = f"👤 {name} · {phone}"
+        name = _admin_display_name(user.get("name"))
+        if name == "Ism/familiya kiritilmagan":
+            label = f"⚠️ {name} · {target}"
+        else:
+            label = f"👤 {name[:56]}"
         rows.append([InlineKeyboardButton(label, callback_data=f"adm:ucard:{target}")])
 
     nav = []
     if offset > 0:
-        nav.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"adm:users:page:{max(0, offset - ADMIN_USER_PAGE_SIZE)}"))
+        nav.append(InlineKeyboardButton(
+            "⬅️ Oldingi", callback_data=f"adm:users:page:{max(0, offset - ADMIN_USER_PAGE_SIZE)}"
+        ))
     if offset + ADMIN_USER_PAGE_SIZE < total:
-        nav.append(InlineKeyboardButton("Keyingi ➡️", callback_data=f"adm:users:page:{offset + ADMIN_USER_PAGE_SIZE}"))
+        nav.append(InlineKeyboardButton(
+            "Keyingi ➡️", callback_data=f"adm:users:page:{offset + ADMIN_USER_PAGE_SIZE}"
+        ))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("🔎 Qayta qidirish", callback_data="adm:users")])
+    rows.append([
+        InlineKeyboardButton("🔄 Yangilash", callback_data="adm:users:page:0"),
+        InlineKeyboardButton("⬅️ Adminlar", callback_data="adm:list"),
+    ])
 
     first = offset + 1 if users else 0
     last = min(offset + len(users), total)
-    display_query = "barchasi · ism bo'yicha A–Z" if query == "*" else query
     text = (
-        f"👥 FOYDALANUVCHILAR\n"
-        f"🔎 Qidiruv: {display_query}\n"
+        "👥 FOYDALANUVCHILAR RO'YXATI\n"
+        "Ism bo'yicha A–Z · kartani ochish uchun foydalanuvchi ismini bosing.\n"
         f"Natija: {first}–{last} / {total}"
     )
     if not users:
-        text += "\n\n❌ Mos foydalanuvchi topilmadi."
+        text += "\n\n❌ Foydalanuvchilar topilmadi."
     return text, InlineKeyboardMarkup(rows)
 
 
-def _masked_phone(phone: str | None) -> str:
-    phone = (phone or "").strip()
-    if not phone:
-        return "yo'q"
-    return "••••" + phone[-4:] if len(phone) > 4 else "••••"
+async def format_admin_list(offset: int = 0):
+    """Confirmed-user overview in readable, separated blocks with pagination."""
+    admins = await db.get_admins()
+    non_super = [target for target in admins if target != SUPER_ADMIN]
+    total = len(non_super)
+    max_offset = ((total - 1) // ADMIN_ROSTER_PAGE_SIZE) * ADMIN_ROSTER_PAGE_SIZE if total else 0
+    offset = min(max_offset, max(0, (int(offset) // ADMIN_ROSTER_PAGE_SIZE) * ADMIN_ROSTER_PAGE_SIZE))
+    page = non_super[offset:offset + ADMIN_ROSTER_PAGE_SIZE]
+    page_count = max(1, (total + ADMIN_ROSTER_PAGE_SIZE - 1) // ADMIN_ROSTER_PAGE_SIZE)
+    page_number = offset // ADMIN_ROSTER_PAGE_SIZE + 1
+
+    lines = [
+        f"👥 ADMINLAR ({len(admins)} ta — 1 super + {total} oddiy)",
+        f"👑 Super admin: {SUPER_ADMIN}",
+        f"📄 Sahifa: {page_number}/{page_count} · tasdiqlanganlar ism bo'yicha A–Z",
+    ]
+    for target in page:
+        info = await db.get_user_info(target)
+        user = await db.get_user(target) or {}
+        name = _admin_display_name(info.get("name"))
+        username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
+        phone = _admin_phone(user.get("phone"))
+        session = "✅" if user.get("session") else "❌"
+        running = "🟢" if (worker_manager and worker_manager.is_running(target)) else "🔴"
+        interval = await db.get_interval(target)
+        tariff = await db.get_tariff(target)
+        expires = await db.get_tariff_expires(target)
+        expiry = expires[:10] if expires else "cheksiz"
+        chats = await db.count_chats(target)
+        posts = await db.count_posts(target)
+        lines.extend([
+            "",
+            f"👤 {name}",
+            f"   {username} | ID: {target}",
+            f"   📱 {phone}",
+            f"   Sessiya: {session} | Posting: {running}",
+            f"   🎫 {tariff_label(tariff)}",
+            f"   📅 Muddat: {expiry}",
+            f"   💬 {chats} | 📝 {posts} | ⏱ {interval} daq",
+        ])
+    if not page:
+        lines.extend(["", "Hozircha tasdiqlangan foydalanuvchi yo'q."])
+    lines.extend(["", "ℹ️ Har bir foydalanuvchi alohida ko'rsatiladi; batafsil boshqarish uchun tugmalardan foydalaning."])
+    return "\n".join(lines), admin_panel_kb(offset, total)
 
 
 async def _build_user_card(target: int):
@@ -2014,7 +2083,7 @@ async def _build_user_card(target: int):
         return "❌ Foydalanuvchi topilmadi.", InlineKeyboardMarkup([])
 
     info = await db.get_user_info(target)
-    name = info.get("name") or "Noma'lum"
+    name = _admin_display_name(info.get("name"))
     username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
     suspended = await db.is_suspended(target)
     expired = await db.is_tariff_expired(target)
@@ -2042,12 +2111,15 @@ async def _build_user_card(target: int):
     worker_status = "🟢 ishlayapti" if worker else "🔴 to'xtagan"
     lines = [
         "🪪 FOYDALANUVCHI KARTASI",
+        "",
         f"👤 {name}",
         f"🔗 {username} | ID: {target}",
-        f"📱 Telefon: {_masked_phone(user.get('phone'))}",
+        f"📱 Telefon: {_admin_phone(user.get('phone'))}",
+        "",
         f"📌 Hisob: {status}",
         f"🔐 Sessiya saqlangan: {session_status}",
         f"⚙️ Posting worker: {worker_status}",
+        "",
         f"🎫 Tarif: {tariff_label(tariff)}",
         f"📅 Tugash: {expiry_line}",
         f"💬 Chatlar: {await db.count_chats(target)}/{max_chats}",
@@ -2080,32 +2152,6 @@ async def _build_user_card(target: int):
         ])
     rows.append([InlineKeyboardButton("⬅️ Foydalanuvchilar", callback_data="adm:users:back")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
-
-
-async def format_admin_list() -> str:
-    admins = await db.get_admins()
-    non_super = [a for a in admins if a != SUPER_ADMIN]
-    lines = [
-        f"👥 TASDIQLANGAN FOYDALANUVCHILAR ({len(non_super)} ta)",
-        f"👑 Super admin: {SUPER_ADMIN}",
-        "",
-    ]
-    for target in non_super[:10]:
-        info = await db.get_user_info(target)
-        name = info.get("name", "Noma'lum")
-        username = f"@{info.get('username')}" if info.get("username") else "username yo'q"
-        session = "✅" if await db.get_session(target) else "❌"
-        running = "🟢" if (worker_manager and worker_manager.is_running(target)) else "🔴"
-        expiry = await db.get_tariff_expires(target)
-        expiry_label = expiry[:10] if expiry else "cheksiz"
-        lines.append(
-            f"• {name} ({username}, {target}) — {tariff_label(await db.get_tariff(target))}; "
-            f"muddat {expiry_label}; sessiya {session}; posting {running}"
-        )
-    if len(non_super) > 10:
-        lines.append(f"\n… yana {len(non_super) - 10} ta. To'liq ro'yxat: 👥 Foydalanuvchilar.")
-    lines.append("\nBatafsil karta va boshqaruv uchun quyidagi tugmalardan foydalaning.")
-    return "\n".join(lines)
 
 
 async def _run_broadcast(
@@ -2204,22 +2250,6 @@ async def _handle_admin_input(update: Update, state: dict) -> None:
     if time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
         user_states.pop(uid, None)
         await msg.reply_text("⏰ Admin amali vaqti tugadi. Qaytadan boshlang.")
-        return
-
-    if step == "admin_user_search":
-        query = (msg.text or "").strip()
-        if not query:
-            await msg.reply_text("ID, ism, username yoki telefon yuboring. Barchasini ko'rish uchun * yozing.")
-            return
-        if len(query) > 100:
-            await msg.reply_text("❌ Qidiruv matni juda uzun.")
-            return
-        query = "*" if query.lower() in {"all", "hammasi", "*"} else query
-        state["query"] = query
-        state["ts"] = time.time()
-        user_states[uid] = state
-        result_text, markup = await _build_user_search_results(query)
-        await msg.reply_text(result_text, reply_markup=markup)
         return
 
     if step == "admin_suspend_days":
@@ -2673,7 +2703,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "👥 Adminlar" and is_super(uid):
-        await msg.reply_text(await format_admin_list(), reply_markup=admin_panel_kb())
+        overview_text, overview_markup = await format_admin_list()
+        await msg.reply_text(overview_text, reply_markup=overview_markup)
         return
 
     if text == "🖥 Tizim" and is_super(uid):
@@ -2728,7 +2759,7 @@ async def _begin_login(update: Update) -> None:
     user_states[uid] = {"step": "name", "ts": time.time()}
     await update.message.reply_text(
         "📋 RO'YXATDAN O'TISH (1/3)\n\n"
-        "👤 To'liq ismingizni kiriting:\n\n"
+        "👤 Ism va familiyangizni kiriting (kamida 2 so'z):\n\n"
         "Bu ism admin sizni tasdiqlashi uchun kerak.\n\n"
         "Masalan: Akmal Karimov\n\n"
         "━━━━━━━━━━━━━━━━━━━\n"
@@ -2740,15 +2771,27 @@ async def _begin_login(update: Update) -> None:
     )
 
 
+def _has_first_and_last_name(value: str) -> bool:
+    """Require two name parts; Unicode letters, apostrophes, and hyphens are accepted."""
+    parts = value.split()
+    if len(parts) < 2:
+        return False
+    return all(any(char.isalpha() for char in part) for part in parts[:2])
+
+
 async def _handle_name(update: Update, text: str) -> None:
     uid = update.effective_user.id
-    name = text.strip()
-    if len(name) < 2:
+    name = " ".join(text.split())[:64].strip()
+    if not _has_first_and_last_name(name):
+        state = user_states.get(uid)
+        if state and state.get("step") == "name":
+            state["ts"] = time.time()
+            user_states[uid] = state
         await update.message.reply_text(
-            "❌ Ism juda qisqa. To'liq ismingizni yozing (kamida 2 harf):"
+            "❌ Iltimos, ism va familiyangizni kamida ikki so'z bilan kiriting.\n"
+            "Masalan: Akmal Karimov. Raqam yoki faqat 'Login' qabul qilinmaydi."
         )
         return
-    name = name[:64]  # juda uzun bo'lmasin
     username = update.effective_user.username or ""
     # Ismni darhol saqlaymiz — admin tasdiq xabarida ko'rinadi
     await db.set_user_info(uid, name, username)
