@@ -270,7 +270,11 @@ async def del_pending(uid: int) -> None:
 async def get_admins() -> list[int]:
     db = await _get_conn()
     async with _op_lock:
-        async with db.execute("SELECT uid FROM users WHERE is_admin=1") as cur:
+        async with db.execute(
+            "SELECT uid FROM users WHERE is_admin=1 "
+            "ORDER BY CASE WHEN trim(COALESCE(name, '')) = '' THEN 1 ELSE 0 END, "
+            "lower(trim(COALESCE(name, ''))), uid"
+        ) as cur:
             rows = await cur.fetchall()
             return [r[0] for r in rows]
 
@@ -344,7 +348,8 @@ async def search_users(query: str = "", limit: int = 8, offset: int = 0) -> list
     async with _op_lock:
         async with db.execute(
             "SELECT * FROM users" + where +
-            " ORDER BY created_at DESC, uid DESC LIMIT ? OFFSET ?",
+            " ORDER BY CASE WHEN trim(COALESCE(name, '')) = '' THEN 1 ELSE 0 END, "
+            "lower(trim(COALESCE(name, ''))), uid LIMIT ? OFFSET ?",
             (*params, limit, offset),
         ) as cur:
             return [dict(row) for row in await cur.fetchall()]

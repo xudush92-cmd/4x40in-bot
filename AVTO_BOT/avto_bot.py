@@ -1485,8 +1485,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         user_states[uid] = {"step": "admin_user_search", "ts": time.time(), "query": "*"}
         await q.edit_message_text(
-            "🔎 Foydalanuvchini ID, ism, username yoki telefon orqali qidiring.\n"
-            "Oxirgi foydalanuvchilar ro'yxati uchun * yuboring.\n"
+            "🔎 Ism/familiya bo'yicha qidiring; ID, username va telefon orqali ham qidirish mumkin.\n"
+            "Barcha foydalanuvchilar ro'yxati uchun * yuboring (ism bo'yicha A–Z).\n"
+            "Ro'yxat tugmasida ism va to'liq telefon ko'rinadi; tugmani bossangiz karta ochiladi.\n"
             "Bekor qilish: /cancel"
         )
         return
@@ -1970,10 +1971,13 @@ async def _build_user_search_results(query: str, offset: int = 0):
     rows = []
     for user in users:
         target = int(user["uid"])
-        name = (user.get("name") or "Noma'lum").replace("\n", " ")[:24]
-        username = (user.get("username") or "").lstrip("@")[:18]
-        label = f"👤 {name} · @{username}" if username else f"👤 {name} · {target}"
-        rows.append([InlineKeyboardButton(label[:60], callback_data=f"adm:ucard:{target}")])
+        name = " ".join((user.get("name") or "Noma'lum").split())
+        phone = " ".join((user.get("phone") or "").split()) or "telefon yo'q"
+        # Keep the whole phone visible; shorten the name first to fit the button.
+        name_limit = max(1, 60 - len("👤  · ") - len(phone))
+        name = name[:min(24, name_limit)]
+        label = f"👤 {name} · {phone}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"adm:ucard:{target}")])
 
     nav = []
     if offset > 0:
@@ -1986,7 +1990,7 @@ async def _build_user_search_results(query: str, offset: int = 0):
 
     first = offset + 1 if users else 0
     last = min(offset + len(users), total)
-    display_query = "barchasi / oxirgi ro'yxatdan o'tganlar" if query == "*" else query
+    display_query = "barchasi · ism bo'yicha A–Z" if query == "*" else query
     text = (
         f"👥 FOYDALANUVCHILAR\n"
         f"🔎 Qidiruv: {display_query}\n"

@@ -32,6 +32,8 @@ class AdminDatabaseTests(unittest.IsolatedAsyncioTestCase):
             name="Pending User",
             awaiting_approval=1,
         )
+        await db.upsert_user(103, name="Zebo Karimova", phone="+998971112233", is_admin=1)
+        await db.upsert_user(104, name="Abror Saidov", phone="+998901112233", is_admin=1)
 
         old_expiry = "2027-01-01 00:00:00"
         new_expiry = "2027-02-01 00:00:00"
@@ -44,8 +46,13 @@ class AdminDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_user["expiry_warned"], 0)
 
         self.assertEqual([u["uid"] for u in await db.search_users("@ALI")], [101])
-        self.assertEqual(await db.count_search_users("901234567"), 1)
+        self.assertEqual(await db.count_search_users("99890"), 2)
         self.assertEqual([u["uid"] for u in await db.search_users("102")], [102])
+        self.assertEqual(
+            [u["name"] for u in await db.search_users("*", limit=50)],
+            ["Abror Saidov", "Ali Valiyev", "Pending User", "Zebo Karimova"],
+        )
+        self.assertEqual(await db.get_admins(), [104, 101, 103])
 
         await db.set_user_suspended(101, suspended_until=None, reason="admin test")
         self.assertTrue(await db.is_suspended(101))
