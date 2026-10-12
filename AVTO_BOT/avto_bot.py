@@ -1286,26 +1286,64 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if data == "rmadm:cancel":
-        await q.edit_message_text("❌ Bekor qilindi.")
+        if not is_super(uid):
+            return
+        await q.edit_message_text("❌ Bekor qilindi. Foydalanuvchi va ma'lumotlari saqlab qolindi.")
+        return
+
+    if data.startswith("rmadm:confirm:"):
+        if not is_super(uid):
+            return
+        try:
+            target = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        user = await db.get_user(target)
+        if target == SUPER_ADMIN or not user or not user.get("is_admin"):
+            await q.edit_message_text("❌ Foydalanuvchi topilmadi yoki o'chirish mumkin emas.")
+            return
+        if worker_manager:
+            await worker_manager.stop_worker(target)
+        await db.record_admin_action(
+            uid, target, "user_removed", "user record and data deleted by confirmed admin action"
+        )
+        if client_pool:
+            await client_pool.remove(target)
+        await db.delete_user(target)
+        _wipe_user_media(target)
+        log(f"🗑 Admin o'chirildi: {target}")
+        await q.edit_message_text(f"🗑 Foydalanuvchi butunlay o'chirildi: {target}")
+        with contextlib.suppress(Exception):
+            await application.bot.send_message(
+                target,
+                "❌ Hisobingiz va botdagi ma'lumotlaringiz admin tomonidan o'chirildi.",
+            )
         return
 
     if data.startswith("rmadm:"):
         if not is_super(uid):
             return
-        target = int(data.split(":")[1])
-        if worker_manager:
-            await worker_manager.stop_worker(target)
-        await db.record_admin_action(uid, target, "user_removed", "user record and data deleted by admin")
-        await client_pool.remove(target)
-        await db.delete_user(target)
-        _wipe_user_media(target)
-        log(f"🗑 Admin o'chirildi: {target}")
-        await q.edit_message_text(f"🗑 O'chirildi: {target}")
-        with contextlib.suppress(Exception):
-            await application.bot.send_message(
-                target,
-                "❌ Sizning huquqingiz bekor qilindi va ma'lumotlaringiz tozalandi.",
-            )
+        try:
+            target = int(data.rsplit(":", 1)[1])
+        except ValueError:
+            return
+        user = await db.get_user(target)
+        if target == SUPER_ADMIN or not user or not user.get("is_admin"):
+            await q.edit_message_text("❌ Bu foydalanuvchini o'chirib bo'lmaydi.")
+            return
+        info = await db.get_user_info(target)
+        name = _admin_display_name(info.get("name"))
+        await q.edit_message_text(
+            f"⚠️ {name} ({target}) foydalanuvchisini butunlay o'chirmoqchimisiz?\n\n"
+            "Bu amal sessiya, chatlar, postlar va saqlangan fayllarni o'chiradi. "
+            "Keyin tiklab bo'lmaydi.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🗑 Ha, butunlay o'chirish", callback_data=f"rmadm:confirm:{target}"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="rmadm:cancel"),
+                ]
+            ]),
+        )
         return
 
     if data == "stop:yes":

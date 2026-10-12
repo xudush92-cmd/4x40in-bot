@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 os.environ.setdefault("API_ID", "12345")
 os.environ.setdefault("API_HASH", "0123456789abcdef0123456789abcdef")
@@ -87,6 +88,48 @@ class AdminUserViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("📱 Telefon: +998901112233", card)
         self.assertIn("\n\n📌 Hisob:", card)
         self.assertEqual((await db.get_user(204))["name"], "Login")
+
+    async def test_user_delete_requires_a_second_explicit_confirmation(self):
+        class FakeQuery:
+            def __init__(self, callback_data):
+                self.from_user = SimpleNamespace(id=avto_bot.SUPER_ADMIN)
+                self.data = callback_data
+                self.edits = []
+
+            async def answer(self, *args, **kwargs):
+                pass
+
+            async def edit_message_text(self, text, **kwargs):
+                self.edits.append((text, kwargs))
+
+        old_wipe = avto_bot._wipe_user_media
+        avto_bot._wipe_user_media = lambda uid: None
+        try:
+            select_query = FakeQuery("rmadm:202")
+            await avto_bot.on_callback(
+                SimpleNamespace(callback_query=select_query), None
+            )
+            self.assertIsNotNone(await db.get_user(202))
+            self.assertIn("butunlay o'chirmoqchimisiz", select_query.edits[-1][0])
+            markup = select_query.edits[-1][1]["reply_markup"]
+            callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
+            self.assertIn("rmadm:confirm:202", callbacks)
+            self.assertIn("rmadm:cancel", callbacks)
+
+            cancel_query = FakeQuery("rmadm:cancel")
+            await avto_bot.on_callback(
+                SimpleNamespace(callback_query=cancel_query), None
+            )
+            self.assertIsNotNone(await db.get_user(202))
+
+            confirm_query = FakeQuery("rmadm:confirm:202")
+            await avto_bot.on_callback(
+                SimpleNamespace(callback_query=confirm_query), None
+            )
+            self.assertIsNone(await db.get_user(202))
+            self.assertIn("butunlay o'chirildi", confirm_query.edits[-1][0])
+        finally:
+            avto_bot._wipe_user_media = old_wipe
 
 
 class RegistrationNameValidationTests(unittest.TestCase):
