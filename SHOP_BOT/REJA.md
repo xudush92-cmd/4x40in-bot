@@ -6,6 +6,21 @@
 
 ---
 
+## ✅ TASDIQLANGAN QARORLAR (2026-10-15)
+
+| # | Savol | Sizning qaroringiz | Rejaga ta'siri |
+|---|---|---|---|
+| 1 | Baza | **PostgreSQL 16 + Redis 7** | 4-bo'limdagi sxema to'liq ishlatiladi; SQLite varianti rad etildi |
+| 2 | Kod joyi | **Shu repo, `SHOP_BOT/` papkasi** | `AVTO_BOT/` ga umuman tegilmaydi; botlar mustaqil |
+| 3 | Deploy | **Docker Compose + Caddy + webhook** | 13-bo'limdagi stack; domen va HTTPS kerak |
+| 4 | Ish tartibi | **Avval MVP: Phase 0 → 5** | Guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash, to'lov. Keyin 6→9 (posbon, tozalovchi, sanoqchi, referal, statistika, sayqal) |
+
+**MVP (0→5) yakunida ishlaydigan narsalar:** guruh va toifalarni boshqarish → sotuvchi va tariflar → e'lon qo'shish (al bomi bilan) → aylanma avto-joylash → yarim avtomatik to'lov va obuna. Ya'ni **pul ishlaydigan minimal tizim**.
+
+**MVP'da ataylab keyinga qoldirilgan:** posbon, tozalovchi, sanoqchi, referal, statistika bo'limlari, broadcast, matn tahriri, xato jurnali paneli (Phase 6→9). Baza sxemasi (4-bo'lim) esa **boshidanoq to'liq** quriladi — keyin migratsiya bilan azoblanmaslik uchun.
+
+---
+
 ## 0. QISQA JAVOB: "Qila olasanmi?"
 
 **Ha.** Loyiha texnik jihatdan bajariladigan, lekin **"katta auditoriya uchun" degani arxitekturani boshqacha qurishni talab qiladi** (SQLite + bitta process yetmaydi).
@@ -665,39 +680,45 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 
 **Jami: ~105-135 soat ish ≈ 14-18 ish kuni** (bitta kishi intensiv ishlasa; men bilan bosqichma-bosqich, real vaqtda tezroq — chunki testimiz parallel ketadi).
 
-**Tez natija uchun MVP varianti (tavsiya):** bosqich **0→5** ni birinchi qilib chiqamiz — shunda **guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash va to'lov** to'liq ishlaydi va pul ishlay boshlaydi. Keyin 6-9 (posbon, tozalovchi, sanoqchi, referal...) qo'shiladi. Shu tariqa loyihani 5-6 kunda "ishlaydigan" holatga keltirish mumkin.
+**Tez natija uchun MVP varianti (✅ tanlandi):** bosqich **0→5** ni birinchi qilib chiqamiz — shunda **guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash va to'lov** to'liq ishlaydi va pul ishlay boshlaydi. Keyin 6-9 (posbon, tozalovchi, sanoqchi, referal...) qo'shiladi. Shu tariqa loyihani ~5-6 ish kunida "ishlaydigan" holatga keltirish mumkin.
 
 > **Muhim qoida:** har bosqichda sizning izohingizni olmasdan keyingisiga o'tmayman (`.kiro/steering/kiro-rules.md` talabi).
 
 ---
 
-## 15. SIZDAN KERAK BO'LADIGAN QARORLAR
+## 15. QARORLAR HOLATI
 
-**Texnik tanlovlar (javobni kutyapman):**
+**Texnik tanlovlar — ✅ TASDIQLANDI** (yuqoridagi "TASDIQLANGAN QARORLAR" bo'limiga qarang):
 
-| # | Savol | Variantlar |
+| # | Savol | Holat |
 |---|---|---|
-| 1 | Protsedura bazasi | **PostgreSQL + Redis** (tavsiya, katta auditoriya uchun) / faqat SQLite (kichik yuklama) |
-| 2 | Kod qayerga yoziladi | **Shu repoga `SHOP_BOT/` papkasi** (tavsiya, `AVTO_BOT` tegilmaydi) / alohida repo |
-| 3 | Joylashtirish | Docker + Caddy + webhook (tavsiya) / systemd + long-polling (oddiyroq) |
-| 4 | Boshlash tartibi | MVP (0→5) birinchi, keyin qolgani (tavsiya) / hammasini ketma-ket 0→9 |
+| 1 | Baza | ✅ PostgreSQL 16 + Redis 7 |
+| 2 | Kod joyi | ✅ `SHOP_BOT/` (shu repoda, `AVTO_BOT` tegilmaydi) |
+| 3 | Deploy | ✅ Docker Compose + Caddy + webhook |
+| 4 | Ish tartibi | ✅ MVP (Phase 0→5) birinchi |
 
-**Menda allaqachon bor deb hisoblayman (bo'lmasa aytasan):**
+**Menda allaqachon bor deb hisoblayman (bo'lmasa aytasiz):**
 - Bot token, bot username
 - Super admin Telegram ID(lar)
-- Test uchun: 1 supergroup + 1 kanal + test bot
+- Test uchun: 1 supergroup + 1 kanal + domen (webhook uchun)
 - Tarif nomlari/narxlari/limitlari (keyin ham bo'ladi — panel orqali kiritiladi)
 
 **Keyinroq kerak bo'ladi (kod yozishga xalaqit bermaydi):**
 - To'lov kartalari/rekvizitlar (panel orqali kiritiladi, kodga yozilmaydi)
 - Bot matnlari/branding (nomi, logotip, salomlashuv)
 
+**Hali ochiq (MVP davomida hal qilamiz):**
+- Sotuvchi e'lonlari orasida rasm limiti (tarif standartlari)
+- Majburiy obuna kanali aniq nomi (Phase 7 uchun)
+
 ---
 
 ## 16. KEYINGI QADAM
 
-1. Siz bu rejani o'qib, **15-bo'limdagi 4 ta qarorni** aytasiz (yoki "o'zing tavsiya qilganini tanla" deysiz).
-2. Men **Phase 0** ni yozaman va ishga tushiraman (bot "salom" deydi + DB ulangan) — ko'rsataman.
-3. Tasdiqlasangiz — Phase 1, keyin davom etamiz.
+1. ✅ Reja yozildi va ko'rib chiqish uchun taqdim etildi.
+2. ✅ 4 ta texnik qaror tasdiqlandi (PostgreSQL+Redis, `SHOP_BOT/`, Docker+webhook, MVP 0→5).
+3. ⏳ **Kod yozish uchun sizning aniq ruxsatingiz kutilmoqda.**
+4. Ruxsat bergach: **Phase 0** (poydevor: Docker, `.env`, PostgreSQL, Alembic, logger, kesh, xato ushlagich, health, bot "salom" deydi) yoziladi va ko'rsatiladi.
+5. Tasdiqlasangiz — Phase 1 ga o'tamiz.
 
-**Kod yozish uchun sizning aniq ruxsatingiz kutilmoqda.** Hozir faqat reja.
+**Hozircha kod yozilmagan.**
