@@ -1,0 +1,16 @@
+# ─────────────────────────────────────────────────────────────
+#  Caddy — HTTPS (avtomatik sertifikat) + webhook proksi
+#  DOMAIN .env faylidan olinadi (masalan: bot.sizning-domen.uz)
+#  Domen ko'rsatilmagan bo'lsa: localhost uchun o'z-o'zini imzolagan TLS
+# ─────────────────────────────────────────────────────────────
+{$DOMAIN:localhost} {
+	encode gzip
+
+	# /health va /webhook — bot processiga (aiohttp server)
+	reverse_proxy bot:8080
+
+	log {
+		output file /data/access.log
+		format console
+	}
+}

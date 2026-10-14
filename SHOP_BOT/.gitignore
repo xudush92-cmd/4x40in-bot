@@ -1,0 +1,27 @@
+# SHOP-BOT — lokal istisnolar
+.venv/
+venv/
+env/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Maxfiy va vaqtinchalik
+.env
+.env.*
+!.env.example
+logs/
+data/
+backups/
+*.db
+*.sqlite3
+*.log
+
+# Alembic avtogeneratsiya uchun vaqtinchalik baza
+tmp_*.sqlite*

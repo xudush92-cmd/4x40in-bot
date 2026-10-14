@@ -1,0 +1,115 @@
+# ─────────────────────────────────────────────────────────────
+#  SHOP-BOT — Docker Compose (bot + poster + PostgreSQL + Redis + Caddy)
+#  Ishga tushirish:  cp .env.example .env  →  to'ldiring  →
+#                    docker compose up -d --build
+# ─────────────────────────────────────────────────────────────
+name: shopbot
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file:
+    - .env
+  volumes:
+    - ./logs:/app/logs
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  # ── Ma'lumotlar bazasi ─────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-shopbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shopbot}
+      POSTGRES_DB: ${POSTGRES_DB:-shopbot}
+      TZ: ${TIMEZONE:-Asia/Tashkent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shopbot} -d ${POSTGRES_DB:-shopbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Tashqariga ochilmaydi (xavfsizlik) — faqat ichki tarmoqda
+    expose:
+      - "5432"
+
+  # ── Redis (FSM, kesh, lock) ────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    expose:
+      - "6379"
+
+  # ── Migratsiyalar (bir marta ishlaydi va to'xtaydi) ────────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Bot (handlerlar, admin panel, sotuvchi paneli) ─────────
+  bot:
+    <<: *app
+    container_name: shopbot-bot
+    environment:
+      RUN_MODE: bot
+    expose:
+      - "8080"   # /health va /webhook (Caddy orqali tashqariga)
+
+  # ── Poster (aylanma joylash, eslatmalar, tozalash) ─────────
+  poster:
+    <<: *app
+    container_name: shopbot-poster
+    environment:
+      RUN_MODE: poster
+    expose:
+      - "8080"
+
+  # ── Caddy (HTTPS + webhook proksi) ─────────────────────────
+  #    Domen kerak. Domen yo'q bo'lsa: USE_WEBHOOK=false qilib,
+  #    shu servisni o'chirib qo'ying (docker compose up bot poster)
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bot
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

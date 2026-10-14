@@ -678,6 +678,29 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 | **8** | Referal + statistika + matnlar + xato jurnali | Referal sikli, grafik/hisobot, eksport, matn tahriri, xato paneli, broadcast | To'liq panel | 12-16 soat |
 | **9** | Sayqal | Testlar, yuklama testi, deploy skripti, backup/restore, README, video-qo'llanma | Ishlab chiqarishga tayyor | 10-14 soat |
 
+### ✅ Phase 0 — BAJARILDI (2026-10-15)
+
+| Bajarilgan ish | Fayl / buyruq |
+|---|---|
+| Docker Compose: bot, poster, PostgreSQL 16, Redis 7, Caddy (HTTPS) | `docker-compose.yml`, `Dockerfile`, `Caddyfile` |
+| 41 jadvalli baza sxemasi + boshlang'ich Alembic migratsiyasi | `app/db/models.py`, `alembic/versions/f789aa7b756f_*.py` |
+| Konfiguratsiya va validatsiya (majburiy maydonlar, xavfsizlik tekshiruvi) | `app/config.py`, `.env.example` |
+| Loglar (kunlik aylanish, 14 kun), xato jurnali + adminlarga xabar | `app/logging_setup.py`, `app/services/notify.py` |
+| Middleware: DB sessiya, foydalanuvchi konteksti, anti-flood, texnik rejim/kill switch | `app/middlewares/` |
+| Boshqaruv paneli: **📊 Statistika** va **⚙️ Sozlamalar** to'liq ishlaydi (kill switch, texnik rejim, interval, yordam kontakti) | `app/handlers/admin/panel.py`, `settings.py` |
+| Guruh hayoti: bot qo'shildi/chiqarildi, huquqlar tekshiruvi, adminga ogohlantirish | `app/handlers/group/lifecycle.py`, `app/services/group_service.py` |
+| Rejalashtiruvchi: heartbeat, huquq tekshiruvi (15 daq), log tozalash, kunlik statistika | `app/scheduler/` |
+| HTTP: `/health`, `/stats` (token bilan), webhook va polling rejimi | `app/web/server.py` |
+| Seed skript (adminlar, 22 sozlama, 20 matn, 3 namuna tarif) | `python -m scripts.seed` |
+| Zaxira nusxa va tiklash skriptlari | `scripts/backup.sh`, `scripts/restore.sh` |
+| **58 test** (sxema, servislar, filtrlar, seed, infratuzilma, simlar) — hammasi o'tadi | `pytest` |
+
+**Tekshirilgan:** SQLite'da migratsiya (upgrade/downgrade), 41 jadval, DDL PostgreSQL uchun,
+`/health` va `/stats` javoblari, seed natijasi, `app.main` importi.
+
+**Keyingi qadam:** Phase 1 — Guruhlar va toifalar bo'limini to'liq yozish (CRUD, interval,
+pauza/yoqish, toifa biriktirish, funksiya tumbleri).
+
 **Jami: ~105-135 soat ish ≈ 14-18 ish kuni** (bitta kishi intensiv ishlasa; men bilan bosqichma-bosqich, real vaqtda tezroq — chunki testimiz parallel ketadi).
 
 **Tez natija uchun MVP varianti (✅ tanlandi):** bosqich **0→5** ni birinchi qilib chiqamiz — shunda **guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash va to'lov** to'liq ishlaydi va pul ishlay boshlaydi. Keyin 6-9 (posbon, tozalovchi, sanoqchi, referal...) qo'shiladi. Shu tariqa loyihani ~5-6 ish kunida "ishlaydigan" holatga keltirish mumkin.
