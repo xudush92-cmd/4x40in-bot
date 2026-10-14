@@ -44,6 +44,10 @@ DEFAULTS: dict[str, Any] = {
     "default_jitter_percent": 10,
     "default_daily_post_limit": 50,
     "min_interval_sec": 60,
+    # Sotuvchi / obuna (Phase 2)
+    "bot_username": "",                # @username — referal havolasi uchun (Phase 8)
+    "subscription_reminder_days": 3,   # muddati tugashidan necha kun oldin eslatma
+    "subscription_grace_days": 0,      # muddati o'tgach necha kun "grace" holatida turadi
     # Moderatsiya / limitlar
     "moderation_required_default": False,
     "default_max_photos": 3,

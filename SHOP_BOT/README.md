@@ -8,7 +8,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0 ✅ + Phase 1 (guruhlar va toifalar) ✅**
+## 📌 Hozirgi holat: **Phase 0 ✅ + Phase 1 ✅ + Phase 2 (sotuvchi, tarif, obuna) ✅**
 
 | Ish | Holat |
 |---|---|
@@ -34,8 +34,20 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | 🔢 Panel tugmalarida jonli hisoblagichlar (guruhlar, toifalar, to'lovlar, xatolar) | ✅ |
 | 🧪 Offline E2E testlar: haqiqiy Dispatcher + soxta Bot API (tarmoq/Redis talab qilmaydi) — **jami 104 test** | ✅ |
 
-**Keyingi bosqich (Phase 1):** guruhlar va toifalarni to'liq boshqarish
-(qo'shish, interval, pauza, toifa CRUD, guruhga biriktirish).
+### Phase 2 — sotuvchilar, tariflar, obunalar ✅
+
+| Ish | Holat |
+|---|---|
+| 🛒 Sotuvchilar: ro'yxat (sahifa + holat filtri), qidiruv, kartochka, qo'shish (ID → nom → telefon → kontakt), bloklash (sabab bilan), blokdan chiqarish, tasdiqlash, izoh, profil tahriri, soft-delete | ✅ |
+| 💳 Tariflar: yaratish ustasi, narx/muddat/limitlarni tahrirlash, faol↔pauza, sinov belgisi, tartib (⬆/⬇), o'chirish (obunasi bor tarif faqat to'xtatiladi) | ✅ |
+| 🎫 Obunalar: tarif berish, uzaytirish, muddatni qo'lda o'zgartirish, e'lon limitini berish, obunalar tarixi, sotuvchi blokdan chiqarilganda obuna hisobga olinadi | ✅ |
+| 👤 **Sotuvchi paneli**: "Mening tarifim" (qolgan kun, limit, holat), tariflar katalogi, referal kodi, yordam — `/start` da ham holat ko'rinadi | ✅ |
+| ⏰ Avtomatika: obuna eslatmasi (har soatda, 3 kun qolganda, bir marta) va muddati o'tganlarni yopish (30 daqiqada, `grace` → `expired`, e'lonlar o'chiriladi, sotuvchi xabardor) | ✅ |
+| 💰 Narx kiritish "odam tilida": `150 000`, `150,000`, `150.000`, `150000 so'm` — hammasi to'g'ri o'qiladi, panelda "150 000 so'm" chiqadi | ✅ |
+| 🧪 Testlar: **jami 164 o'tadi** (12 sotuvchi + 24 tarif/obuna + 24 E2E oqim + Phase 0/1 testlari) | ✅ |
+
+**Keyingi bosqich (Phase 3):** e'lonlar va moderatsiya (e'lon ustasi, rasmlar/albom,
+tasdiqlash rejimi, "Mening e'lonlarim").
 
 ---
 
@@ -135,19 +147,20 @@ SHOP_BOT/
 │   │   ├── base.py          # engine, sessiya, JSONB varianti
 │   │   └── models.py        # 41 jadval (REJA.md 4-bo'lim)
 │   ├── handlers/
-│   │   ├── common.py        # /start, /help, /id, /ping, fallback
-│   │   ├── admin/           # panel.py (menyu), settings.py (global sozlamalar)
-│   │   ├── seller/          # sotuvchi paneli (Phase 2-3)
+│   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
+│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs
+│   │   ├── seller/          # sotuvchi paneli (mening tarifim, katalog, referal)
 │   │   └── group/           # lifecycle.py (bot qo'shildi/chiqarildi)
 │   ├── keyboards/           # admin klaviaturalar + callback fabrikalari
 │   ├── middlewares/         # db, user_context, throttling, maintenance
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
-│   ├── services/            # settings, text, group, seller, notify, stats
+│   ├── services/            # settings, text, group, category, seller, tariff,
+│   │                        # subscription, notify, stats
 │   ├── scheduler/           # jobs.py (vazifalar), runner.py (APScheduler)
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 58 test
+├── tests/                   # 164 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -220,9 +233,9 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 | Bosqich | Mazmun | Holat |
 |---|---|---|
 | 0 | Poydevor: Docker, DB, kesh, loglar, health, panel skeleti | ✅ **Bajarildi** |
-| 1 | Guruhlar va toifalar (CRUD, interval, pauza, biriktirish) | ⏳ Keyingi |
-| 2 | Sotuvchilar, tariflar, obunalar, eslatmalar | ⏸ |
-| 3 | E'lonlar: usta, rasmlar/albom, moderatsiya | ⏸ |
+| 1 | Guruhlar va toifalar (CRUD, interval, pauza, biriktirish) | ✅ **Bajarildi** |
+| 2 | Sotuvchilar, tariflar, obunalar, eslatmalar | ✅ **Bajarildi** |
+| 3 | E'lonlar: usta, rasmlar/albom, moderatsiya | ⏳ Keyingi |
 | 4 | **Aylanma joylash dvigateli** | ⏸ |
 | 5 | To'lovlar (chek → tasdiq → obuna) | ⏸ |
 | 6 | Posbon + tozalovchi + ruxsatlar | ⏸ |

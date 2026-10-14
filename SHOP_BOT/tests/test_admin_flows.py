@@ -414,8 +414,15 @@ async def test_panel_menu_and_sections(session, tg) -> None:
     await _feed(session, dp, bot, 4, callback_update(AdminCB(action="section", value="categories").pack()))
     assert "Toifalar" in fake.edited_texts()[-1]
 
-    # Tayyor bo'lmagan bo'lim → Phase haqida ogohlantirish
+    # Phase 2 da tayyor bo'lgan bo'limlar
     await _feed(session, dp, bot, 5, callback_update(AdminCB(action="section", value="sellers").pack()))
+    assert "Sotuvchilar" in fake.edited_texts()[-1]
+
+    await _feed(session, dp, bot, 6, callback_update(AdminCB(action="section", value="tariffs").pack()))
+    assert "Tariflar" in fake.edited_texts()[-1]
+
+    # Hali tayyor bo'lmagan bo'lim → Phase haqida ogohlantirish
+    await _feed(session, dp, bot, 7, callback_update(AdminCB(action="section", value="payments").pack()))
     assert any("Phase" in answer for answer in fake.answers())
 
 

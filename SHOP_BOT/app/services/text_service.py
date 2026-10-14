@@ -74,6 +74,30 @@ DEFAULT_TEXTS: dict[str, str] = {
     ),
     "group.left": "👋 <b>{guruh}</b> guruhidan chiqdim. E'lon joylash to'xtatildi.",
     # Xatolar / kritik
+    "seller.tariff_granted": (
+        "🎉 <b>Tarifingiz faollashtirildi!</b>\n\n"
+        "💳 Tarif: <b>{tarif}</b>\n"
+        "📅 Muddat: <b>{kun} kun</b> ({sana} gacha)\n"
+        "📢 E'lon limiti: <b>{elon}</b> ta\n"
+        "🖼 Har e'londa rasm: <b>{rasm}</b> tagacha"
+    ),
+    "seller.subscription_reminder": (
+        "⏰ <b>Tarifingiz {kun} kundan keyin tugaydi</b>\n\n"
+        "📅 Tugash sanasi: <b>{sana}</b>\n"
+        "📢 Qolgan e'lon limiti: <b>{qoldi}</b>\n\n"
+        "Uzaytirish uchun admin bilan bog'laning: <b>{yordam}</b>"
+    ),
+    "seller.subscription_expired": (
+        "🔴 <b>Tarifingiz muddati tugadi</b>\n\n"
+        "E'lon joylash to'xtatildi. Yangilash uchun admin bilan bog'laning: <b>{yordam}</b>"
+    ),
+    "seller.blocked": (
+        "🚫 <b>Hisobingiz bloklandi</b>\n\nSabab: {sabab}"
+    ),
+    "seller.unblocked": "✅ Hisobingiz blokdan chiqarildi. Tarif holatini /start orqali ko'rishingiz mumkin.",
+    "seller.extended": (
+        "✅ Tarifingiz {kun} kunga uzaytirildi.\n📅 Yangi muddat: <b>{sana}</b>"
+    ),
     "notify.payment_received": "📥 <b>Yangi to'lov cheki</b>\n\nSotuvchi: {sotuvchi}\nTarif: {tarif}\nSumma: {summa}",
     "notify.group_paused": "⏸ <b>{guruh}</b> guruhi to'xtatildi.\nSabab: {sabab}",
     "notify.error": "⚠️ <b>Xatolik</b>\nManba: {manba}\nTafsilot: {xato}",

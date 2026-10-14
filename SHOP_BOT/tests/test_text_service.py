@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.db.models import BotText
 from app.services.text_service import DEFAULT_TEXTS, safe_format, text_service
 
@@ -30,8 +32,11 @@ def test_safe_format_no_placeholders() -> None:
     assert safe_format("Oddiy matn") == "Oddiy matn"
 
 
-async def test_default_texts_available_without_db() -> None:
+async def test_default_texts_available_without_db(session) -> None:
+    """Bazada yozuv bo'lmasa ham standart matn qaytadi (DB'siz ishlamaydi —
+    kesh bo'sh bo'lsa `DEFAULT_TEXTS`ga tushadi)."""
     text_service.invalidate()
+    await text_service.load(session)  # baza bo'sh → kesh bo'sh qoladi
     text = await text_service.get("start.admin", ism="Ali")
     assert "Ali" in text
 
@@ -52,10 +57,18 @@ async def test_unknown_key_returns_marker() -> None:
 
 
 def test_all_default_texts_have_valid_placeholders() -> None:
-    """Standart matnlardagi placeholder'lar buzuq bo'lmasligi kerak."""
+    """Har bir standart matndagi barcha placeholder'larga qiymat berilsa,
+    natijada hech qanday `{...}` qolib ketmasligi kerak.
+
+    Bu matn shabloni bilan kod tomonidagi kalitlar nomuvofiq bo'lsa
+    (masalan matnda `{kun}` bor, kod esa `kun` bermasa) darhol ushlaydi.
+    """
+    placeholders = {
+        match for template in DEFAULT_TEXTS.values() for match in re.findall(r"\{(\w+)\}", template)
+    }
+    assert placeholders, "standart matnlarda placeholder topilmadi"
+
+    values = {name: "TEST" for name in placeholders}
     for key, template in DEFAULT_TEXTS.items():
-        assert "{" not in template.replace("{", "", 1) or "}" in template or True  # shakl tekshiruvi
-        rendered = safe_format(template, ism="Test", guruh="G", sabab="S", xato="X", manba="M",
-                              sotuvchi="S", tarif="T", summa="100", yordam="@admin",
-                              tarif_holati="faol", huquqlar="yo'q")
-        assert "{" not in rendered or key.startswith("common"), f"{key} shablonida muammo"
+        rendered = safe_format(template, **values)
+        assert "{" not in rendered and "}" not in rendered, f"{key}: {rendered[:120]}"

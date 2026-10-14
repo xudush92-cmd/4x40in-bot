@@ -21,7 +21,7 @@ from aiogram import Bot
 from loguru import logger
 from sqlalchemy import delete, func, select, update
 
-from app.constants import AdStatus, RedisKey
+from app.constants import AdStatus, RedisKey, SubscriptionStatus
 from app.db.base import session_scope
 from app.db.models import (
     Ad,
@@ -38,10 +38,12 @@ from app.db.models import (
     Violation,
 )
 from app.redis_client import redis_manager
+from app.services import seller_service, subscription_service, tariff_service
 from app.services.group_service import apply_rights_check, check_group_rights
 from app.services.notify import notify_admins
 from app.services.settings_service import settings_service
-from app.utils.time import utcnow
+from app.services.text_service import text_service
+from app.utils.time import fmt_date, utcnow
 
 _last_posting_notice = 0.0
 
@@ -208,28 +210,98 @@ async def daily_stats_job() -> None:
 
 
 async def expire_subscriptions_job(bot: Bot) -> None:
-    """Muddati tugagan obunalarni yopish va e'lonlarni pauzaga olish (Phase 2 uchun tayyor)."""
-    now = utcnow()
-    async with session_scope() as session:
-        expired = (
-            await session.execute(
-                select(Subscription).where(
-                    Subscription.status == "active", Subscription.expires_at <= now
-                )
-            )
-        ).scalars().all()
+    """Muddati o'tgan obunalarni yopish (REJA.md 4.3, 8.2).
 
-        for sub in expired:
-            sub.status = "expired"
+    `subscription_grace_days = 0` → darhol `expired`; aks holda avval `grace`.
+    Muddati tugagan obunaning e'lonlari `expired` holatiga o'tadi
+    (e'lon joylash Phase 4 da shu holatga qarab to'xtaydi).
+    """
+    async with session_scope() as session:
+        grace_days = int(await settings_service.get("subscription_grace_days", 0, session) or 0)
+        changed = await subscription_service.expire_due(session, grace_days=grace_days)
+        expiring_ids = [sub.id for sub in changed if sub.status == SubscriptionStatus.EXPIRED]
+
+        for seller_id in {sub.seller_id for sub in changed}:
             await session.execute(
                 update(Ad)
-                .where(Ad.seller_id == sub.seller_id, Ad.status == AdStatus.ACTIVE)
+                .where(Ad.seller_id == seller_id, Ad.status == AdStatus.ACTIVE)
                 .values(status=AdStatus.EXPIRED)
             )
 
-    if expired:
-        logger.info("Muddati tugagan obunalar: {} ta", len(expired))
+    if changed:
+        logger.info(
+            "Obunalar yangilandi: {} ta (to'liq yopilgan: {})", len(changed), len(expiring_ids)
+        )
     _ = bot
+
+
+async def subscription_reminders_job(bot: Bot) -> None:
+    """Tarif tugashi haqida eslatma + muddati o'tgani haqida xabar (Phase 2).
+
+    Eslatma bir marta yuboriladi (`reminder_sent_at`), muddati o'tgani haqidagi
+    xabar ham bir marta (`expired_notified_at`).
+    """
+    from app.handlers.seller import seller_status_text  # aylanma importdan qochish
+
+    sent_reminders = 0
+    sent_expired = 0
+
+    async with session_scope() as session:
+        days = int(await settings_service.get("subscription_reminder_days", 3, session) or 3)
+        support = await settings_service.get("support_contact", "@admin", session)
+
+        # 1) Muddati yaqinlashgan obunalar
+        for subscription in await subscription_service.reminders_due(session, days=days):
+            seller = await seller_service.get_seller_by_id(session, subscription.seller_id)
+            if seller is None:
+                subscription_service.mark_reminded(subscription)
+                continue
+
+            tariff = await tariff_service.get_tariff(session, subscription.tariff_id)
+            text = await text_service.get(
+                "seller.subscription_reminder",
+                kun=max(0, subscription_service.days_left(subscription)),
+                sana=fmt_date(subscription.expires_at),
+                qoldi=subscription.ads_left,
+                yordam=str(support),
+            )
+            if await _send_to_seller(bot, seller.user_id, text):
+                subscription_service.mark_reminded(subscription)
+                sent_reminders += 1
+
+        # 2) Muddati o'tgan, ammo xabar berilmagan obunalar
+        for subscription in await subscription_service.expired_without_notice(session):
+            seller = await seller_service.get_seller_by_id(session, subscription.seller_id)
+            if seller is None:
+                subscription_service.mark_expired_notified(subscription)
+                continue
+
+            text = await text_service.get("seller.subscription_expired", yordam=str(support))
+            if await _send_to_seller(bot, seller.user_id, text):
+                subscription_service.mark_expired_notified(subscription)
+                sent_expired += 1
+
+        await session.flush()
+
+    if sent_reminders or sent_expired:
+        logger.info(
+            "Obuna xabarlari: eslatma {} ta, muddati o'tgani {} ta", sent_reminders, sent_expired
+        )
+
+
+async def _send_to_seller(bot: Bot, user_id: int, text: str) -> bool:
+    """Sotuvchiga xabar; bot bloklangan bo'lsa False (qayta urinmaslik uchun belgilanadi)."""
+    from aiogram.exceptions import TelegramAPIError
+
+    try:
+        await bot.send_message(user_id, text, disable_web_page_preview=True)
+        return True
+    except TelegramAPIError as exc:
+        logger.debug("Sotuvchi {} ga xabar yuborilmadi: {}", user_id, exc)
+        return True  # bloklangan bo'lsa ham qayta urinmaymiz
+    except Exception as exc:  # pragma: no cover — kutilmagan xato
+        logger.warning("Xabar yuborishda xato ({}): {}", user_id, exc)
+        return False
 
 
 __all__ = [
@@ -239,4 +311,5 @@ __all__ = [
     "posting_tick_job",
     "retention_job",
     "rights_check_job",
+    "subscription_reminders_job",
 ]

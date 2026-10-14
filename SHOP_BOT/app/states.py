@@ -28,6 +28,35 @@ class AdminCategoryStates(StatesGroup):
     waiting_description = State()
 
 
+class AdminSellerStates(StatesGroup):
+    """Sotuvchilar bo'limi (Phase 2)."""
+
+    waiting_user_id = State()
+    waiting_name = State()
+    waiting_phone = State()
+    waiting_contact = State()
+    waiting_note = State()
+    waiting_search = State()
+    waiting_days = State()
+    waiting_ads_limit = State()
+    # Profilni tahrirlash (qo'shish jarayonidan alohida — to'qnashmasligi uchun)
+    editing_name = State()
+    editing_phone = State()
+    editing_contact = State()
+    editing_note = State()
+
+
+class AdminTariffStates(StatesGroup):
+    """Tariflar bo'limi (Phase 2)."""
+
+    waiting_name = State()
+    waiting_description = State()
+    waiting_price = State()
+    waiting_days = State()
+    waiting_ads = State()
+    waiting_photos = State()
+
+
 class SellerAdStates(StatesGroup):
     """E'lon qo'shish ustasi (Phase 3)."""
 

@@ -83,6 +83,15 @@ def human_int(value: int | float | None) -> str:
     return f"{int(value):,}".replace(",", " ")
 
 
+# Valyuta kodlari uchun o'qishga qulay nomlar
+CURRENCY_LABELS = {
+    "UZS": "so'm",
+    "USD": "$",
+    "EUR": "€",
+    "RUB": "₽",
+}
+
+
 def fmt_amount(value: object, currency: str = "UZS") -> str:
     """Pul summasi: '1 500 000 so'm'."""
     if value is None:
@@ -95,7 +104,8 @@ def fmt_amount(value: object, currency: str = "UZS") -> str:
         pretty = human_int(int(number))
     else:
         pretty = f"{number:,.2f}".replace(",", " ")
-    return f"{pretty} {currency}".strip()
+    label = CURRENCY_LABELS.get((currency or "UZS").upper(), currency)
+    return f"{pretty} {label}".strip()
 
 
 def fmt_interval(seconds: int | None) -> str:

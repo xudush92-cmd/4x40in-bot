@@ -20,6 +20,7 @@ from app.scheduler.jobs import (
     posting_tick_job,
     retention_job,
     rights_check_job,
+    subscription_reminders_job,
 )
 
 
@@ -69,6 +70,15 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             args=[bot],
             id="expire_subscriptions",
             name="Obunalar muddatini tekshirish",
+        )
+
+        # ── Har soatda: tarif eslatmalari (Phase 2) ────────────
+        scheduler.add_job(
+            subscription_reminders_job,
+            IntervalTrigger(hours=1),
+            args=[bot],
+            id="subscription_reminders",
+            name="Tarif eslatmalari",
         )
 
     # ── Kunlik: loglarni tozalash ─────────────────────────────

@@ -732,6 +732,52 @@ Alembic diff bo'sh (sxema o'zgarmagan), seed skripti ishlaydi.
 **Keyingi qadam:** Phase 2 — Sotuvchilar, tariflar va obunalar (admin sotuvchi qo'shadi,
 tarif CRUD, limitlar, obuna berish/uzaytirish, muddat eslatmalari, sotuvchi paneli).
 
+### ✅ Phase 2 — BAJARILDI (2026-10-15)
+
+| Bajarilgan ish | Fayl |
+|---|---|
+| Sotuvchilar bo'limi: ro'yxat (sahifalash, holat filtri), qidiruv, kartochka, qo'shish (FSM: ID → nom → telefon → kontakt), bloklash (sabab bilan) / blokdan chiqarish, tasdiqlash, izoh, profilni tahrirlash, soft-delete | `app/handlers/admin/sellers.py`, `app/keyboards/sellers.py` |
+| Tariflar bo'limi: yaratish ustasi (nom → narx → muddat → e'lon limiti → rasm limiti), tahrirlash (nom, tavsif, narx, muddat, limitlar), faol/pauza, sinov belgisi, tartibni almashtirish (⬆/⬇), o'chirish (obuna bo'lsa — faqat to'xtatish) | `app/handlers/admin/tariffs.py`, `app/keyboards/tariffs.py` |
+| Obunalar: tarif berish (sotuvchi kartochkasidan), uzaytirish, muddatni qo'lda o'zgartirish, e'lon limitini qo'lda berish, obunalar tarixi, sotuvchi blokdan chiqarilganda obuna hisobga olinadi | `app/services/subscription_service.py`, `app/handlers/admin/sellers.py` |
+| **Sotuvchi paneli**: "Mening tarifim" (qolgan kun, limit, holat), tariflar katalogi (narx/limitlar), referal kodi (kerak bo'lsa avtomatik yaratiladi), yordam; sotuvchi `/start`ida holat ko'rsatiladi | `app/handlers/seller/__init__.py`, `app/keyboards/seller_panel.py`, `app/handlers/common.py` |
+| Servis qatlami: sotuvchi CRUD + telefon normalizatsiyasi, tarif CRUD + narx tahlili (`150 000`, `150,000`, `150.000`, `150000 so'm`) | `app/services/seller_service.py`, `app/services/tariff_service.py` |
+| Rejalashtiruvchi: **obuna eslatmalari** (har soatda, `subscription_reminder_days` kun qolganda, bir marta) va **muddati o'tganlarni yopish** (30 daqiqada, `subscription_grace_days` → `grace` → `expired`, e'lonlar `expired` bo'ladi, sotuvchi xabardor qilinadi) | `app/scheduler/jobs.py`, `app/scheduler/runner.py` |
+| Yangi sozlamalar: `subscription_reminder_days=3`, `subscription_grace_days=0`, `bot_username`; matnlar 20 → **26** (`seller.*` — 6 ta yangi) | `app/services/settings_service.py`, `app/services/text_service.py` |
+| **Jami 164 test — hammasi o'tadi** (13 ta alohida test fayli, tarmoqsiz va Redis'siz) | `pytest` |
+
+**Testlar tarkibi (Phase 2 qo'shgani):**
+
+| Test fayli | Nima tekshiradi | Soni |
+|---|---|---|
+| `tests/test_seller_service.py` | Sotuvchi CRUD, telefon normalizatsiyasi, holat o'tishlari, soft-delete, referal kod, qidiruv | 12 |
+| `tests/test_tariff_and_subscription.py` | Narx tahlili/formatlash, tarif CRUD + tartib, obuna berish/uzaytirish/limitlar, `is_valid`, `ads_left`, eslatmalar, grace, statistika | 24 |
+| `tests/test_phase2_flows.py` | **E2E**: admin tugmalarini bosib sotuvchi qo'shadi, tarif yaratadi, tarif beradi, uzaytiradi, bloklaydi; sotuvchi o'z panelini ko'radi; job'lar ishlaydi | 24 |
+
+**Yo'l-yo'lakay topilgan va tuzatilgan xatolar (Phase 2):**
+
+| # | Xato | Oqibati | Yechim |
+|---|---|---|---|
+| 1 | `fmt_amount` valyuta kodini xom chiqarardi | Tarif narxi **"150 000 UZS"** ko'rinishida edi (o'zbek foydalanuvchisi uchun tushunarsiz) | `CURRENCY_LABELS` (`UZS→so'm`, `USD→$`, `EUR→€`, `RUB→₽`) qo'shildi — `app/utils/text.py` |
+| 2 | `parse_price("150,000")` vergulni kasr deb o'qirdi | Admin "150,000" kiritsa narx **150 so'm** bo'lib qolardi — pul yo'qolishi mumkin edi | `_normalize_separators`: ikkala `,` va `.` bo'lsa oxirgisi kasr, aks holda 3 xonali dum = minglik |
+| 3 | `format_price` `currency` `None` bo'lganda "50 000 None" berardi (flush qilinmagan obyekt) | Panelda/bildirishnomada buzuq matn | Standart `UZS` qiymati ishlatiladi |
+| 4 | `tariffs_label` flush qilinmagan tarifda ham "⏸" ko'rsatardi | Yangi tarif ro'yxatda darhol "pauza" bo'lib ko'rinardi | Belgisi faqat `is_active is False` bo'lganda |
+| 5 | `normalize_phone` qavs/chiziqchalarni noto'g'ri qoldirardi | Bir xil raqam ikki xil ko'rinishda yozilishi mumkin edi | Faqat raqamlar + boshidagi `+`, uzunlik kesiladi: `"+998 (90) 111-22-33"` → `"+998901112233"` |
+
+> **Eslatma (o'lchov uchun):** `tests/test_phase2_flows.py` yozilganda 6 test qizil edi — sabab
+> **mahsulot kodida emas, testda** edi: test `commit()`dan keyin `expire_all()` chaqirib, ORM
+> obyekt atributiga sinxron murojaat qilardi (`MissingGreenlet`). Yechim — ID'larni commit'dan
+> **oldin** olib qo'yish (test shabloni shunga o'tkazildi). Ishlab chiqarish kodida bu xavf
+> yo'q, chunki sessiya `expire_on_commit=False` bilan yaratilgan.
+
+**Tekshirilgan:** 164 test o'tadi; har bir test fayli **alohida** ham o'tadi (tartibga bog'liqlik yo'q);
+Alembic autogenerate diff **bo'sh** (Phase 2 sxemani o'zgartirmadi — Sotuvchi/Tarif/Obuna
+jadvallari Phase 0 da qo'yilgan edi); `app.main` importi va routerni yig'ish ishlaydi;
+seed toza bazada: **25 sozlama**, **26 matn**, 3 namuna tarif.
+
+**Keyingi qadam:** Phase 3 — E'lonlar va moderatsiya (e'lon ustasi, albom bilan rasmlar,
+"Tekshiruvda → Tasdiqlangan/Rad etilgan" rejimi, "Mening e'lonlarim", e'lon limitini
+obunadan tekshirish).
+
 **Jami: ~105-135 soat ish ≈ 14-18 ish kuni** (bitta kishi intensiv ishlasa; men bilan bosqichma-bosqich, real vaqtda tezroq — chunki testimiz parallel ketadi).
 
 **Tez natija uchun MVP varianti (✅ tanlandi):** bosqich **0→5** ni birinchi qilib chiqamiz — shunda **guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash va to'lov** to'liq ishlaydi va pul ishlay boshlaydi. Keyin 6-9 (posbon, tozalovchi, sanoqchi, referal...) qo'shiladi. Shu tariqa loyihani ~5-6 ish kunida "ishlaydigan" holatga keltirish mumkin.
@@ -773,5 +819,6 @@ tarif CRUD, limitlar, obuna berish/uzaytirish, muddat eslatmalari, sotuvchi pane
 2. ✅ 4 ta texnik qaror tasdiqlandi (PostgreSQL+Redis, `SHOP_BOT/`, Docker+webhook, MVP 0→5).
 3. ✅ **Phase 0** (poydevor) yozildi, tekshirildi va taqdim etildi — 58 test o'tdi.
 4. ✅ **Phase 1** (guruhlar va toifalar) yozildi, tekshirildi — 104 test o'tdi.
-5. ⏳ **Phase 2** (sotuvchilar, tariflar, obunalar) uchun ruxsat kutilmoqda.
-6. Taxminiy tartib: 2 → 3 → 4 → 5 (MVP), so'ng 6 → 7 → 8 → 9.
+5. ✅ **Phase 2** (sotuvchilar, tariflar, obunalar) yozildi, tekshirildi — **164 test o'tdi**.
+6. ⏳ **Phase 3** (e'lonlar va moderatsiya) uchun ruxsat kutilmoqda.
+7. Taxminiy tartib: 3 → 4 → 5 (MVP), so'ng 6 → 7 → 8 → 9.

@@ -63,3 +63,34 @@ class CategoryCB(CallbackData, prefix="cat"):
     action: str
     category_id: int = 0
     value: str = "0"
+
+class SellerCB(CallbackData, prefix="slr"):
+    """Sotuvchilar bo'limi (admin).
+
+    action: list | card | add | search | filter | grant | grant_tariff |
+            extend | status | block | unblock | verify | note | delete |
+            delete_confirm | subs | profile
+    """
+
+    action: str
+    seller_id: int = 0
+    value: str = "-"
+
+
+class TariffCB(CallbackData, prefix="trf"):
+    """Tariflar bo'limi (admin).
+
+    action: list | card | create | rename | desc | price | days | ads |
+            photos | active | trial | up | down | delete | delete_confirm
+    """
+
+    action: str
+    tariff_id: int = 0
+    value: str = "-"
+
+
+class SellerPanelCB(CallbackData, prefix="sp"):
+    """Sotuvchi paneli (sotuvchining o'zi)."""
+
+    action: str = "menu"
+    value: str = "-"

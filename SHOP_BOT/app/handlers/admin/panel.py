@@ -71,6 +71,20 @@ async def open_section(
         await alert(callback, "")
         return
 
+    if key == "sellers":
+        from app.handlers.admin.sellers import render_list as render_sellers
+
+        await render_sellers(callback, session, 0)
+        await alert(callback, "")
+        return
+
+    if key == "tariffs":
+        from app.handlers.admin.tariffs import render_list as render_tariffs
+
+        await render_tariffs(callback, session, 0)
+        await alert(callback, "")
+        return
+
     phase = SECTION_PHASES.get(key, 9)
     title = SECTION_TITLES.get(key, key)
     logger.debug("Tayyor bo'lmagan bo'lim: {} (Phase {})", key, phase)

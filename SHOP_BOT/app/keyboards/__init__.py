@@ -9,7 +9,16 @@ from app.keyboards.admin import (
     back_kb,
     settings_kb,
 )
-from app.keyboards.callbacks import AdminCB, FeatureCB, GroupCB, NavCB
+from app.keyboards.callbacks import (
+    AdminCB,
+    CategoryCB,
+    FeatureCB,
+    GroupCB,
+    NavCB,
+    SellerCB,
+    SellerPanelCB,
+    TariffCB,
+)
 
 __all__ = [
     "ADMIN_SECTIONS",
@@ -17,9 +26,13 @@ __all__ = [
     "SECTION_PHASES",
     "SECTION_TITLES",
     "AdminCB",
+    "CategoryCB",
     "FeatureCB",
     "GroupCB",
     "NavCB",
+    "SellerCB",
+    "SellerPanelCB",
+    "TariffCB",
     "admin_main_kb",
     "back_kb",
     "settings_kb",

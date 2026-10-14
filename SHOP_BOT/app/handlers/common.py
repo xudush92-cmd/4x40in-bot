@@ -12,40 +12,17 @@ from app import __version__
 from app.constants import SellerStatus
 from app.db.models import User
 from app.filters import PrivateChat
+from app.handlers.seller import seller_status_text
 from app.keyboards import AdminCB, admin_main_kb
+from app.keyboards.seller_panel import seller_menu_kb
+from app.services import seller_service, subscription_service
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
 from app.services.text_service import text_service
-from app.utils.time import fmt_date
 
 router = Router(name="common")
 
 UNKNOWN_CB_TEXT = "⚠️ Bu tugma eskirgan. /start ni bosing."
-
-
-def seller_menu_kb() -> InlineKeyboardMarkup:
-    """Sotuvchi paneli klaviaturasi (Phase 2-3 da to'ldiriladi)."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Tarif va to'lov", callback_data="sm:tariff")],
-            [InlineKeyboardButton(text="📢 Mening e'lonlarim", callback_data="sm:ads")],
-            [InlineKeyboardButton(text="📅 Mening tarifim", callback_data="sm:my_tariff")],
-            [InlineKeyboardButton(text="🎁 Referal", callback_data="sm:referral")],
-        ]
-    )
-
-
-async def _seller_status_text(seller) -> str:
-    """Sotuvchi uchun tarif holati matni."""
-    sub = seller.active_subscription
-    if sub is None:
-        return "⚠️ Faol tarifingiz yo'q. Iltimos, tarif tanlang."
-    tariff_name = sub.tariff.name if sub.tariff else "—"
-    return (
-        f"📅 Tarifingiz: <b>{tariff_name}</b>\n"
-        f"⏳ Tugash sanasi: <b>{fmt_date(sub.expires_at)}</b>\n"
-        f"📢 Limit: <b>{sub.ads_used}/{sub.ads_limit}</b> e'lon"
-    )
 
 
 @router.message(CommandStart(), PrivateChat())
@@ -72,8 +49,17 @@ async def cmd_start(
 
     seller = await get_seller(session, message.from_user.id)
     if seller is not None and seller.status != SellerStatus.BLOCKED:
-        text = await text_service.get("start.seller", ism=name, tarif_holati=await _seller_status_text(seller))
-        await message.answer(text, reply_markup=seller_menu_kb())
+        text = await text_service.get(
+            "start.seller", ism=name, tarif_holati=await seller_status_text(seller, session)
+        )
+        active = await subscription_service.active_for(session, seller.id)
+        stats = await seller_service.get_seller_stats(session, seller)
+        await message.answer(
+            text,
+            reply_markup=seller_menu_kb(
+                has_subscription=active is not None, ads_count=stats["ads_active"]
+            ),
+        )
         return
 
     support = await settings_service.get("support_contact", "@admin", session)
@@ -171,4 +157,4 @@ async def group_fallback(message: Message) -> None:
     logger.trace("Guruh xabari qayd etildi: chat={} id={}", message.chat.id, message.message_id)
 
 
-__all__ = ["router", "seller_menu_kb"]
+__all__ = ["router"]

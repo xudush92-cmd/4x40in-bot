@@ -7,6 +7,8 @@ from aiogram.types import InlineKeyboardButton
 PER_PAGE_GROUPS = 6
 PER_PAGE_CATEGORIES = 8
 PER_PAGE_MATRIX = 5
+PER_PAGE_SELLERS = 6
+PER_PAGE_TARIFFS = 8
 
 
 def nav_row(
