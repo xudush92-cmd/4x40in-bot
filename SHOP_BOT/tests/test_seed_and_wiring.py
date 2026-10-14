@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from aiogram.fsm.storage.memory import MemoryStorage
+import os
+import subprocess
+import sys
+
 from sqlalchemy import func, select
 
-from app.bot import create_bot, create_dispatcher
-from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Admin, BotText, Setting, Tariff
 from app.keyboards import ADMIN_SECTIONS, admin_main_kb, settings_kb
@@ -42,21 +43,34 @@ async def test_seed_is_idempotent(clean_db) -> None:
     assert tariffs == len(SAMPLE_TARIFFS)
 
 
-async def test_dispatcher_registers_routers_and_updates(clean_db) -> None:
-    settings = get_settings()
-    bot = create_bot(settings)
-    try:
-        dp = create_dispatcher(settings, MemoryStorage())
-        used = set(dp.resolve_used_update_types())
+def test_dispatcher_registers_routers_and_updates() -> None:
+    """`create_dispatcher` (haqiqiy ishga tushish yo'li) to'g'ri ulanadi.
 
-        # Handler'lar qaysi update turlarini kutayotgani
-        for expected in ("message", "callback_query", "my_chat_member", "chat_member"):
-            assert expected in used, f"{expected} update turi ro'yxatdan o'tmagan"
-
-        # Xato ushlagich bor
-        assert len(dp.errors.handlers) >= 1
-    finally:
-        await bot.session.close()
+    Router daraxtini bir jarayonda faqat bir marta qurish mumkin
+    (aiogram cheklovi), shu sababli tekshiruv alohida jarayonda bajariladi.
+    """
+    code = (
+        "from aiogram.fsm.storage.memory import MemoryStorage\n"
+        "from app.bot import create_bot, create_dispatcher\n"
+        "from app.config import get_settings\n"
+        "settings = get_settings()\n"
+        "bot = create_bot(settings)\n"
+        "dp = create_dispatcher(settings, MemoryStorage())\n"
+        "used = set(dp.resolve_used_update_types())\n"
+        "expected = {'message', 'callback_query', 'my_chat_member', 'chat_member'}\n"
+        "assert expected <= used, sorted(used)\n"
+        "assert len(dp.errors.handlers) >= 1\n"
+        "assert dp.fsm is not None\n"
+        "print('WIRING_OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+        timeout=120,
+    )
+    assert "WIRING_OK" in result.stdout, result.stderr
 
 
 def test_admin_keyboard_has_all_sections() -> None:

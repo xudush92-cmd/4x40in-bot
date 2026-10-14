@@ -192,7 +192,7 @@ class Group(Base, TimestampMixin):
     rotation: Mapped[Optional["GroupRotation"]] = relationship(
         back_populates="group", uselist=False, lazy="selectin", cascade="all, delete-orphan"
     )
-    categories: Mapped[list["Category"]] = relationship(back_populates="group", lazy="noload")
+    categories: Mapped[list["Category"]] = relationship(back_populates="group", lazy="raise")
 
     @property
     def display(self) -> str:
@@ -338,11 +338,12 @@ class Seller(Base, TimestampMixin):
     @property
     def active_subscription(self) -> Optional["Subscription"]:
         """Amaldagi (muddati o'tmagan) obuna — bo'lmasa None."""
-        from app.utils.time import utcnow
+        from app.utils.time import ensure_aware, utcnow
 
         now = utcnow()
         for sub in self.subscriptions:
-            if sub.status == SubscriptionStatus.ACTIVE and sub.expires_at > now:
+            expires = ensure_aware(sub.expires_at)
+            if sub.status == SubscriptionStatus.ACTIVE and expires is not None and expires > now:
                 return sub
         return None
 
@@ -394,9 +395,14 @@ class Subscription(Base, TimestampMixin):
 
     @property
     def is_valid(self) -> bool:
-        from app.utils.time import utcnow
+        from app.utils.time import ensure_aware, utcnow
 
-        return self.status == SubscriptionStatus.ACTIVE and self.expires_at > utcnow()
+        expires = ensure_aware(self.expires_at)
+        return (
+            self.status == SubscriptionStatus.ACTIVE
+            and expires is not None
+            and expires > utcnow()
+        )
 
     @property
     def ads_left(self) -> int:

@@ -11,10 +11,21 @@ class AdminSettingsStates(StatesGroup):
 
 
 class AdminGroupStates(StatesGroup):
-    """Guruhlar bo'limi (Phase 1)."""
+    """Guruhlar bo'limi: sozlamalarni qo'lda kiritish (Phase 1)."""
 
-    waiting_group = State()
     waiting_interval = State()
+    waiting_jitter = State()
+    waiting_limit = State()
+    waiting_quiet = State()
+
+
+class AdminCategoryStates(StatesGroup):
+    """Toifalar bo'limi (Phase 1)."""
+
+    waiting_name = State()
+    waiting_rename = State()
+    waiting_interval = State()
+    waiting_description = State()
 
 
 class SellerAdStates(StatesGroup):

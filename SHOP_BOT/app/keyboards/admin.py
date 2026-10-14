@@ -37,20 +37,45 @@ ADMIN_SECTIONS: list[tuple[str, str, int]] = [
 SECTION_TITLES: dict[str, str] = {key: label for key, label, _ in ADMIN_SECTIONS}
 SECTION_PHASES: dict[str, int] = {key: phase for key, _, phase in ADMIN_SECTIONS}
 
-READY_SECTIONS = {"stats", "settings"}
+READY_SECTIONS = {"stats", "settings", "groups", "categories"}
 
 
-def admin_main_kb(role: str | None = None) -> InlineKeyboardMarkup:
-    """Asosiy panel: 2 tugma bir qatorda, faqat super adminga ba'zilari."""
+# Qaysi bo'limlarga raqamli hisoblagich qo'shiladi
+COUNTABLE_SECTIONS = {
+    "groups",
+    "categories",
+    "sellers",
+    "ads",
+    "moderation",
+    "payments",
+    "users",
+    "errors",
+}
+
+
+def admin_main_kb(
+    role: str | None = None, counts: dict[str, int] | None = None
+) -> InlineKeyboardMarkup:
+    """Asosiy panel: 2 tugma bir qatorda (+ hisoblagichlar).
+
+    `counts` — `stats_service.get_menu_counts()` natijasi.
+    """
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
 
     for key, label, _phase in ADMIN_SECTIONS:
-        # Adminlarni boshqarish va global sozlamalar — faqat super admin uchun
+        # Adminlarni boshqarish — faqat super admin uchun
         if key == "admins" and role != AdminRole.SUPER:
             continue
+
+        text = label
+        if counts and key in COUNTABLE_SECTIONS:
+            value = counts.get(key)
+            if value is not None and value > 0:
+                text = f"{label} · {value}"
+
         button = InlineKeyboardButton(
-            text=label,
+            text=text,
             callback_data=AdminCB(action="section", value=key).pack(),
         )
         row.append(button)

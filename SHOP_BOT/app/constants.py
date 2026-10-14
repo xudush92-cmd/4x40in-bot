@@ -74,6 +74,28 @@ FEATURE_LABELS: dict[str, str] = {
     GroupFeature.WELCOME: "👋 Salomlashuv",
 }
 
+# Qisqa tugma yozuvlari (matritsa ekrani uchun)
+FEATURE_SHORT: dict[str, str] = {
+    GroupFeature.POSTING: "📢",
+    GroupFeature.COUNTER: "🧮",
+    GroupFeature.GUARD: "🛡",
+    GroupFeature.CLEANER: "🧹",
+    GroupFeature.WELCOME: "👋",
+}
+
+# Har funksiya qaysi bosqichda to'liq ishga tushadi (REJA.md 14-bo'lim)
+FEATURE_PHASES: dict[str, int] = {
+    GroupFeature.POSTING: 4,
+    GroupFeature.GUARD: 6,
+    GroupFeature.CLEANER: 6,
+    GroupFeature.COUNTER: 7,
+    GroupFeature.WELCOME: 9,
+}
+
+# Sozlama qilib qo'yish mumkin bo'lgan, lekin hali "jonli" ishlamaydigan funksiyalar
+# (foydalanuvchiga ogohlantirish ko'rsatiladi)
+LIVE_FEATURES: set[str] = set()  # Phase 4 da POSTING qo'shiladi
+
 
 # ─────────────────────── Posbon / tozalovchi ───────────────────────────
 class Penalty(StrEnum):
@@ -166,6 +188,10 @@ class CB:
 # ──────────────────────────── Standart qiymatlar ───────────────────────
 DEFAULT_INTERVAL_SEC = 1800          # 30 daqiqa
 MIN_INTERVAL_SEC = 60                # Telegram limiti: 1 guruhga 20 xabar/daqiqa
+MAX_INTERVAL_SEC = 86400             # 24 soat
+MIN_JITTER_PERCENT = 0
+MAX_JITTER_PERCENT = 30
+MAX_DAILY_POST_LIMIT = 500
 MAX_PHOTOS_PER_ALBUM = 10            # Telegram bir albomda maksimal 10 rasm
 MAX_TEXT_LEN = 4096
 MAX_CAPTION_LEN = 1024

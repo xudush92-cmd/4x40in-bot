@@ -1,4 +1,10 @@
-"""Rol filtrlari (`UserContextMiddleware` to'ldirgan `data` dan foydalanadi)."""
+"""Rol filtrlari.
+
+Muhim (aiogram 3): filtrlar `data` lug'atini alohida argument sifatida EMAS,
+balki **kalit so'z argumentlari** sifatida oladi (`session=...`, `is_admin=...`).
+Shu sababli imzo har doim `(self, event, **kwargs)` ko'rinishida bo'ladi —
+aks holda `TypeError: missing 1 required positional argument: 'data'` chiqadi.
+"""
 
 from __future__ import annotations
 
@@ -27,12 +33,12 @@ class IsAdmin(BaseFilter):
             None: 0,
         }
 
-    async def __call__(self, event: TelegramObject, data: dict[str, Any]) -> bool:
-        if not data.get("is_admin"):
+    async def __call__(self, event: TelegramObject, **kwargs: Any) -> bool:
+        if not kwargs.get("is_admin"):
             return False
         if self.role is None:
             return True
-        current = data.get("role")
+        current = kwargs.get("role")
         return self._order.get(current, 0) >= self._order.get(self.role, 0)
 
 
@@ -44,12 +50,12 @@ class IsSuperAdmin(IsAdmin):
 class IsSeller(BaseFilter):
     """Faol sotuvchi (bloklanmagan)."""
 
-    async def __call__(self, event: TelegramObject, data: dict[str, Any]) -> bool:
-        user = data.get("user")
+    async def __call__(self, event: TelegramObject, **kwargs: Any) -> bool:
+        user = kwargs.get("user")
         if user is None:
             return False
 
-        session = data.get("session")
+        session = kwargs.get("session")
         if session is not None:
             return await is_active_seller(session, user.user_id)
 
@@ -67,12 +73,12 @@ class HasPermission(BaseFilter):
         self.kind = kind
         self.group_id = group_id
 
-    async def __call__(self, event: TelegramObject, data: dict[str, Any]) -> bool:
-        user = data.get("user")
+    async def __call__(self, event: TelegramObject, **kwargs: Any) -> bool:
+        user = kwargs.get("user")
         if user is None:
             return False
 
-        session = data.get("session")
+        session = kwargs.get("session")
         if session is not None:
             return await self._check(session, user.user_id)
 

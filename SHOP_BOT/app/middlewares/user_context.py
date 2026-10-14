@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Admin, User
-from app.utils.time import utcnow
+from app.utils.time import ensure_aware, utcnow
 
 # Admin holatini tez-tez DB'dan o'qimaslik uchun oddiy kesh
 _ADMIN_CACHE: dict[int, tuple[float, bool, str | None]] = {}
@@ -80,7 +80,7 @@ class UserContextMiddleware(BaseMiddleware):
             user.last_name = tg_user.last_name
 
         # last_seen_at ni tez-tez yozmaslik (DB yuklamasini kamaytirish)
-        last = user.last_seen_at
+        last = ensure_aware(user.last_seen_at)
         if changed or last is None or (now - last).total_seconds() > _LAST_SEEN_WRITE_INTERVAL:
             user.last_seen_at = now
 
@@ -107,9 +107,10 @@ class UserContextMiddleware(BaseMiddleware):
         role = admin.role if admin else None
         _ADMIN_CACHE[user_id] = (now, is_admin, role)
 
+        admin_seen = ensure_aware(admin.last_seen_at) if admin is not None else None
         if admin is not None and (
-            admin.last_seen_at is None
-            or (utcnow() - admin.last_seen_at).total_seconds() > _LAST_SEEN_WRITE_INTERVAL
+            admin_seen is None
+            or (utcnow() - admin_seen).total_seconds() > _LAST_SEEN_WRITE_INTERVAL
         ):
             admin.last_seen_at = utcnow()
 

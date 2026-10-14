@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import __version__
 from app.constants import SellerStatus
 from app.db.models import User
+from app.filters import PrivateChat
 from app.keyboards import AdminCB, admin_main_kb
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
@@ -47,7 +48,7 @@ async def _seller_status_text(seller) -> str:
     )
 
 
-@router.message(CommandStart(), F.chat.type == "private")
+@router.message(CommandStart(), PrivateChat())
 async def cmd_start(
     message: Message,
     user: User | None,
@@ -146,7 +147,7 @@ async def cmd_admin(message: Message, is_admin: bool, role: str | None) -> None:
     )
 
 
-@router.message(F.chat.type == "private")
+@router.message(PrivateChat())
 async def unknown_message(message: Message, is_admin: bool, role: str | None) -> None:
     """Noma'lum xabar: foydalanuvchi "yo'qolib" qolmasligi uchun yumshoq javob."""
     text = await text_service.get("common.unknown_command")

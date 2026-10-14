@@ -8,7 +8,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0 — poydevor** ✅
+## 📌 Hozirgi holat: **Phase 0 ✅ + Phase 1 (guruhlar va toifalar) ✅**
 
 | Ish | Holat |
 |---|---|
@@ -22,6 +22,17 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | Rejalashtiruvchi: heartbeat, huquq tekshiruvi, log tozalash, kunlik statistika | ✅ |
 | `/health` va `/stats` (HTTP), webhook va polling rejimi | ✅ |
 | Seed skript, backup/restore skriptlar, 58 test | ✅ |
+
+### Phase 1 — guruhlar va toifalar ✅
+
+| Ish | Holat |
+|---|---|
+| 👥 Guruhlar: ro'yxat, kartochka, admin huquqlari tekshiruvi, pauza/yoqish, o'chirish (tasdiq bilan) | ✅ |
+| 🎛 Funksiyalar matritsasi — barcha guruhlar × 5 funksiya bir ekranda yoqiladi/o'chiriladi | ✅ |
+| ⚙️ Guruh sozlamalari: interval (1–1440 daq), jitter, kunlik limit, tinch soatlar — panel orqali, **restart kerak emas** | ✅ |
+| 🗂 Toifalar: yaratish (emoji bilan), qayta nomlash, guruhga biriktirish, alohida interval, moderatsiya, tartib, o'chirish | ✅ |
+| 🔢 Panel tugmalarida jonli hisoblagichlar (guruhlar, toifalar, to'lovlar, xatolar) | ✅ |
+| 🧪 Offline E2E testlar: haqiqiy Dispatcher + soxta Bot API (tarmoq/Redis talab qilmaydi) — **jami 104 test** | ✅ |
 
 **Keyingi bosqich (Phase 1):** guruhlar va toifalarni to'liq boshqarish
 (qo'shish, interval, pauza, toifa CRUD, guruhga biriktirish).
@@ -184,6 +195,7 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 
 | Muammo | Sabab va yechim |
 |---|---|
+| Tugma bosilganda javob yo'q | Bo'lim tugmasi eskirgan bo'lishi mumkin — `/start` ni qayta bosing (xabar yangilanadi) |
 | `Konfiguratsiya xatosi: BOT_TOKEN bo'sh` | `.env` to'ldirilmagan (`cp .env.example .env`) |
 | `Baza ishlayaptimi? ... (alembic upgrade head)` | Migratsiya bajarilmagan: `docker compose run --rm migrate` |
 | `/health` → `degraded` | Redis ishlamayapti (bot ishlaydi, lekin FSM restartda yo'qoladi) — `docker compose up -d redis` |

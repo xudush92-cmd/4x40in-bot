@@ -73,6 +73,22 @@ async def get_overview(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+async def get_menu_counts(session: AsyncSession) -> dict[str, int]:
+    """Asosiy panel tugmalaridagi hisoblagichlar (arzon so'rovlar)."""
+    from app.db.models import ErrorLog
+
+    return {
+        "groups": await _count(session, Group),
+        "categories": await _count(session, Category),
+        "sellers": await _count(session, Seller),
+        "ads": await _count(session, Ad),
+        "moderation": await _count(session, Ad, Ad.status == AdStatus.PENDING),
+        "payments": await _count(session, Payment, Payment.status == PaymentStatus.PENDING),
+        "users": await _count(session, User),
+        "errors": await _count(session, ErrorLog, ErrorLog.resolved_at.is_(None)),
+    }
+
+
 def format_overview(data: dict[str, Any]) -> str:
     """Statistikani Telegram uchun matnga aylantirish."""
     return (

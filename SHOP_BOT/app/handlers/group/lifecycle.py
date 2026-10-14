@@ -11,6 +11,7 @@ from aiogram.types import ChatMemberUpdated, InlineKeyboardButton, InlineKeyboar
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.keyboards.callbacks import GroupCB
 from app.services.group_service import pause_group, sync_bot_status
 from app.services.notify import notify_admins
 from app.services.settings_service import settings_service
@@ -108,7 +109,12 @@ def group_admin_button(group_id: int) -> InlineKeyboardMarkup:
     """Guruhni panelda ochish tugmasi (Phase 1 da ishlaydi)."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⚙️ Guruh sozlamalari", callback_data=f"grp:open:{group_id}")]
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Guruh sozlamalari",
+                    callback_data=GroupCB(action="card", group_id=group_id).pack(),
+                )
+            ]
         ]
     )
 

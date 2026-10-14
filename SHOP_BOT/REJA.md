@@ -701,6 +701,37 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 **Keyingi qadam:** Phase 1 — Guruhlar va toifalar bo'limini to'liq yozish (CRUD, interval,
 pauza/yoqish, toifa biriktirish, funksiya tumbleri).
 
+### ✅ Phase 1 — BAJARILDI (2026-10-15)
+
+| Bajarilgan ish | Fayl |
+|---|---|
+| Guruhlar bo'limi: ro'yxat, kartochka, huquqlar tekshiruvi, pauza/yoqish, o'chirish (tasdiq bilan) | `app/handlers/admin/groups.py`, `app/keyboards/groups.py` |
+| Funksiyalar boshqaruvi: **matritsa** (barcha guruhlar × 5 funksiya), tumblerlar, ekran moslamasi (`origin`) | `app/keyboards/groups.py`, `app/keyboards/callbacks.py` |
+| Guruh sozlamalari (FSM): interval (1–1440 daq), jitter (0–50%), kunlik limit, tinch soatlar (`23:00-08:00` / `off`) | `app/handlers/admin/groups.py`, `app/states.py`, `app/utils/text.py` |
+| Toifalar bo'limi: yaratish (emoji bilan), nomini o'zgartirish, guruhga biriktirish/uzish, alohida interval, moderatsiya rejimi, tartibni o'zgartirish, o'chirish | `app/handlers/admin/categories.py`, `app/services/category_service.py`, `app/keyboards/categories.py` |
+| Servis qatlami: huquq tekshiruvi (`RightsCheck`), guruh CRUD, toifa CRUD + navbat kursori (`category_rotation`) | `app/services/group_service.py`, `app/services/category_service.py` |
+| Panel: bo'lim tugmalarida jonli hisoblagichlar (guruhlar, toifalar, to'lovlar, xatolar...) | `app/keyboards/admin.py`, `app/services/stats_service.py` |
+| **Offline E2E testlar** (haqiqiy Dispatcher + fake Bot API sessiyasi, tarmoqsiz) | `tests/fake_telegram.py`, `tests/test_admin_flows.py` |
+| **Jami 104 test — hammasi o'tadi** | `pytest` |
+
+**Yo'l-yo'lakay topilgan va tuzatilgan 4 ta jiddiy xato (Phase 0 dan meros):**
+
+| # | Xato | Oqibati | Yechim |
+|---|---|---|---|
+| 1 | Filtr imzosi `(event, data)` edi | `IsAdmin`/`IsSeller`/`HasPermission` **har chaqiruvda yiqilardi** — butun admin panel ishlamasdi | aiogram 3 talab qilgan `(event, **kwargs)` imzosiga o'tkazildi |
+| 2 | `F.chat.type == "private"` callback'da `None` qaytaradi | Admin panelning **barcha inline tugmalari** javob bermasdi | `PrivateChat()` / `GroupChat()` filtrlari (`app/filters/chats.py`) |
+| 3 | SQLite naive, PostgreSQL aware datetime qaytaradi | `TypeError: can't subtract offset-naive and offset-aware` (obuna muddati, `last_seen`) | `ensure_aware()` yordamchisi (`app/utils/time.py`) |
+| 4 | FSM sozlamalari `value` maydonidan kalit izlardi | «⏱ Interval», «📈 Jitter», «📆 Limit», «🌙 Tinch soatlar» tugmalari `KeyError` berardi | `action` maydonidan o'qiladigan qilindi |
+
+> Bu — aynan "offline E2E" testlarning foydasi: tarmoqqa chiqmasdan, tugmalarni
+> haqiqiy bosib ko'ramiz. Har yangi bo'lim shu usulda tekshiriladi.
+
+**Tekshirilgan:** 104 test (Phase 0 + Phase 1), `compileall`, `app.main`/`build_root_router` importi,
+Alembic diff bo'sh (sxema o'zgarmagan), seed skripti ishlaydi.
+
+**Keyingi qadam:** Phase 2 — Sotuvchilar, tariflar va obunalar (admin sotuvchi qo'shadi,
+tarif CRUD, limitlar, obuna berish/uzaytirish, muddat eslatmalari, sotuvchi paneli).
+
 **Jami: ~105-135 soat ish ≈ 14-18 ish kuni** (bitta kishi intensiv ishlasa; men bilan bosqichma-bosqich, real vaqtda tezroq — chunki testimiz parallel ketadi).
 
 **Tez natija uchun MVP varianti (✅ tanlandi):** bosqich **0→5** ni birinchi qilib chiqamiz — shunda **guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash va to'lov** to'liq ishlaydi va pul ishlay boshlaydi. Keyin 6-9 (posbon, tozalovchi, sanoqchi, referal...) qo'shiladi. Shu tariqa loyihani ~5-6 ish kunida "ishlaydigan" holatga keltirish mumkin.
@@ -740,8 +771,7 @@ pauza/yoqish, toifa biriktirish, funksiya tumbleri).
 
 1. ✅ Reja yozildi va ko'rib chiqish uchun taqdim etildi.
 2. ✅ 4 ta texnik qaror tasdiqlandi (PostgreSQL+Redis, `SHOP_BOT/`, Docker+webhook, MVP 0→5).
-3. ⏳ **Kod yozish uchun sizning aniq ruxsatingiz kutilmoqda.**
-4. Ruxsat bergach: **Phase 0** (poydevor: Docker, `.env`, PostgreSQL, Alembic, logger, kesh, xato ushlagich, health, bot "salom" deydi) yoziladi va ko'rsatiladi.
-5. Tasdiqlasangiz — Phase 1 ga o'tamiz.
-
-**Hozircha kod yozilmagan.**
+3. ✅ **Phase 0** (poydevor) yozildi, tekshirildi va taqdim etildi — 58 test o'tdi.
+4. ✅ **Phase 1** (guruhlar va toifalar) yozildi, tekshirildi — 104 test o'tdi.
+5. ⏳ **Phase 2** (sotuvchilar, tariflar, obunalar) uchun ruxsat kutilmoqda.
+6. Taxminiy tartib: 2 → 3 → 4 → 5 (MVP), so'ng 6 → 7 → 8 → 9.

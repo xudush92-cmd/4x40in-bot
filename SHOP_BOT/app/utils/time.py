@@ -25,13 +25,23 @@ def project_tz() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def to_local(dt: datetime | None, tz: ZoneInfo | None = None) -> datetime | None:
-    """UTC vaqtni loyiha zonasiga o'girish."""
+def ensure_aware(dt: datetime | None) -> datetime | None:
+    """Naive vaqtni UTC deb hisoblash.
+
+    Nega kerak: PostgreSQL'da `DateTime(timezone=True)` har doim tz-aware
+    qaytaradi, lekin SQLite (testlar/sinov muhiti) naive qaytaradi —
+    ayirishda `TypeError` chiqmasligi uchun barcha solishtirishlar shu
+    yordamchi orqali o'tadi.
+    """
     if dt is None:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(tz or project_tz())
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def to_local(dt: datetime | None, tz: ZoneInfo | None = None) -> datetime | None:
+    """UTC vaqtni loyiha zonasiga o'girish."""
+    aware = ensure_aware(dt)
+    return aware.astimezone(tz or project_tz()) if aware else None
 
 
 def fmt_dt(dt: datetime | None, pattern: str = "%d.%m.%Y %H:%M", tz: ZoneInfo | None = None) -> str:
@@ -46,9 +56,10 @@ def fmt_date(dt: datetime | None, tz: ZoneInfo | None = None) -> str:
 
 def days_left(until: datetime | None) -> int:
     """Berilgan vaqtgacha necha kun qolgani (manfiy bo'lsa — muddati o'tgan)."""
-    if until is None:
+    aware = ensure_aware(until)
+    if aware is None:
         return 0
-    delta = until - utcnow()
+    delta = aware - utcnow()
     return delta.days if delta.total_seconds() >= 0 else -((-delta).days or 1)
 
 
@@ -65,9 +76,10 @@ def days_word(n: int) -> str:
 
 def human_delta(dt: datetime | None) -> str:
     """'3 kun 2 soat', '5 daqiqa' kabi o'qishga qulay ko'rinish."""
-    if dt is None:
+    aware = ensure_aware(dt)
+    if aware is None:
         return "—"
-    seconds = int((dt - utcnow()).total_seconds())
+    seconds = int((aware - utcnow()).total_seconds())
     past = seconds < 0
     seconds = abs(seconds)
 

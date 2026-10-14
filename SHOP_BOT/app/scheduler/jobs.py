@@ -38,7 +38,7 @@ from app.db.models import (
     Violation,
 )
 from app.redis_client import redis_manager
-from app.services.group_service import pause_group
+from app.services.group_service import apply_rights_check, check_group_rights
 from app.services.notify import notify_admins
 from app.services.settings_service import settings_service
 from app.utils.time import utcnow
@@ -95,9 +95,8 @@ async def rights_check_job(bot: Bot) -> None:
     """Bot hali ham admin ekanini tekshirish (REJA.md 8.7).
 
     Huquq yo'qolgan bo'lsa — guruh to'xtatiladi va adminga xabar ketadi.
+    Mantiq `group_service` da (admin panel tugmasi bilan bir xil kod ishlatiladi).
     """
-    me = await bot.get_me()
-
     async with session_scope() as session:
         groups = (
             await session.execute(
@@ -113,42 +112,15 @@ async def rights_check_job(bot: Bot) -> None:
             )
         ).scalars().all()
 
+        checked = 0
+        problems = 0
         for group in groups:
-            try:
-                member = await bot.get_chat_member(group.tg_chat_id, me.id)
-            except Exception as exc:  # guruh o'chirilgan yoki bot chiqarilgan
-                logger.warning("Guruh tekshirilmadi ({}): {}", group.display, exc)
-                await pause_group(session, group, reason="chat_not_found")
-                group.last_error = str(exc)[:500]
-                continue
+            result = await check_group_rights(bot, group)
+            ok = await apply_rights_check(session, bot, group, result, notify=True)
+            checked += 1
+            problems += 0 if ok else 1
 
-            status = getattr(member, "status", None)
-            is_admin = status in ("administrator", "creator")
-
-            if not is_admin:
-                await pause_group(session, group, reason="no_rights")
-                await notify_admins(
-                    bot,
-                    f"⚠️ <b>{group.display}</b> guruhida bot endi admin emas.\n"
-                    "E'lon joylash to'xtatildi. Iltimos, admin huquqini qayta bering.",
-                    session=session,
-                )
-                continue
-
-            group.bot_is_admin = True
-            group.bot_rights = {
-                "can_delete_messages": bool(getattr(member, "can_delete_messages", False)),
-                "can_restrict_members": bool(getattr(member, "can_restrict_members", False)),
-                "can_invite_users": bool(getattr(member, "can_invite_users", False)),
-            }
-            group.last_checked_at = utcnow()
-
-            try:
-                group.member_count = await bot.get_chat_member_count(group.tg_chat_id)
-            except Exception:  # pragma: no cover
-                pass
-
-    logger.debug("Huquqlar tekshirildi: {} guruh", len(groups))
+    logger.debug("Huquqlar tekshirildi: {} guruh, muammo: {}", checked, problems)
 
 
 async def retention_job() -> None:
