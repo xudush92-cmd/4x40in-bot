@@ -1,8 +1,9 @@
 # SHOP-BOT — Onlayn do'kon uslubidagi e'lonlar boti
 ## To'liq texnik reja (v1.0) — kelishilgan bosqichlar va qamrov
 
-> **Amaldagi holat (2026-10-15):** Phase 0–8 bajarildi (341 offline test). Keyingisi
-> Phase 9 — faqat yangi alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
+> **Amaldagi holat (2026-10-15):** Phase 0–9 kod/oflayn ishlar bajarildi.
+> Phase 9ga alohida ruxsat berilgan; jonli PostgreSQL/Redis/Telegram/bank va
+> restore/video qabul ishlari qolgan. Bu fayl dastlabki reja; amalga oshirilgan
 > ishlar va sinov cheklovlari uchun [HOLAT.md](HOLAT.md) ga qarang.
 > **Ish qoidasi:** ruxsatsiz yangi bosqich boshlanmaydi, yangi branch/PR ochilmaydi.
 
@@ -728,7 +729,7 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 | **6** ✅ | Posbon + tozalovchi + ruxsatlar | Har guruhda mustaqil filtr/jazo, dry-run, tozalash, muddatli ruxsatlar (obuna/sanoqchi sharti Phase 7da) | Guruh "o'zini tozalaydi" | 14-18 soat |
 | **7** ✅ | Sanoqchi | Shaxsiy invite linklar, attributsiya, `/takliflarim`, admin qo'lda tuzatishi, majburiy kanal | "N odam qo'shish" tizimi ishlaydi (offline; deploy sinovi qolgan) | 12-16 soat |
 | **8** ✅ | Referal + statistika + matnlar + xato jurnali | Referal sikli, grafik/hisobot, eksport, matn tahriri, xato paneli, broadcast | To'liq panel (341 offline test) | 12-16 soat |
-| **9** | Sayqal | Testlar, yuklama testi, deploy skripti, backup/restore, README, video-qo'llanma | Ishlab chiqarishga tayyor | 10-14 soat |
+| **9** | Sayqal | Testlar, yuklama smoke, deploy skripti, backup/restore, README, video ssenariyi | Kod/oflayn sinov ✅; jonli qabul va video yozish hali qolgan | 10-14 soat |
 
 ### ✅ Phase 0 — BAJARILDI (2026-10-15)
 
@@ -929,5 +930,7 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
     e'lon grafigi, admin rollari) foydalanuvchining alohida «ha» ruxsati bilan
     bajarildi — **341 offline test**. SQLite Alembic upgrade/check/downgrade,
     eski chek migratsiyasi, seed ×2 va PostgreSQL offline SQL tekshirildi.
-12. ⏳ **Phase 9** (sayqal/deploy sinovi) uchun **yangi alohida ruxsat** kutilmoqda;
-    ruxsatsiz boshlanmaydi. Qolgan real muhit sinovlari: `HOLAT.md` §9.
+12. ✅ **Phase 9** foydalanuvchining alohida «davom et» ruxsati bilan boshlandi:
+    oflayn navbat yuklamasi, preflight/deploy, backup/restore himoyasi va
+    o‘zbekcha qo‘llanmalar. Jonli deploy/restore/video yozish va huquqiy qabul
+    sinovlari hali bajarilmadi: `HOLAT.md` §8–9.

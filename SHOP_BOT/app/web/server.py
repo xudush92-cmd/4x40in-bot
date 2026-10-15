@@ -6,6 +6,7 @@ Caddy orqali tashqariga chiqariladi (REJA.md 13-bo'lim).
 
 from __future__ import annotations
 
+import hmac
 import time
 from typing import Any
 
@@ -23,6 +24,9 @@ from app.utils.time import utcnow
 
 _STARTED_AT = time.monotonic()
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
+SETTINGS_KEY = web.AppKey("settings", Settings)
+BOT_KEY = web.AppKey("bot", Bot)
+DISPATCHER_KEY = web.AppKey("dispatcher", Dispatcher)
 
 
 def _uptime() -> int:
@@ -31,7 +35,7 @@ def _uptime() -> int:
 
 async def health_handler(request: web.Request) -> web.Response:
     """/health — monitoring uchun (Docker healthcheck, uptime robot)."""
-    settings: Settings = request.app["settings"]
+    settings: Settings = request.app[SETTINGS_KEY]
     db_ok = await ping_database()
     redis_ok = await redis_manager.is_healthy()
 
@@ -54,12 +58,13 @@ async def health_handler(request: web.Request) -> web.Response:
 
 async def stats_handler(request: web.Request) -> web.Response:
     """/stats — token bilan himoyalangan batafsil statistika (JSON)."""
-    settings: Settings = request.app["settings"]
+    settings: Settings = request.app[SETTINGS_KEY]
     expected = settings.health_token.get_secret_value() if settings.health_token else ""
 
     if expected:
-        provided = request.headers.get("X-Token") or request.query.get("token") or ""
-        if provided != expected:
+        # URL query tokenlari proksi/access log va browser tarixiga sizishi mumkin.
+        provided = request.headers.get("X-Token", "")
+        if not hmac.compare_digest(provided, expected):
             return web.json_response({"error": "unauthorized"}, status=401)
     else:
         # Token yo'q — faqat lokal manzillardan ruxsat
@@ -81,9 +86,9 @@ async def stats_handler(request: web.Request) -> web.Response:
 
 async def webhook_handler(request: web.Request) -> web.Response:
     """Telegram update'larini qabul qilish (faqat webhook rejimida)."""
-    settings: Settings = request.app["settings"]
-    bot: Bot = request.app["bot"]
-    dispatcher: Dispatcher = request.app["dispatcher"]
+    settings: Settings = request.app[SETTINGS_KEY]
+    bot: Bot = request.app[BOT_KEY]
+    dispatcher: Dispatcher = request.app[DISPATCHER_KEY]
 
     secret = request.headers.get(SECRET_HEADER, "")
     if settings.webhook_secret_value and secret != settings.webhook_secret_value:
@@ -99,12 +104,14 @@ async def webhook_handler(request: web.Request) -> web.Response:
         update = Update.model_validate(data, context={"bot": bot})
     except Exception as exc:
         logger.warning("Webhook: update o'qilmadi ({})", exc)
-        return web.json_response({"ok": True, "skipped": True})
+        return web.json_response({"ok": False, "error": "bad_update"}, status=400)
 
     try:
         await dispatcher.feed_webhook_update(bot, update)
-    except Exception as exc:  # pragma: no cover — dispatcher xatoni o'zi ushlaydi
+    except Exception as exc:
         logger.exception("Webhook update'ini qayta ishlashda xato: {}", exc)
+        # Sukut bo'yicha 200 qaytarish Telegram'ga update bajarildi deb bildiradi.
+        return web.json_response({"ok": False, "error": "dispatch_failed"}, status=503)
 
     return web.json_response({"ok": True})
 
@@ -112,18 +119,16 @@ async def webhook_handler(request: web.Request) -> web.Response:
 def create_web_app(settings: Settings, bot: Bot | None, dispatcher: Dispatcher | None) -> web.Application:
     """aiohttp ilovasini yig'ish."""
     app = web.Application(client_max_size=1024**2)
-    app["settings"] = settings
-    app["bot"] = bot
-    app["dispatcher"] = dispatcher
+    app[SETTINGS_KEY] = settings
+    app[BOT_KEY] = bot
+    app[DISPATCHER_KEY] = dispatcher
 
     app.router.add_get("/health", health_handler)
     app.router.add_get("/stats", stats_handler)
 
-    if settings.use_webhook and dispatcher is not None:
+    if settings.use_webhook and bot is not None and dispatcher is not None:
         app.router.add_post(settings.webhook_path, webhook_handler)
         logger.info("Webhook endpoint: POST {}", settings.webhook_path)
-    else:
-        app.router.add_post(settings.webhook_path, webhook_handler)
 
     return app
 

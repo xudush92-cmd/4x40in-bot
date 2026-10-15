@@ -10,7 +10,13 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–8 ✅ · Keyingisi: Phase 9 (alohida ruxsat kutilmoqda)**
+## 📌 Hozirgi holat: **Phase 0–9 kod va oflayn sinovlar ✅ · Jonli qabul sinovlari qolgan**
+
+Phase 9da olingan ruxsat doirasida yuklama smoke, deploy/backup/restore
+xavfsizligi va qo‘llanmalar qo‘shildi. **Bu ishlab chiqarishda sinovdan o‘tgan
+degani emas:** real PostgreSQL/Redis, Telegram, TLS, bank va restore drill
+uchun alohida test serveri kerak. [Deploy va tiklash](docs/DEPLOY.md) ·
+[Video-qo‘llanma ssenariysi](docs/VIDEO_SENARIY.md) (**video hali yozilmagan**).
 
 | Ish | Holat |
 |---|---|
@@ -23,7 +29,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | Bot guruhga qo'shilganda: baza'ga yozish, admin huquqlarini tekshirish, adminga xabar | ✅ |
 | Rejalashtiruvchi: heartbeat, huquq tekshiruvi, log tozalash, kunlik statistika | ✅ |
 | `/health` va `/stats` (HTTP), webhook va polling rejimi | ✅ |
-| Seed skript, backup/restore skriptlar, 341 offline test | ✅ |
+| Seed, atomar backup/restore, preflight/deploy va oflayn regressiya testlari | ✅ (jonli tiklash kutilmoqda) |
 
 ### Phase 1 — guruhlar va toifalar ✅
 
@@ -101,8 +107,9 @@ amallarni to'xtatadi, ammo guruh qoidalarini o'chirmaydi.
 
 **Chegara:** real Telegram, bank va PostgreSQL/Redis deploy sinovlari o'tkazilmagan;
 offline testlar ularning o'rnini bosmaydi. Phase 7 sanoqchi/kanal shartlari
-Phase 6 siyosati bilan bitta xabar bo'yicha birlashtirilgan. Phase 8 tayyor;
-**Phase 9 faqat yangi alohida ruxsat bilan.**
+Phase 6 siyosati bilan bitta xabar bo'yicha birlashtirilgan; guruhlar mustaqil.
+Phase 9 uchun alohida ruxsat olingan, oflayn ishlar bajarilgan; jonli qabul
+bandlari [yo‘riqnomada](docs/DEPLOY.md) ochiq qayd etilgan.
 
 ### Phase 7 — sanoqchi va majburiy kanal ✅
 
@@ -182,7 +189,8 @@ uchun admin huquqlarini tiklash yoki qo'lda aralashish zarur bo'lishi mumkin.
 **Deploydan oldin:** `alembic upgrade head` (`8d93a17e623c`) va
 `python -m scripts.seed` (26 sozlama, 30 matn, 3 namuna tarif) bajaring.
 SQLite offline tekshiruvi PostgreSQL/Redis va haqiqiy Telegram/bank sinovini
-almashtirmaydi. Phase 9 hali **boshlanmagan**, unga alohida ruxsat kerak.
+almashtirmaydi. Phase 9ning deploy/restore amaliy qadamlari uchun
+[operator qo‘llanmasi](docs/DEPLOY.md)ga qarang; jonli sinovlar o‘tmagan.
 
 ---
 
@@ -207,44 +215,31 @@ saqlanmaydi. Bank tushumini bot avtomatik tekshirmaydi, admin tasdig'i shart.
 
 ---
 
-## 🚀 Tez boshlash (Docker)
+## 🚀 Tez boshlash (Docker Compose v2)
+
+Bu buyruqlar **jonli serverda bu muhitda sinalmagan**; avval
+[operator yo‘riqnomasini](docs/DEPLOY.md) o‘qing va test serverda sinang.
 
 ```bash
 cd SHOP_BOT
-
-# 1) Sozlamalar
-cp .env.example .env
-nano .env          # BOT_TOKEN, ADMIN_IDS, DOMAIN, POSTGRES_PASSWORD, WEBHOOK_SECRET
-
-# 2) Ishga tushirish
-docker compose up -d --build
-
-# 3) Loglarni kuzatish
-docker compose logs -f bot
-
-# 4) Boshlang'ich ma'lumotlar (adminlar, sozlamalar, matnlar, namuna tariflar)
-docker compose exec bot python -m scripts.seed
+cp .env.example .env && chmod 600 .env
+# .env ni to‘ldiring: BOT_TOKEN, ADMIN_IDS, POSTGRES_PASSWORD va unga mos
+# DB_URL, HEALTH_TOKEN; webhook bo‘lsa DOMAIN, WEBHOOK_BASE_URL, WEBHOOK_SECRET.
+mkdir -p logs backups && sudo chown -R 1001:1001 logs
+python3 -m scripts.preflight --env .env
+./scripts/deploy.sh --check
+./scripts/deploy.sh   # interaktiv DEPLOY; backup va migratsiya avtomatik
+# Dastlabki super-admin, global sozlamalar, matnlar, namuna tariflar:
+docker compose run --rm --no-deps migrate python -m scripts.seed
+# Port 8080 hostga ochilmagan: tekshiruvni konteyner ICHIDAN qiling.
+docker compose exec bot curl -fsS http://127.0.0.1:8080/health
+docker compose logs -f bot poster
 ```
 
-Tekshirish: `curl http://127.0.0.1:8080/health` → `{"status":"ok", ...}`
-
-### Domen va webhook
-
-`.env` da:
-
-```env
-USE_WEBHOOK=true
-WEBHOOK_BASE_URL=https://bot.sizning-domen.uz
-WEBHOOK_SECRET=<uzun-tasodifiy-satr>
-DOMAIN=bot.sizning-domen.uz
-```
-
-Caddy sertifikatni o'zi oladi. Webhook'siz ishlash uchun `USE_WEBHOOK=false`
-qoldiring (polling ishlaydi) va `caddy` servisini o'chiring:
-
-```bash
-docker compose up -d bot poster postgres redis
-```
+`USE_WEBHOOK=true` bo‘lsa Caddy/TLS uchun haqiqiy domen va ochiq 80/443
+kerak; `false` bo‘lsa script Caddy’ni to‘xtatib, pollingni ishlatadi. Caddy
+`/stats`ni tashqariga bermaydi; ichkarida `X-Token` headerini ishlating.
+Yaroqsiz `.env.example` bilan productionni ishga tushirmang.
 
 ---
 
@@ -267,8 +262,9 @@ python -m app.main            # ishga tushirish
 Testlar:
 
 ```bash
-python -m pytest              # 341 test (SQLite + soxta Telegram API, tarmoqsiz)
-python -m pytest -v --tb=short # batafsil
+PYTHONPATH=. python -m pytest -q        # SQLite + soxta Telegram API, tarmoqsiz
+python -m scripts.load_smoke             # 200 guruh/5000 e’lon/24h: oflayn SQLite
+python -m pytest -v --tb=short          # batafsil
 ```
 
 ---
@@ -317,8 +313,9 @@ SHOP_BOT/
 │   ├── scheduler/           # jobs.py (sanoqchi/referal/broadcast/stats), poster.py, runner.py
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
-├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 341 test (offline E2E + servis testlari)
+├── scripts/                 # seed.py, backup.sh, restore.sh, deploy.sh, preflight.py, load_smoke.py
+├── docs/                    # DEPLOY.md, VIDEO_SENARIY.md (video fayli hali yo‘q)
+├── tests/                   # 355 test (offline E2E + servis + infratuzilma smoke)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -350,17 +347,29 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 
 ---
 
+## 🧪 Phase 9 — oflayn yuklama (jonli sinov emas)
+
+`python -m scripts.load_smoke` alohida SQLite’da 200 guruh va 5000 e’lonni
+joylab, 24 ta simulyatsiya soatida `claim_post → commit → finish_post → commit`
+qildi: **4800 post, 133,88 s umumiy vaqt, p95 32,57 ms** (mahalliy sinov).
+Telegram API, PostgreSQL, Redis, ko‘p worker, real rate-limit, TLS va bank
+**tekshirilmagan**. To‘liq qabul tartibi va video ssenariysi yuqoridagi
+qo‘llanmalarda.
+
+---
+
 ## 🩺 Monitoring va zaxira nusxa
 
 | Nima | Buyruq / yo'l |
 |---|---|
 | Konteyner holati | `docker compose ps` |
-| Salomatlik | `curl localhost:8080/health` |
-| Statistika (JSON) | `curl -H "X-Token: $HEALTH_TOKEN" localhost:8080/stats` |
+| Salomatlik | `docker compose exec bot curl -fsS http://127.0.0.1:8080/health` (hostda 8080 yopiq) |
+| Statistika (JSON) | `docker compose exec bot sh -c 'curl -fsS -H "X-Token: $HEALTH_TOKEN" http://127.0.0.1:8080/stats'` (Caddy tashqariga bermaydi) |
 | Bot loglari | `docker compose logs -f bot poster` / `logs/shopbot_YYYY-MM-DD.log` |
-| Zaxira nusxa | `./scripts/backup.sh` (kunlik cron tavsiya etiladi) |
-| Tiklash | `./scripts/restore.sh backups/shopbot_....sql.gz` |
+| Zaxira nusxa | `BACKUP_REQUIRE_DOCKER=true ./scripts/backup.sh` (productionda kunlik cron + offsite nusxa) |
+| Tiklash | `./scripts/restore.sh backups/shopbot_....sql.gz` (**bot/poster to‘xtatilgan holda, avval test serverda**) |
 | Migratsiya | `docker compose run --rm migrate` |
+| Batafsil tartib | [Deploy / backup / restore / xavfsizlik](docs/DEPLOY.md) |
 
 ---
 
@@ -385,6 +394,10 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 * Maxfiy ma'lumotlar logga yozilmaydi (`diagnose=False`, Redis manzilidagi parol niqoblanadi).
 * Docker konteyneri root bo'lmagan `shopbot` foydalanuvchisida ishlaydi.
 * To'lovlar faqat **admin tasdig'i** bilan yoqiladi (avtomatik tasdiq yo'q).
+* `/stats` faqat `X-Token` bilan; query tokeni qabul qilinmaydi va Caddy uni
+  tashqariga chiqarmaydi. `/health`dagi `degraded` uchun JSONni kuzating.
+* Shaxsiy/chek ma’lumotlari, Telegram siyosati va bank bo‘yicha operatorning
+  [huquqiy eslatma va qabul ro‘yxati](docs/DEPLOY.md)ga qarang.
 
 ---
 
@@ -400,5 +413,5 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 | 5 | To'lovlar (chek → tasdiq → obuna) | ✅ **Bajarildi** |
 | 6 | Posbon + tozalovchi + ruxsatlar | ✅ **Bajarildi** |
 | 7 | Sanoqchi (invite linklar, majburiy obuna) | ✅ **Bajarildi** (offline) |
-| 8 | Referal, statistika, matnlar, xato jurnali, broadcast | ⏳ Yangi alohida ruxsat kutilmoqda |
-| 9 | Sayqal: yuklama testi, deploy, hujjat | ⏸ |
+| 8 | Referal, statistika, matnlar, xato jurnali, broadcast | ✅ **Bajarildi** (oflayn) |
+| 9 | Sayqal: yuklama, backup/restore, deploy va qo‘llanmalar | ✅ **Kod/oflayn bajarildi**; haqiqiy deploy/restore/video yozish qolgan |

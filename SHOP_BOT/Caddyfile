@@ -6,6 +6,10 @@
 {$DOMAIN:localhost} {
 	encode gzip
 
+	# Batafsil /stats faqat konteyner ichidan (X-Token bilan) o'qiladi.
+	@private path /stats
+	respond @private 404
+
 	# /health va /webhook — bot processiga (aiohttp server)
 	reverse_proxy bot:8080
 

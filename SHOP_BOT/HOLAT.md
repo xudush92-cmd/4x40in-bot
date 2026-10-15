@@ -4,7 +4,7 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–8 ✅ (341 offline test) · **Keyingisi: Phase 9** (yangi alohida ruxsat kutilmoqda)
+**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–9 kod/oflayn ✅ (355 test) · **Qolgan:** jonli deploy/restore, Telegram/bank qabul sinovi va haqiqiy video
 
 ---
 
@@ -17,9 +17,9 @@
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
 | Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **341 test, hammasi o'tadi** (`python -m pytest`, tarmoqsiz SQLite + soxta Telegram API) |
+| Testlar | **355 test, hammasi o'tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, tarmoqsiz SQLite + soxta Telegram API) |
 | Migratsiya | `f789aa7b756f` → `c8a21b6d0f42` → `4f30ae7c912b` → `8d93a17e623c` (45 jadval; SQLite `alembic check` toza) |
-| Keyingi qadam | **Phase 9 — sayqal/deploy sinovi** (faqat yangi alohida ruxsatdan keyin) |
+| Keyingi qadam | **Jonli qabul bandlari**: alohida test serveri/credentiallar bo‘lsa PostgreSQL/Redis/Telegram/bank, restore drill va video yozuvi; keyingi yangi bosqich oldidan ruxsat olinadi |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -40,7 +40,8 @@
 | `0ba9389` | **Phase 4** — aylanma joylash dvigateli (258 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/0ba9389) |
 | `ceea3ec` | **Phase 5** — to'lovlar (274 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/ceea3ec) |
 | `7ac64b2` | **Phase 6** — guruh siyosati, ruxsatlar va amallar (302 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/7ac64b2) |
-| Joriy shoxobchaning eng oxirgi commiti (`git log -1 --oneline`) | **Phase 8** — referal, panellar, broadcast (341 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
+| `90da91c` | **Phase 8** — referal, panellar, broadcast (341 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/90da91c) |
+| Joriy shoxobchaning eng oxirgi commiti (`git log -1 --oneline`) | **Phase 9** — oflayn yuklama, deploy/backup/restore, qo‘llanmalar (355 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
 
 > ⚠️ **Muhim:** ishni faqat chatning **joriy** shoxobchasida olib boring —
 > `main`ga tegmang, qo'shimcha branch/PR ochmang. Keyingi sessiyada shu kodni
@@ -58,7 +59,7 @@
 cd /home/user/4x40in-bot/SHOP_BOT
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 341 test o'tishi kerak (offline, ~130 sekund)
+PYTHONPATH=. .venv/bin/python -m pytest -q  # 355 test (offline, ~135 sekund)
 ```
 
 Testlar **offline** ishlaydi: SQLite (vaqtinchalik fayl) + soxta Bot API sessiyasi,
@@ -313,11 +314,52 @@ broadcast yuborilmaydi. SQLite eski chek bilan upgrade/check, yangi bazada
 downgrade/upgrade/check, seed ×2 (2 test admin / 26 sozlama / 30 matn,
 avvalgi tarif + 3 namuna tarif), PostgreSQL **offline SQL** tekshirildi.
 Haqiqiy PostgreSQL/Redis/Telegram, bank bilan tekshiruv, yuklama va ko'p worker
-sinovi deploy oldidan qoldi. `AVTO_BOT/`ga va `main`ga tegilmagan.
+sinovi Phase 8 vaqtida qoldirilgan edi. Phase 9 oflayn navbat yuklamasi pastda;
+jonli qabul sinovlari hanuz bajarilmagan. `AVTO_BOT/`ga va `main`ga tegilmagan.
+
+### ✅ Phase 9 — oflayn sayqal; ishlab chiqarish qabuli hali yo‘q
+
+Foydalanuvchi Phase 8 hisobotidan so‘ng **«davom et»** deb Phase 9ga alohida
+ruxsat berdi. Shu bosqichda quyidagilar amalga oshirildi:
+
+- `scripts/load_smoke.py`: vaqtinchalik **SQLite** bazasida 200 guruh / 5000
+  sintetik e’lon / 24 simulyatsiya soati; har soatda `due_group_ids`, har guruhda
+  `claim_post → commit → finish_post → commit`. **4800 post**, 133,88 s jami;
+  claim+finish p50 **26,98 ms**, p95 **32,57 ms**, p99 **38,94 ms** (faqat shu
+  mashina/SQLite). Telegram yuborish, rate-limit, real APScheduler, ikki worker,
+  PostgreSQL va Redis **sinovga kirmagan**. Kichik parametrli CI smoke ham bor.
+- `scripts/backup.sh`: dump xatosida qisman fayl o‘chadi, gzip tekshiriladi,
+  atomar nomlanadi (`0600`), saqlash kunlari tekshiriladi; deployda faqat
+  Docker konteyneridan backupga ruxsat. `restore.sh`: buzilgan arxiv rad
+  etiladi, konteyner/ishlayotgan bot/poster/TTY/ikki tasdiq, `psql`da
+  `ON_ERROR_STOP=1` va
+  yagona tranzaksiya. **Faqat soxta Docker/psql bilan test qilindi; real tiklash
+  sinovi emas.**
+- `scripts/preflight.py`, `scripts/deploy.sh --check`: `.env` shablon va zaif
+  parollar, DB URL mosligi, webhook domeni/sekreti tekshiriladi; Compose config
+  tekshiruvi. Operator tasdiqlaydigan deploy: DB/Redis → build → bot/poster stop
+  → backup → migratsiya → restart, pollingda Caddy to‘xtaydi. Docker bu
+  sandboxda yo‘q: deploy **haqiqatda bajarilmadi**.
+- `app/web/server.py`: `/stats` query-token qabul qilmaydi, `X-Token`ni solishtiradi;
+  webhook faqat faol bot rejimida ro‘yxatdan o‘tadi, noto‘g‘ri update 400,
+  dispatcher tashqi xatosi 503. `Caddyfile` tashqi `/stats`ni yopadi. Ichki
+  aiogram handler xatolari hozircha aiogram `on_error` tomonidan yutiladi:
+  webhookda ayrim handler xatolari 200 sifatida qaytishi mumkin; real
+  at-least-once/idempotentlik qabul sinovisiz kafolatlanmaydi.
+- [Operator deploy/tiklash qo‘llanmasi](docs/DEPLOY.md), [video ssenariysi](docs/VIDEO_SENARIY.md)
+  va huquqiy/Telegram siyosati eslatmalari o‘zbekcha. **Video fayli yozilmagan**:
+  test superguruh, server va yozish vositasi talab etiladi.
+
+**Tekshiruv:** 355 offline pytest; `compileall`, o‘zgargan Python fayllarida Ruff,
+`bash -n`, `git diff --check`; SQLite Alembic upgrade/check/downgrade/upgrade/check
+(ikkalasida diff bo‘sh), seed 2 marta (2 admin / 26 sozlama / 30 matn / 3 tarif),
+PostgreSQL 915 qatorli **offline SQL**. Jonli Docker/PostgreSQL/Redis/Telegram/
+bank, TLS, video va restore drill **o‘tmagan**. Phase 6ning har guruh uchun
+alohida qoida/tumblerlari o‘zgarmadi; `AVTO_BOT/`, `main` tegilmagan.
 
 ---
 
-## 5. Test holati (341 test)
+## 5. Test holati (355 test)
 
 | Test fayli | Qamrov | Soni |
 |---|---|---|
@@ -351,7 +393,10 @@ sinovi deploy oldidan qoldi. `AVTO_BOT/`ga va `main`ga tegilmagan.
 | `tests/test_phase8_reports.py` | Lokal kun, guruh statistikasi, CSV va admin grafik/rol | 2 |
 | `tests/test_phase8_panel.py` | Matn shabloni, xato paneli, moderator roli | 3 |
 | `tests/test_phase8_finishing.py` | Tarif cheklovi E2E, e'lon grafigi, adminlar/audit, eski callback roli | 4 |
-| **JAMI** | | **341** |
+| `tests/test_phase9_infra.py` | Preflight, backup atomarligi, restore tasdig‘i, Docker mock, deploy `--check` va operator ketma-ketligi | 10 |
+| `tests/test_phase9_web.py` | `/stats` header, webhook marshruti/validatsiya/dispatch xatosi | 3 |
+| `tests/test_phase9_load.py` | Mustaqil guruhlarning oflayn tezlashtirilgan navbati (kichik smoke) | 1 |
+| **JAMI** | | **355** |
 
 **Phase 7 tekshiruvi (tarix):** 319 offline test o'tdi; `compileall` va Phase 7 o'zgartirilgan
 fayllarda Ruff toza (`models.py`da avvaldan mavjud UP037/UP045 qoidalari
@@ -367,7 +412,8 @@ UP045/UP037 annotatsiya qoidalari istisno). To'liq repodagi **203 ta avvalgi
 Ruff xatosi** (`models.py` va eski Alembic/testlar) ommaviy avtomatik
 tuzatilmagan: Phase 8 vazifasidan tashqari, regressiya xavfi bor.
 Haqiqiy PostgreSQL/Redis/Telegram, bank va parallel worker tekshiruvi
-Phase 9/deploy oldidan alohida bajariladi.
+Phase 9ning oflayn sayqalidan keyin ham deploy qabuli uchun alohida qoladi;
+yuqoridagi Phase 9 bo‘limi va [operator qo‘llanmasi](docs/DEPLOY.md)ga qarang.
 
 **Test yozish qoidalari (buzilmasin):**
 1. Har bir test fayli **alohida ham** o'tishi kerak (`pytest tests/x.py`).
@@ -414,12 +460,13 @@ SHOP_BOT/
 │   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
 │   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 341 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 355 test (+ conftest.py, fake_telegram.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
 ├── alembic/versions/c8a21b6d0f42_phase6_xabar_siyosati.py
 ├── alembic/versions/4f30ae7c912b_phase7_sanoqchi.py
 ├── alembic/versions/8d93a17e623c_phase8_referral_panels_broadcast.py
-└── scripts/seed.py, backup.sh, restore.sh
+├── scripts/seed.py, backup.sh, restore.sh, deploy.sh, preflight.py, load_smoke.py
+└── docs/DEPLOY.md, VIDEO_SENARIY.md  # operator yo‘riqnomasi; video fayli yo‘q
 ```
 
 ---
@@ -519,17 +566,21 @@ oladi, lekin o'zgartira olmaydi; e'lonlarni moderatsiya qila oladi.
 
 ## 8. Qolgan ishlar
 
-### Phase 0–8 ✅ — bajarildi
+### Phase 0–9 kod/oflayn ✅ — bajarildi
 
-Phase 8 uchun foydalanuvchi alohida «ha» deb ruxsat bergan; natijalar 4–5-bo'limda.
-Majburiy kanal nomi hali berilmagan: admin Phase 7 panelida kiritadi,
-hech qaysi kanal avtomatik tanlanmagan.
+Phase 8ga «ha», Phase 9ga esa Phase 8 hisobotidan so‘ng «davom et» bilan
+alohida ruxsat berilgan. Test natijalari yuqoridagi §4–5da. Majburiy kanal
+nomi hali berilmagan: admin Phase 7 panelida kiritadi, hech qaysi kanal
+avtomatik tanlanmagan.
 
-### Phase 9 — Sayqal (boshlanmagan)
-Yuklama testi, haqiqiy PostgreSQL/Redis/Telegram va bank bilan deploy sinovi,
-backup/restore, README/video-qo'llanma hamda huquqiy eslatmalar (REJA.md 11.2).
+### Qolgan: Phase 9ning jonli qabul bandlari (hali bajarilmagan)
 
-**Qolgan bosqich:** 9. Boshlash uchun foydalanuvchidan **yangi alohida ruxsat** olinadi.
+Haqiqiy PostgreSQL/Redis/Telegram va bank bilan deploy/qabul, ikki worker
+poygasi, TLS, real backup/restore drill, rasmiy siyosat/yuridik ko‘rib chiqish
+va haqiqiy video yozuvi. Bu sandboxda Docker, `pg_dump`, Redis, Telegram/bank
+credentiallari hamda `ffmpeg` yo‘q. [Batafsil ro‘yxat](docs/DEPLOY.md)ni
+operator test muhitida bajarsin; bajarildi deb qayd qilmang. **Har yangi
+bosqichdan oldin alohida ruxsat** qoidasi o‘z kuchida.
 
 ---
 
@@ -539,11 +590,12 @@ backup/restore, README/video-qo'llanma hamda huquqiy eslatmalar (REJA.md 11.2).
 |---|---|---|
 | 1 | Haqiqiy bank, Telegram va PostgreSQL/Redis muhitida to'lov/referal/broadcastni amalda sinash; bank o'tkazmasini admin qo'lda tekshiradi | Deploydan oldin |
 | 2 | Majburiy obuna kanali nomi/ID hali berilmagan — admin Phase 7 panelida qo'shadi; kanal adminligini real Telegramda tekshirish | Deploy oldidan |
-| 3 | Telegram siyosati/huquqiy eslatmalar yakuniy tekshiruvi | Phase 9 |
+| 3 | Huquqiy/Telegram siyosati eslatmalari yozildi (`docs/DEPLOY.md`); amaldagi rasmiy qoidalar va mahalliy huquqiy talablar mutaxassis tomonidan hali tasdiqlanmagan | Ishga tushirishdan oldin |
 | 4 | Phase 6–8 posbon/tozalovchi/sanoqchi, Redis limiter va ko'p workerli broadcastni haqiqiy PostgreSQL + Redis + superguruhda (Privacy Mode o'chirilgan) yuklama bilan sinash | Deploydan oldin |
 | 5 | Eski dublikat invite linklar DB'da deaktiv qilinsa ham Telegramda hali ochiq bo'lishi mumkin — deployda qo'lda revoke qilish | Migratsiyadan so'ng |
 | 6 | Avvalgi shaxsiy `/start` haqida tarix yo'q: eski user bonusga yaroqsiz va broadcastga avtomatik kirmaydi; broadcast uchun yana shaxsiy `/start` kerak | Deploydan keyin |
 | 7 | `stats_daily` migratsiyadan oldingi davrni avtomatik to'ldirmaydi; yangi jamlanma ertasi kuni 00:10da paydo bo'ladi | Deploydan keyin |
+| 8 | Real PostgreSQLga backup/restore, interaktiv deploy, Caddy/TLS va video yozuvi test muhitida bajarilmagan | Production qabulidan oldin |
 
 ---
 
@@ -565,12 +617,14 @@ backup/restore, README/video-qo'llanma hamda huquqiy eslatmalar (REJA.md 11.2).
 > Quyidagini yangi chatga to'g'ridan-to'g'ri nusxalab yuborish mumkin:
 
 ```
-Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md va SHOP_BOT/REJA.md
-fayllarini o'qing: Phase 0–8 tugagan, 341 offline test o'tadi. Kod
-`arena/18e1094b-4x40in-bot` shoxobchasida; main'ga va AVTO_BOT'ga tegmang.
-Bu chatning joriy shoxobchasini almashtirmang, yangi shoxobcha yoki PR ochmang.
-Holatni o'zbekcha aytib bering va Phase 9 (sayqal/deploy sinovi) uchun
-alohida ruxsat so'rang; ruxsatsiz yangi bosqich kodini yozmang.
+Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md, REJA.md,
+docs/DEPLOY.md va docs/VIDEO_SENARIY.md fayllarini o'qing: Phase 0–9 kod/oflayn
+ishlar tugagan, 355 test o'tgan. Kod `arena/18e1094b-4x40in-bot` shoxobchasida;
+main'ga va AVTO_BOT'ga tegmang. Joriy shoxobchani almashtirmang, yangi
+shoxobcha yoki PR ochmang. Jonli PostgreSQL/Redis/Telegram/bank, TLS, real
+restore drill va video yozuvi bajarilmagan. Qolgan ishni avval o'zbekcha ayting;
+resurs/ruxsat bo'lmasa jonli qabul o'tgandek da'vo qilmang. Har yangi bosqich
+oldidan alohida ruxsat oling; bosqich yakunida hisobot bering.
 ```
 
 ---
@@ -584,4 +638,4 @@ alohida ruxsat so'rang; ruxsatsiz yangi bosqich kodini yozmang.
 3. **Git tarixi** (`arena/18e1094b-4x40in-bot`) — kod va testlar GitHub'da, har bosqich alohida commit.
 
 Yangi chatda yordamchi shu 3 ta manbani o'qisa, loyihani **aynan qolgan joyidan** davom ettira oladi:
-`git status` → `pytest` → holat hisoboti → Phase 9 uchun yangi alohida ruxsat.
+`git status` → `pytest` → qolgan jonli qabul bandlari/cheklovlar hisoboti → keyingi yangi bosqichga alohida ruxsat.
