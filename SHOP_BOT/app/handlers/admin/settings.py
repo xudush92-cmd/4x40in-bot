@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.constants import AdminRole
 from app.filters import IsAdmin
 from app.keyboards import settings_kb
 from app.keyboards.callbacks import AdminCB
@@ -22,13 +23,14 @@ from app.states import AdminSettingsStates
 router = Router(name="admin:settings")
 
 # Tumbler (on/off) ko'rinishidagi sozlamalar
-TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required"}
+TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required", "receipt_duplicate_check"}
 
 LABELS = {
     "kill_switch": "🛑 Hammani to'xtatish",
     "maintenance_mode": "🔧 Texnik rejim",
     "referral_enabled": "🤝 Referal",
     "receipt_required": "🧾 Chek majburiy",
+    "receipt_duplicate_check": "🔍 Takroriy chekni tekshirish",
     "support_contact": "☎️ Yordam kontakti",
     "default_interval_sec": "⏱ Joylash intervali",
 }
@@ -43,6 +45,7 @@ def _format_settings(values: dict[str, object]) -> str:
         f"🔧 Texnik rejim: <b>{'YOQILGAN' if values.get('maintenance_mode') else 'o‘chirilgan'}</b>\n"
         f"🤝 Referal tizimi: <b>{'YOQILGAN' if values.get('referral_enabled') else 'o‘chirilgan'}</b>\n"
         f"🧾 Chek majburiy: <b>{'ha' if values.get('receipt_required') else 'yo‘q'}</b>\n"
+        f"🔍 Takroriy chek tekshiruvi: <b>{'yoqilgan' if values.get('receipt_duplicate_check') else 'o‘chirilgan'}</b>\n"
         f"⏱ Default joylash intervali: <b>{interval} daqiqa</b>\n"
         f"☎️ Yordam kontakti: <b>{values.get('support_contact') or '—'}</b>\n"
         f"🗄 Loglarni saqlash: <b>{values.get('log_retention_days')} kun</b>\n"
@@ -57,12 +60,11 @@ async def render_settings_screen(
     """Sozlamalar ekranini chizish (yangi xabar yoki mavjudni tahrirlash)."""
     values = await settings_service.get_all(session)
     text = _format_settings(values)
-    markup = settings_kb(values)
+    markup = settings_kb(values, role)
     try:
         await callback.message.edit_text(text, reply_markup=markup)
     except Exception:
         await callback.message.answer(text, reply_markup=markup)
-    _ = role
 
 
 @router.callback_query(IsAdmin(), AdminCB.filter(F.action == "toggle"))
@@ -75,6 +77,11 @@ async def toggle_setting(
     key = callback_data.value
     if key not in TOGGLE_KEYS:
         await callback.answer("⚠️ Bu sozlamani o'zgartirib bo'lmaydi.", show_alert=True)
+        return
+    if key in {"receipt_required", "receipt_duplicate_check"} and role not in (
+        AdminRole.ADMIN, AdminRole.SUPER
+    ):
+        await callback.answer("⛔️ To'lov sozlamalarini faqat admin boshqaradi.", show_alert=True)
         return
 
     current = bool(await settings_service.get(key, DEFAULTS.get(key, False), session))
@@ -129,12 +136,11 @@ async def start_edit(
 async def cancel_edit(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
     await state.clear()
     values = await settings_service.get_all(session)
-    await message.answer(_format_settings(values), reply_markup=settings_kb(values))
-    _ = role
+    await message.answer(_format_settings(values), reply_markup=settings_kb(values, role))
 
 
 @router.message(IsAdmin(), StateFilter(AdminSettingsStates.waiting_support_contact), F.text)
-async def apply_support_contact(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def apply_support_contact(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
     value = (message.text or "").strip()
     if not value or len(value) > 64:
         await message.answer("⚠️ Noto'g'ri qiymat. @username yoki telefon raqam yuboring.")
@@ -145,12 +151,12 @@ async def apply_support_contact(message: Message, state: FSMContext, session: As
     values = await settings_service.get_all(session)
     await message.answer(
         f"✅ Yordam kontakti yangilandi: <b>{value}</b>\n\n" + _format_settings(values),
-        reply_markup=settings_kb(values),
+        reply_markup=settings_kb(values, role),
     )
 
 
 @router.message(IsAdmin(), StateFilter(AdminSettingsStates.waiting_interval), F.text)
-async def apply_interval(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def apply_interval(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
     raw = (message.text or "").strip()
     if not raw.isdigit():
         await message.answer("⚠️ Faqat raqam yuboring (daqiqada).")
@@ -168,7 +174,7 @@ async def apply_interval(message: Message, state: FSMContext, session: AsyncSess
     values = await settings_service.get_all(session)
     await message.answer(
         f"✅ Interval yangilandi: <b>{minutes} daqiqa</b>\n\n" + _format_settings(values),
-        reply_markup=settings_kb(values),
+        reply_markup=settings_kb(values, role),
     )
 
 

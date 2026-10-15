@@ -1,8 +1,10 @@
 # SHOP-BOT — Onlayn do'kon uslubidagi e'lonlar boti
-## To'liq texnik reja (v1.0) — kod yozilishidan OLDIN tasdiqlash uchun
+## To'liq texnik reja (v1.0) — kelishilgan bosqichlar va qamrov
 
-> **Holat:** Kod yozilmagan. Bu hujjat — g'oyani ko'rib chiqish + to'liq qurilish rejasi.
-> **Sizning qoidangizga rioya qilindi:** `.kiro/steering/kiro-rules.md` — ruxsatsiz kod yozilmaydi, yangi branch/PR ochilmaydi.
+> **Amaldagi holat (2026-10-15):** Phase 0–5 bajarildi (274 offline test). Keyingisi
+> Phase 6 — faqat alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
+> ishlar va sinov cheklovlari uchun [HOLAT.md](HOLAT.md) ga qarang.
+> **Ish qoidasi:** ruxsatsiz yangi bosqich boshlanmaydi, yangi branch/PR ochilmaydi.
 
 ---
 
@@ -27,8 +29,7 @@
 
 Bir muhim ogohlantirish: rejangizda **5-8 ta joyda Texnologiya cheklovlari** bor, ular kod yozishdan oldin hal qilinishi kerak (1.2-bo'limga qarang) — aks holda keyinchalik qayta yozishga to'g'ri keladi. Masalan, **albomga (media group) inline tugma biriktirib bo'lmaydi** — bu Telegram Bot API'ning cheklovi, Aiogram'ning emas.
 
-**Nima qildim:** g'oyani tahlil qildim, bo'sh joylarni to'ldirdim, arxitektura + DB sxemasi + bosqichma-bosqich reja yozdim.
-**Nima qilmadim:** birorta `.py` fayl yozmadim.
+**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–5 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
 
 ---
 
@@ -235,7 +236,7 @@ Bular **kod yozishdan oldin** hal qilinishi shart.
 | Jadval | Ustunlar | Izoh |
 |---|---|---|
 | `payment_methods` | `id, name, card_number, holder, bank, currency, note, is_active, position` | Rekvizitlar (bir nechta karta, aylanma) |
-| `payments` | `id, seller_id, tariff_id, amount, currency, method_id, receipt_file_id, receipt_unique_hash UNIQUE, status, admin_id, decided_at, reason, subscription_id, created_at` | `status`: `pending`/`approved`/`rejected`/`cancelled`. `receipt_unique_hash` — takroriy chekni ushlaydi |
+| `payments` | `id, seller_id, tariff_id, amount, currency, method_id, receipt_file_id, receipt_unique_hash UNIQUE, is_duplicate_receipt, status, admin_id, decided_at, reason, subscription_id, created_at` | `status`: `pending`/`approved`/`rejected`/`cancelled`. Xesh birinchi chekda, takroriy chekda `NULL` + alohida belgi |
 
 ### 4.6. Referal (sanoqchidan alohida)
 
@@ -444,7 +445,13 @@ Subscription yaratiladi/uzaytiriladi → limitlar yoqiladi →
 sotuvchiga xabar: "Tarifingiz faol: 10 ta e'lon, 3 ta rasm, 30 kun"
    ↓ Rad etish → sabab bilan sotuvchiga xabar → qayta yuborish imkoni
 ```
-**Avtomatik tasdiq yo'q** (firibgarlikdan himoya). Ixtiyoriy: super admin uchun "1 klik bilan tasdiq" va Telegram Stars/Click orqali haqiqiy avtomatik to'lov — kelajak bosqichi.
+**Avtomatik tasdiq yo'q** (firibgarlikdan himoya): admin bankdagi o'tkazmani qo'lda
+tekshiradi, keyin alohida tasdiqlash tugmasini bosadi. Phase 5da kartalar admin
+panelidan kiritiladi, bir nechtasi navbat bilan ko'rsatiladi; takroriy chek
+belgilanadi va tasdiqlash bloklanadi. `receipt_required=false` bo'lsa chek rasmi
+shart emas, lekin admin tekshiruvi shart. Bot bank/API orqali pul tushganini
+avtomatik tekshirmaydi. Haqiqiy Telegram/PostgreSQL/Redis sinovi hali kerak.
+Avvalgi rejaning ixtiyoriy «1 klik» va Stars/Click g'oyalari **joriy MVPga kirmaydi**.
 
 ### 8.3. Referal
 

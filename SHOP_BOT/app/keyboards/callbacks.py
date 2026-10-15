@@ -89,6 +89,17 @@ class TariffCB(CallbackData, prefix="trf"):
     value: str = "-"
 
 
+class PaymentCB(CallbackData, prefix="pay"):
+    """Phase 5: admin rekvizitlari, chek navbati va qarorlari.
+
+    target_id — chek yoki karta ID; value — sahifa/filtr yoki maydon kaliti.
+    """
+
+    action: str
+    target_id: int = 0
+    value: str = "0"
+
+
 class SellerPanelCB(CallbackData, prefix="sp"):
     """Sotuvchi paneli (sotuvchining o'zi)."""
 

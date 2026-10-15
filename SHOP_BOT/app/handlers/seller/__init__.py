@@ -4,7 +4,7 @@ Ishlaydigan qismlar:
   * 📅 Mening tarifim — tarif, muddat, qolgan kun, limit, eslatma holati
   * 📢 Mening e'lonlarim — ro'yxat, kartochka, statistika (Phase 3)
   * ➕ Yangi e'lon — usta: toifa → matn → narx → aloqa → rasmlar → yuborish (Phase 3)
-  * 💳 Tariflarni ko'rish — katalog (to'lov va chek Phase 5 da)
+  * 💳 Tariflarni ko'rish — katalog → To'lash → chek (Phase 5)
   * ☎️ Yordam — admin bilan bog'lanish
   * 🎁 Referal — kod va havola (bonuslar Phase 8 da)
 
@@ -21,8 +21,9 @@ from aiogram.types import CallbackQuery
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Seller
+from app.db.models import Seller, Tariff
 from app.filters import IsSeller, PrivateChat
+from app.handlers.seller import ads as ad_handlers
 from app.keyboards.callbacks import SellerPanelCB
 from app.keyboards.seller_panel import (
     back_to_menu_kb,
@@ -30,12 +31,12 @@ from app.keyboards.seller_panel import (
     tariff_screen_kb,
     tariffs_catalog_kb,
 )
-from app.handlers.seller import ads as ad_handlers
 from app.services import seller_service, subscription_service, tariff_service
 from app.services.settings_service import settings_service
+from app.states import SellerPaymentStates
 from app.utils.text import escape_html, fmt_amount, truncate
-from app.utils.time import days_left, fmt_date
 from app.utils.tg import alert, render
+from app.utils.time import days_left, fmt_date
 
 seller_router = Router(name="seller")
 # Faqat sotuvchi, faqat shaxsiy chat, faqat sotuvchi paneli callback'lari
@@ -58,6 +59,12 @@ async def _seller_of(callback: CallbackQuery, session: AsyncSession) -> Seller |
     return seller
 
 
+async def _leave_payment(state: FSMContext) -> None:
+    """Boshqa bo'limga chiqishda eski chek kutish holati tasodifan ishlamasin."""
+    if await state.get_state() == SellerPaymentStates.waiting_receipt.state:
+        await state.clear()
+
+
 # ═══════════════════════════ Matnlar ═══════════════════════════════
 async def _tariff_text(seller: Seller, session: AsyncSession) -> tuple[str, bool]:
     """«Mening tarifim» ekrani. (matn, faol_obuna_bormi)."""
@@ -70,8 +77,8 @@ async def _tariff_text(seller: Seller, session: AsyncSession) -> tuple[str, bool
         lines += [
             "⛔️ <b>Hozircha tarifingiz yo'q</b>",
             "",
-            "Tarif olish uchun admin bilan bog'laning — tarif berilgach e'lon "
-            "joylash imkoniyati ochiladi.",
+            "Tarif olish uchun katalogdan «To'lash»ni tanlang yoki admin bilan bog'laning. "
+            "Obuna faqat admin to'lovni tasdiqlagach faollashadi.",
         ]
         return "\n".join(lines), False
 
@@ -106,14 +113,15 @@ async def _tariff_text(seller: Seller, session: AsyncSession) -> tuple[str, bool
     if active is None:
         lines.append(
             "\n⚠️ <b>E'lon joylash vaqtincha to'xtatilgan</b> (muddat tugagan). "
-            "Admin bilan bog'laning."
+            "Katalogdan tarif sotib oling yoki admin bilan bog'laning."
         )
 
     return "\n".join(lines), active is not None
 
 
-async def _catalog_text(session: AsyncSession) -> str:
-    tariffs = await tariff_service.list_all_active(session)
+async def _catalog_text(session: AsyncSession, tariffs: list[Tariff] | None = None) -> str:
+    if tariffs is None:
+        tariffs = await tariff_service.list_all_active(session)
     lines = ["💳 <b>Tariflar</b>", "━━━━━━━━━━━━━━━━━━━━"]
     if not tariffs:
         lines.append("📭 Hozircha faol tarif yo'q. Admin bilan bog'laning.")
@@ -134,8 +142,9 @@ async def _catalog_text(session: AsyncSession) -> str:
 
     lines.append(
         "\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"Tarif olish uchun: <b>{escape_html(str(support))}</b>\n"
-        "<i>To'lov va chek yuborish Phase 5 da qo'shiladi.</i>"
+        "Tarif olish uchun «💳 To'lash» tugmasini bosing, rekvizitga pul o'tkazib "
+        "chek rasmini yuboring. Obuna faqat admin tasdiqlagach faollashadi.\n"
+        f"Muammo bo'lsa: <b>{escape_html(str(support))}</b>"
     )
     return "\n".join(lines)
 
@@ -156,8 +165,9 @@ async def _referral_text(seller: Seller, session: AsyncSession) -> str:
 
 # ══════════════════════════ Callback'lar ═══════════════════════════
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "menu"))
-async def on_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+async def on_menu(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     """Sotuvchi menyusi (tarif holatiga qarab tugmalar)."""
+    await _leave_payment(state)
     seller = await _seller_of(callback, session)
     if seller is None:
         return
@@ -172,7 +182,7 @@ async def on_menu(callback: CallbackQuery, session: AsyncSession) -> None:
         header = (
             "🛒 <b>Sotuvchi paneli</b>\n\n"
             f"⚠️ Tarif muddati tugagan ({fmt_date(latest.expires_at)}).\n"
-            "Yangilash uchun admin bilan bog'laning."
+            "Yangilash uchun katalogdan tarifni tanlang yoki admin bilan bog'laning."
         )
     else:
         left = subscription_service.days_left(active)
@@ -192,8 +202,9 @@ async def on_menu(callback: CallbackQuery, session: AsyncSession) -> None:
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "tariff"))
-async def on_tariff(callback: CallbackQuery, session: AsyncSession) -> None:
+async def on_tariff(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     """📅 Mening tarifim."""
+    await _leave_payment(state)
     seller = await _seller_of(callback, session)
     if seller is None:
         return
@@ -204,14 +215,17 @@ async def on_tariff(callback: CallbackQuery, session: AsyncSession) -> None:
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "tariffs"))
-async def on_catalog(callback: CallbackQuery, session: AsyncSession) -> None:
+async def on_catalog(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     """💳 Tariflar katalogi."""
-    await render(callback, await _catalog_text(session), tariffs_catalog_kb())
+    await _leave_payment(state)
+    tariffs = await tariff_service.list_all_active(session)
+    await render(callback, await _catalog_text(session, tariffs), tariffs_catalog_kb(tariffs))
     await alert(callback, "")
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "referral"))
-async def on_referral(callback: CallbackQuery, session: AsyncSession) -> None:
+async def on_referral(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    await _leave_payment(state)
     seller = await _seller_of(callback, session)
     if seller is None:
         return
@@ -220,7 +234,8 @@ async def on_referral(callback: CallbackQuery, session: AsyncSession) -> None:
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "support"))
-async def on_support(callback: CallbackQuery, session: AsyncSession) -> None:
+async def on_support(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    await _leave_payment(state)
     support = await settings_service.get("support_contact", "@admin", session)
     await render(
         callback,
@@ -234,14 +249,16 @@ async def on_support(callback: CallbackQuery, session: AsyncSession) -> None:
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "ads"))
-async def on_my_ads(callback: CallbackQuery, session: AsyncSession) -> None:
+async def on_my_ads(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     """📢 Mening e'lonlarim (Phase 3)."""
+    await _leave_payment(state)
     await ad_handlers.open_ads_list(callback, session)
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "new_ad"))
 async def on_new_ad(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     """➕ Yangi e'lon ustasi (Phase 3)."""
+    await _leave_payment(state)
     await ad_handlers.start_ad_wizard(callback, session, state)
 
 
@@ -252,7 +269,7 @@ async def seller_status_text(seller: Seller, session: AsyncSession) -> str:
     if subscription is None:
         latest = await subscription_service.latest_for(session, seller.id)
         if latest is None:
-            return "⛔️ Tarif berilmagan — admin bilan bog'laning."
+            return "⛔️ Tarif yo'q — katalogdan tanlang yoki admin bilan bog'laning."
         return f"🔴 Tarif muddati tugagan ({fmt_date(latest.expires_at)}) — yangilash kerak."
 
     tariff_name = subscription.tariff.name if subscription.tariff else "—"

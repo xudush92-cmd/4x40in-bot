@@ -13,15 +13,17 @@ from app.handlers.admin import admin_router
 from app.handlers.group import group_router
 from app.handlers.seller import seller_router
 from app.handlers.seller.ads import router as seller_ads_router
+from app.handlers.seller.payments import router as seller_payments_router
 
 
 def build_root_router() -> Router:
     root = Router(name="root")
-    root.include_router(admin_router)        # 1) admin amallari (private)
-    root.include_router(seller_ads_router)   # 2) sotuvchi e'lonlari (usta, ro'yxat)
-    root.include_router(seller_router)       # 3) sotuvchi paneli
-    root.include_router(group_router)        # 4) guruh hodisalari
-    root.include_router(common.router)       # 5) umumiy buyruqlar va fallback
+    root.include_router(admin_router)           # 1) admin amallari (private)
+    root.include_router(seller_payments_router) # 2) sotuvchi to'lovi/chek FSM (Phase 5)
+    root.include_router(seller_ads_router)      # 3) sotuvchi e'lonlari (Phase 3)
+    root.include_router(seller_router)          # 4) sotuvchi paneli
+    root.include_router(group_router)           # 5) guruh hodisalari
+    root.include_router(common.router)          # 6) umumiy buyruqlar va fallback
     return root
 
 

@@ -4,7 +4,7 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–4 ✅ (258 offline test) · **Keyingisi: Phase 5** (alohida ruxsat kutilmoqda)
+**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–5 ✅ (274 offline test) · **Keyingisi: Phase 6** (alohida ruxsat kutilmoqda)
 
 ---
 
@@ -17,9 +17,9 @@
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
 | Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **258 test, hammasi o'tadi** (`pytest`, tarmoqsiz SQLite) |
-| Migratsiya | `f789aa7b756f` (Phase 0–4: sxema o'zgarmadi, `alembic check` toza) |
-| Keyingi qadam | **Phase 5 — to'lovlar** (alohida ruxsat kutilmoqda; boshlanmagan) |
+| Testlar | **274 test, hammasi o'tadi** (`pytest`, tarmoqsiz SQLite + soxta Telegram API) |
+| Migratsiya | `f789aa7b756f` (Phase 0–5: sxema o'zgarmadi, `alembic check` SQLite'da toza) |
+| Keyingi qadam | **Phase 6 — posbon, tozalovchi va ruxsatlar** (alohida ruxsat kutilmoqda) |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -37,7 +37,8 @@
 | `50b77dc` | **Phase 1** — guruhlar va toifalar (104 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/50b77dc) |
 | `1fcdbf7` | **Phase 2** — sotuvchilar, tariflar, obunalar (164 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/1fcdbf7) |
 | `1ceac25` | **Phase 3** — e'lonlar va moderatsiya (221 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/1ceac25) |
-| Shu chatdagi commit | **Phase 4** — aylanma joylash dvigateli (258 test) | `arena/18e1094b-4x40in-bot` |
+| `0ba9389` | **Phase 4** — aylanma joylash dvigateli (258 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/0ba9389) |
+| Joriy shoxobchaning eng oxirgi commiti (`git log -1 --oneline`) | **Phase 5** — to'lovlar (274 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
 
 > ⚠️ **Muhim:** ishni faqat chatning **joriy** shoxobchasida olib boring —
 > `main`ga tegmang, qo'shimcha branch/PR ochmang. Keyingi sessiyada shu kodni
@@ -55,7 +56,7 @@
 cd /home/user/4x40in-bot/SHOP_BOT
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 258 test o'tishi kerak (~80 sekund)
+.venv/bin/python -m pytest -q          # 274 test o'tishi kerak (offline, ~90 sekund)
 ```
 
 Testlar **offline** ishlaydi: SQLite (vaqtinchalik fayl) + soxta Bot API sessiyasi,
@@ -70,7 +71,8 @@ TMP=$(mktemp -d); export DB_URL="sqlite+aiosqlite:///$TMP/al.db"
 .venv/bin/alembic upgrade head
 .venv/bin/alembic check          # "No new upgrade operations detected."
 .venv/bin/python -m scripts.seed
-# Seed natijasi (ADMIN_IDS bo'sh bo'lsa): 0 admin / 25 sozlama / 30 matn / 3 tarif
+# Seed natijasi: ADMIN_IDS sonicha admin / 25 sozlama / 30 matn / 3 tarif
+# Seed'ni ikkinchi marta chaqirish mavjud ma'lumotlarni ko'paytirmaydi.
 rm -rf "$TMP"                    # faqat o'zingiz yaratgan vaqtinchalik papka
 ```
 
@@ -84,7 +86,7 @@ Telegram guruhlari (supergroup) bozorlar uchun bot:
 2. **Sotuvchilar** bot orqali e'lon qo'shadi (rasmlar bilan). Admin ularga **tarif** beradi (narx, muddat, e'lon limiti, rasm limiti).
 3. **Moderatsiya**: admin e'lonni ko'rib, tasdiqlaydi yoki sabab bilan rad etadi.
 4. **Aylanma joylash** (Phase 4 bajarildi): tasdiqlangan e'lonlar guruhlarga **navbat bilan, interval bilan** avtomatik joylanadi (albom + «Sotuvchi bilan bog'lanish» tugmasi).
-5. Pul: sotuvchi **chek** yuboradi → admin tasdiqlaydi → obuna avtomatik uzayadi (Phase 5).
+5. Pul (Phase 5 bajarildi): sotuvchi tarifni tanlaydi → kartaga o'tkazadi → **chek** yuboradi → admin bank o'tkazmasini tekshirib tasdiqlaydi → obuna avtomatik yaratiladi/uzayadi. Bot pulni o'zi olmaydi.
 6. Qo'shimcha: posbon/tozalovchi (guruh nazorati), sanoqchi (odam qo'shish tizimi), referal, statistika, broadcast (Phase 6–8).
 
 **To'liq funksiyalar ro'yxati va sabablari:** `REJA.md` (16 bo'lim).
@@ -159,9 +161,32 @@ PostgreSQL `SKIP LOCKED` va Redis Lua haqiqiy serverlarda sinovdan o'tmagan;
 SQLite CAS va soxta `Redis.eval` chaqiruvi testlari mavjud. Tarif cheklovlari ishlaydi, ularni panelda
 sozlash UI hali mavjud emas (ochiq band №1, Phase 8).
 
+### ✅ Phase 5 — To'lovlar (yarim avtomatik, MVP)
+Admin «💰 To'lovlar → Rekvizitlar»da kartalarni qo'shadi/tahrirlaydi, faol/pauza qiladi,
+tartibini o'zgartiradi; «o'chirish» tarixni saqlash uchun deaktivatsiya qiladi. Bir
+valyutadagi faol kartalar qabul qilingan cheklarga qarab aylanadi. Sotuvchi katalogdan
+pullik tarifni «To'lash» bilan tanlaydi → karta raqamini nusxalaydi → chek rasmini
+jo'natadi; `receipt_required=false` bo'lsa cheksiz ariza ham mumkin. Tanlangan
+narx/valyuta chek yozilganda saqlanadi. Tasdiq yoki radni faqat admin/super-admin
+beradi: bankdagi o'tkazmani tekshirish uchun **alohida tasdiqlash bosqichi** bor.
+
+Chek `file_unique_id`ning SHA-256 xeshi bilan tekshiriladi: takroriy chek belgilab
+saqlanadi, adminning tasdiqlashi servisda ham bloklanadi (rad etish mumkin).
+`receipt_duplicate_check=false` bo'lsa xesh saqlanmaydi va tekshiruv bo'lmaydi;
+ikkala chek sozlamasini moderator o'zgartira olmaydi. Chek + audit avval DB'ga
+commit qilinadi, so'ng adminlarga rasm/tugmali xabar boradi; rasm yetkazilmasa
+matnli xabar zaxirasi bor. Qaror + obuna bitta tranzaksiyada saqlanadi, sotuvchiga
+javob undan keyin yuboriladi. Sotuvchi o'zining to'lovlar tarixini ko'radi,
+begona sotuvchining chekiga kira olmaydi.
+
+**Sinov chegarasi:** haqiqiy bank o'tkazmasini bot tekshirmaydi; admin bank ilovasida
+qo'lda solishtirishi kerak. Telegram/haqiqiy PostgreSQL/Redis deploy va bir vaqtda
+bir nechta worker bilan poyga sinovlari hali o'tkazilmagan. `alembic check` faqat
+SQLite bilan qilingan, sxemaga o'zgartirish kiritilmadi.
+
 ---
 
-## 5. Test holati (258 test)
+## 5. Test holati (274 test)
 
 | Test fayli | Qamrov | Soni |
 |---|---|---|
@@ -182,7 +207,16 @@ sozlash UI hali mavjud emas (ochiq band №1, Phase 8).
 | `tests/test_phase4_poster.py` | Albom/aloqa, FloodWait, Forbidden, dublikatning oldi, eski post, statistika | 15 |
 | `tests/test_phase4_flows.py` | Admin navbati, tartib, qo'lda jo'natish, moderator cheklovi, cleaner tugmasi | 5 |
 | `tests/test_posting_limiter.py` | Guruh/global tezlik va Redis Lua band qilish | 3 |
-| **JAMI** | | **258** |
+| `tests/test_payment_service.py` | Karta CRUD/aylanma, chek dublikati, tasdiq/rad, obuna uzayishi, tarix | 7 |
+| `tests/test_phase5_payments.py` | **E2E**: karta FSM → chek → admin qarori, moderator, cheksiz to'lov, narx, xabar zaxirasi | 9 |
+| **JAMI** | | **274** |
+
+**Tekshiruv:** 274 offline test o'tdi; `compileall` va Phase 5da o'zgargan fayllar
+uchun Ruff toza; vaqtinchalik SQLite'da `alembic check`: «No new upgrade operations
+detected.»; seed ikki marta bajarilganda 2 admin / 25 sozlama / 30 matn / 3 tarif.
+Butun repo bo'ylab Ruff'da **192 ta avvalgi (Phase 5 fayllaridan tashqari) lint
+ogohlantirish** bor — shu bosqichga aloqasiz fayllar minimal tuzatish qoidasiga
+asosan o'zgartirilmadi.
 
 **Test yozish qoidalari (buzilmasin):**
 1. Har bir test fayli **alohida ham** o'tishi kerak (`pytest tests/x.py`).
@@ -214,19 +248,20 @@ SHOP_BOT/
 │   │   ├── seller_service.py, tariff_service.py, subscription_service.py
 │   │   ├── ad_service.py           # ⬅️ Phase 3 (e'lon hayot sikli)
 │   │   ├── posting_service.py, posting_limiter.py  # Phase 4 DB navbat va limiter
+│   │   ├── payment_service.py   # Phase 5 karta/chek/qaror/obuna
 │   │   └── notify.py, stats_service.py
 │   ├── handlers/
 │   │   ├── __init__.py         # build_root_router() — router tartibi MUHIM
 │   │   ├── common.py           # /start, fallback, sotuvchi holati
-│   │   ├── admin/              # panel, settings, groups, categories, sellers, tariffs, mods, posting
-│   │   ├── seller/ads.py       # e'lon ustasi, «Mening e'lonlarim», tahrir
+│   │   ├── admin/              # panel, settings, groups, categories, sellers, tariffs, mods, posting, payments
+│   │   ├── seller/ads.py, seller/payments.py  # e'lon ustasi va chek FSM
 │   │   └── group/lifecycle.py
-│   ├── keyboards/              # admin, common, groups, categories, sellers, tariffs, ads, mods, seller_panel
+│   ├── keyboards/              # admin, common, groups, categories, sellers, tariffs, ads, mods, payments, seller_panel
 │   ├── scheduler/jobs.py       # posting_tick_job + old-post cleanup
 │   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
 │   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 258 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 274 test (+ conftest.py, fake_telegram.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
 └── scripts/seed.py, backup.sh, restore.sh
 ```
@@ -237,16 +272,17 @@ SHOP_BOT/
 
 ### Router tartibi (`app/handlers/__init__.py`)
 ```
-admin_router → seller_ads_router → seller_router → group_router → common.router
+admin_router → seller_payments_router → seller_ads_router → seller_router → group_router → common.router
 ```
-E'lon router'i (`app/handlers/seller/ads.py`) **root darajasida** turadi (sabab: yuqoridagi
-Phase 3 xatosi). Sotuvchi panelida esa `SellerPanelCB.filter()` router filtri bor —
-**ichiga boshqa callback prefiksi qo'shilmaydi**.
+E'lon va to'lov router'lari (`app/handlers/seller/{ads,payments}.py`) **root darajasida**
+turadi (sabab: yuqoridagi Phase 3 xatosi). Sotuvchi panelida `SellerPanelCB.filter()`
+router filtri bor; to'lov router'ida esa `SellerPaymentStates` bilan kelgan rasmlar
+ushlanadi. **Boshqa prefiksdagi router'ni seller_router ichiga qo'shmang**.
 
 ### Callback prefikslari (64 bayt chegarasi tekshiriladi)
 `adm:` admin panel · `grp:` guruhlar · `feat:` funksiya tumbleri · `cat:` toifalar ·
 `slr:` sotuvchilar · `trf:` tariflar · `sp:` sotuvchi paneli · **`ad:` e'lonlar** ·
-**`mod:` moderatsiya** · **`pst:` joylash/navbat** · `nav:` navigatsiya.
+**`mod:` moderatsiya** · **`pst:` joylash/navbat** · **`pay:` to'lovlar** · `nav:` navigatsiya.
 Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`).
 
 ### Servis API (asosiy funksiyalar)
@@ -262,6 +298,10 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 - `subscription_service`: `grant/extend/set_ads_limit/active_for/latest_for/days_left/can_publish/consume_slot/release_slot/reminders_due/expire_due/mark_reminded/...`
 - `tariff_service`: `create_tariff/.../delete_tariff/move/list_all_active/get_stats/parse_price/format_price`
 - `seller_service`: `get_or_create_seller/get_seller/set_status/soft_delete/normalize_phone/normalize_contact/seller_label/...`
+- `payment_service`: `create_method/update_method/move_method/choose_method`,
+  `submit_receipt` (hash + dublikat belgisi), `list_payments/count_payments`,
+  `decide` (admin qarori + obuna; oldin Seller, keyin Payment qatorini bloklaydi).
+  To'lovni yuborish va admin qaroridan keyingi Telegram xabarlari **commitdan keyin**.
 
 ### Klaviatura o'lchamlari (`app/keyboards/common.py`)
 `PER_PAGE_GROUPS=6`, `PER_PAGE_CATEGORIES=8`, `PER_PAGE_MATRIX=5`, `PER_PAGE_SELLERS=6`,
@@ -291,23 +331,19 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 (masalan `ad.submitted` → `{elon}`, `{toifa}`, `{sotuvchi}`).
 
 ### Panelda tayyor bo'limlar (`READY_SECTIONS`)
-`stats, settings, groups, categories, sellers, tariffs, ads, moderation`
+`stats, settings, groups, categories, sellers, tariffs, ads, moderation, payments`
 (qolganlari bosilganda "Phase N da qo'shiladi" xabari chiqadi — bu testda tekshiriladi).
+Moliyaviy panel va chek sozlamalari faqat admin/super-admin uchun; moderatorga yopiq.
 
 ---
 
 ## 8. Qolgan ishlar
 
-### Phase 4 ✅ — bajarildi
+### Phase 0–5 ✅ — bajarildi
 
-Yuqoridagi 4-bo'limda kod va shartnomalar, 5-bo'limda 37 yangi test tafsiloti bor.
-Sxema o'zgarmadi. Keyingi ishni Phase 5 ruxsatisiz boshlamang.
-
-### Phase 5 — To'lovlar (MVP shu bilan yopiladi)
-Rekvizitlar CRUD (bir necha karta, aylanma), sotuvchi tarif tanlab «To'lash» → karta ma'lumoti +
-«nusxalash» → chek rasmi → `receipt_unique_hash` (takroriy chekni ushlash) → adminlarga
-[Sotuvchi]/[Tarif]/[Summa]/[Chek] + ✅/❌ (sabab) → tasdiqlashda **obuna avtomatik** beriladi,
-rad etilganda sabab bilan xabar; to'lovlar tarixi; `payment_methods`/`payments` jadvallari tayyor.
+Phase 5 tafsiloti 4-bo'limda, testlar 5-bo'limda. `payment_methods`/`payments`
+jadvallari avvaldan tayyor edi; yangi migratsiya talab qilinmadi. **Phase 6ga
+foydalanuvchi alohida ruxsat bermaguncha kod yozmang.**
 
 ### Phase 6 — Posbon + tozalovchi + ruxsatlar
 Havola/reklama filtri, majburiy obuna shartlari, jazo zinapoyasi (ogohlantirish → mute → ban),
@@ -326,7 +362,7 @@ tahrirlash, xato jurnali paneli, broadcast (25 msg/s limit bilan).
 Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, huquqiy eslatmalar
 (REJA.md 11.2).
 
-**Qolgan bosqichlar:** 5–9. Phase 5 boshlanishi uchun alohida ruxsat kerak.
+**Qolgan bosqichlar:** 6–9. Phase 6 boshlanishi uchun alohida ruxsat kerak.
 
 ---
 
@@ -337,7 +373,7 @@ Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, hu
 | 1 | Tarifdagi guruh/toifa cheklovi joylashda ishlaydi; uni **sozlash UI** (`allowed_category_ids`/`allowed_group_ids`) | Phase 8 |
 | 2 | Sotuvchi e'lonlarini **toifa bo'yicha guruhlash** (hozir ro'yxat + toifa ko'rsatkichi) | Phase 8 bilan |
 | 3 | E'lon statistikasida kunlik grafik | Phase 8 |
-| 4 | To'lov rekvizitlari (kodga yozilmaydi — paneldan kiritiladi) | Phase 5da kerak bo'ladi |
+| 4 | Haqiqiy bank, Telegram va PostgreSQL/Redis muhitidagi chek oqimini amalda sinash; bank o'tkazmasini admin qo'lda tekshiradi | Deploydan oldin |
 | 5 | Majburiy obuna kanali nomi | Phase 7da kerak bo'ladi |
 | 6 | Telegram siyosati/huquqiy eslatmalar yakuniy tekshiruvi | Phase 9 |
 
@@ -362,11 +398,11 @@ Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, hu
 
 ```
 Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md va SHOP_BOT/REJA.md
-fayllarini o'qing: Phase 0–4 tugagan, 258 offline test o'tadi. Kod
+fayllarini o'qing: Phase 0–5 tugagan, 274 offline test o'tadi. Kod
 `arena/18e1094b-4x40in-bot` shoxobchasida; main'ga va AVTO_BOT'ga tegmang.
 Bu chatning joriy shoxobchasini almashtirmang, yangi shoxobcha yoki PR ochmang.
-Holatni o'zbekcha aytib bering va Phase 5 (to'lovlar) uchun alohida ruxsat
-so'rang; ruxsatsiz yangi bosqich kodini yozmang.
+Holatni o'zbekcha aytib bering va Phase 6 (posbon/tozalovchi/ruxsatlar) uchun alohida
+ruxsat so'rang; ruxsatsiz yangi bosqich kodini yozmang.
 ```
 
 ---
@@ -380,4 +416,4 @@ so'rang; ruxsatsiz yangi bosqich kodini yozmang.
 3. **Git tarixi** (`arena/18e1094b-4x40in-bot`) — kod va testlar GitHub'da, har bosqich alohida commit.
 
 Yangi chatda yordamchi shu 3 ta manbani o'qisa, loyihani **aynan qolgan joyidan** davom ettira oladi:
-`git status` → `pytest` → holat hisoboti → Phase 5 uchun alohida ruxsat.
+`git status` → `pytest` → holat hisoboti → Phase 6 uchun alohida ruxsat.

@@ -46,6 +46,7 @@ READY_SECTIONS = {
     "tariffs",
     "ads",
     "moderation",
+    "payments",
 }
 
 
@@ -75,6 +76,8 @@ def admin_main_kb(
     for key, label, _phase in ADMIN_SECTIONS:
         # Adminlarni boshqarish — faqat super admin uchun
         if key == "admins" and role != AdminRole.SUPER:
+            continue
+        if key == "payments" and role == AdminRole.MODERATOR:
             continue
 
         text = label
@@ -113,8 +116,8 @@ def back_kb(target: str = "menu") -> InlineKeyboardMarkup:
     )
 
 
-def settings_kb(values: dict[str, object]) -> InlineKeyboardMarkup:
-    """Sozlamalar ekrani uchun tumblerlar."""
+def settings_kb(values: dict[str, object], role: str | None = None) -> InlineKeyboardMarkup:
+    """Sozlamalar ekrani; moliyaviy tumblerlar moderatorga yopiq."""
 
     def toggle(key: str, label: str) -> InlineKeyboardButton:
         on = bool(values.get(key))
@@ -127,7 +130,13 @@ def settings_kb(values: dict[str, object]) -> InlineKeyboardMarkup:
         [toggle("kill_switch", "🛑 HAMMASINI TO'XTATISH")],
         [toggle("maintenance_mode", "🔧 Texnik rejim (faqat adminlar)")],
         [toggle("referral_enabled", "🤝 Referal tizimi")],
-        [toggle("receipt_required", "🧾 Chek rasmi majburiy")],
+    ]
+    if role != AdminRole.MODERATOR:
+        rows.extend([
+            [toggle("receipt_required", "🧾 Chek rasmi majburiy")],
+            [toggle("receipt_duplicate_check", "🔍 Takroriy chekni ushlash")],
+        ])
+    rows += [
         [
             InlineKeyboardButton(
                 text="⏱ Joylash intervali (default)",

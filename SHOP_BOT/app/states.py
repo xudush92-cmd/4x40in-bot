@@ -80,6 +80,25 @@ class AdminModerationStates(StatesGroup):
     waiting_reason = State()    # qo'lda yozilgan sabab
 
 
+class SellerPaymentStates(StatesGroup):
+    """Sotuvchi kartani olgandan keyin chek rasmini yuboradi (Phase 5)."""
+
+    waiting_receipt = State()
+
+
+class AdminPaymentStates(StatesGroup):
+    """Admin karta rekviziti yoki chek rad sababini kiritadi (Phase 5)."""
+
+    waiting_method_name = State()
+    waiting_card = State()
+    waiting_holder = State()
+    waiting_bank = State()
+    waiting_note = State()
+    waiting_currency = State()
+    waiting_edit = State()
+    waiting_reject_reason = State()
+
+
 class AdminTextStates(StatesGroup):
     """Bot matnini tahrirlash (Phase 8)."""
 

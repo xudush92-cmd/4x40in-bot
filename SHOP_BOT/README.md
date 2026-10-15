@@ -10,7 +10,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–4 ✅ · Keyingisi: Phase 5 (to'lovlar, ruxsat kutilmoqda)**
+## 📌 Hozirgi holat: **Phase 0–5 ✅ · Keyingisi: Phase 6 (alohida ruxsat kutilmoqda)**
 
 | Ish | Holat |
 |---|---|
@@ -70,8 +70,41 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | 🎛 Admin navbati, ⬆️⬇️ tartib, «Hoziroq joylash»; moderatorga cheklov | ✅ |
 | 🧪 **258 ta offline test**: servis, soxta Telegram E2E, limiter va oldingi bosqichlar | ✅ |
 
-**Keyingi bosqich (Phase 5):** to'lovlar — faqat foydalanuvchining alohida ruxsati bilan.
-Haqiqiy Telegram supergroup va PostgreSQL/Redis deploy sinovlari hali o'tkazilmagan.
+### Phase 5 — to'lovlar ✅
+
+| Ish | Holat |
+|---|---|
+| 💳 Admin rekvizitlari: bir nechta karta, tahrir, faollik, tartib va tarixni saqlovchi o'chirish (deaktivatsiya) | ✅ |
+| 🛒 Sotuvchi katalogda «To'lash» → narx/karta va nusxalash → chek rasmini yuborish → «To'lovlarim» tarixi | ✅ |
+| 🔴 Takroriy chek: Telegram `file_unique_id` xeshi bilan belgi; tasdiqlash bloklanadi; admin sababi bilan rad etadi | ✅ |
+| ✅ Admin bank o'tkazmasini **qo'lda tekshirgach** ikki qadamda tasdiqlaydi → obuna beriladi/uzayadi; sotuvchiga javob | ✅ |
+| 🔐 Moderator cheklar va moliyaviy sozlamalarga kira olmaydi; chek rasmisiz yuborish faqat `receipt_required=false` bo'lsa | ✅ |
+| 🧪 Jami **274 offline test** (7 servis + 9 E2E test qo'shildi); SQLite'da `alembic check` toza | ✅ |
+
+**Keyingi bosqich (Phase 6):** posbon, tozalovchi, ruxsatlar — faqat foydalanuvchining
+alohida ruxsati bilan. Haqiqiy Telegram, bank o'tkazmalari hamda PostgreSQL/Redis
+deploy sinovlari hali o'tkazilmagan; offline testlar ularning o'rnini bosmaydi.
+
+---
+
+## 💰 To'lov oqimi (Phase 5)
+
+1. `python -m scripts.seed`dan so'ng **admin/super-admin** bot panelida
+   «💰 To'lovlar → 💳 Rekvizitlar → ➕ Yangi karta»ni ochadi va karta raqami,
+   egasi, bank, izoh hamda valyutani kiritadi. 16–19 raqamli karta bir nechta bo'lsa
+   har qabul qilingan chekdan so'ng navbatdagi faol karta tanlanadi.
+2. Sotuvchi «💳 Tariflar»da pullik tarif yonidagi «To'lash»ni bosadi. Ko'rsatilgan
+   summa/kartani tekshiradi, «📋 ... nusxalash»ni bosib pul o'tkazadi va chek
+   **rasmini** yuboradi. «To'lovlarim»da holatini ko'radi.
+3. Admin «📥 Kelgan cheklar»dagi sotuvchi, tarif, summa va chekni **bank hisobidagi
+   haqiqiy o'tkazma bilan alohida solishtiradi**. «✅ Tasdiqlash» → «Ha, bankda
+   tekshirdim» obunani beradi/uzaytiradi; «❌ Rad etish» tayyor yoki qo'lda
+   yozilgan sababni sotuvchiga yuboradi. Takroriy chekni tasdiqlab bo'lmaydi.
+
+«⚙️ Sozlamalar»da `receipt_required` (chek rasmi majburiyligi) va
+`receipt_duplicate_check` (takroriy chekni aniqlash) admin tomonidan boshqariladi;
+ikkalasi sukut bo'yicha **yoqilgan**. Tekshiruvni o'chirsangiz yangi cheklar xeshi
+saqlanmaydi. Bank tushumini bot avtomatik tekshirmaydi, admin tasdig'i shart.
 
 ---
 
@@ -135,7 +168,7 @@ python -m app.main            # ishga tushirish
 Testlar:
 
 ```bash
-pytest                        # 258 test (SQLite'da, tarmoqsiz ishlaydi)
+pytest                        # 274 test (SQLite + soxta Telegram API, tarmoqsiz)
 pytest -v --tb=short          # batafsil
 ```
 
@@ -172,19 +205,19 @@ SHOP_BOT/
 │   │   └── models.py        # 41 jadval (REJA.md 4-bo'lim)
 │   ├── handlers/
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
-│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs, mods, posting
-│   │   ├── seller/          # sotuvchi paneli + ads.py (e'lon ustasi, ro'yxat)
+│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs, mods, posting, payments
+│   │   ├── seller/          # sotuvchi paneli + ads.py (e'lonlar) + payments.py (chek)
 │   │   └── group/           # lifecycle.py (bot qo'shildi/chiqarildi)
 │   ├── keyboards/           # admin klaviaturalar + callback fabrikalari
 │   ├── middlewares/         # db, user_context, throttling, maintenance
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
 │   ├── services/            # settings, text, group, category, seller, tariff,
-│   │                        # subscription, ad, posting, posting_limiter, notify, stats
+│   │                        # subscription, ad, posting, posting_limiter, payment, notify, stats
 │   ├── scheduler/           # jobs.py, poster.py (Telegram), runner.py (APScheduler)
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 258 test (offline E2E + servis testlari)
+├── tests/                   # 274 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -200,9 +233,9 @@ SHOP_BOT/
 `settings_version` ni oshiradi → bot va poster 15 sekund ichida (odatda darhol)
 yangi qiymatni ko'radi. Botni qayta yoqish **shart emas**.
 
-**Keshlangan matnlar.** Barcha matnlar `bot_texts` jadvalida; admin panelda
-tahrirlanadi. Noma'lum placeholder botni yiqitmaydi (matnda `{nom}` ko'rinishida
-qoladi va logga yoziladi).
+**Keshlangan matnlar.** Standart shablonlar `bot_texts` jadvalida; ularni admin
+panelidan tahrirlash Phase 8ga qoldirilgan. Noma'lum placeholder botni yiqitmaydi
+(matnda `{nom}` ko'rinishida qoladi va logga yoziladi).
 
 **Xatoga chidamlilik.** Redis bo'lmasa bot xotira rejimida ishlaydi;
 xatolar `error_log` jadvaliga tushadi va adminlarga (daqiqada 1 martadan ko'p
@@ -260,9 +293,9 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 | 1 | Guruhlar va toifalar (CRUD, interval, pauza, biriktirish) | ✅ **Bajarildi** |
 | 2 | Sotuvchilar, tariflar, obunalar, eslatmalar | ✅ **Bajarildi** |
 | 3 | E'lonlar: usta, rasmlar/albom, moderatsiya | ✅ **Bajarildi** |
-| 4 | **Aylanma joylash dvigateli** | ⏳ Keyingi |
-| 5 | To'lovlar (chek → tasdiq → obuna) | ⏸ |
-| 6 | Posbon + tozalovchi + ruxsatlar | ⏸ |
+| 4 | **Aylanma joylash dvigateli** | ✅ **Bajarildi** |
+| 5 | To'lovlar (chek → tasdiq → obuna) | ✅ **Bajarildi** |
+| 6 | Posbon + tozalovchi + ruxsatlar | ⏳ Alohida ruxsat kutilmoqda |
 | 7 | Sanoqchi (invite linklar, majburiy obuna) | ⏸ |
 | 8 | Referal, statistika, matnlar, xato jurnali, broadcast | ⏸ |
 | 9 | Sayqal: yuklama testi, deploy, hujjat | ⏸ |

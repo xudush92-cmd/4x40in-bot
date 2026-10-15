@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.constants import AdminRole
 from app.filters import IsAdmin
 from app.keyboards import SECTION_PHASES, SECTION_TITLES, admin_main_kb
 from app.keyboards.callbacks import AdminCB
@@ -96,6 +97,16 @@ async def open_section(
         from app.handlers.admin.mods import render_pending
 
         await render_pending(callback, session, 0)
+        await alert(callback, "")
+        return
+
+    if key == "payments":
+        if role not in (AdminRole.ADMIN, AdminRole.SUPER):
+            await alert(callback, "⛔️ To'lovlarni faqat admin boshqaradi.", show=True)
+            return
+        from app.handlers.admin.payments import render_home
+
+        await render_home(callback, session)
         await alert(callback, "")
         return
 

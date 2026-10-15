@@ -1,4 +1,4 @@
-"""Sotuvchi paneli klaviaturalari (Phase 2 → 3).
+"""Sotuvchi paneli klaviaturalari (tarif, e'lon va to'lov).
 
 Sotuvchi o'z panelini faqat shaxsiy chatda ko'radi.
 """
@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.db.models import Tariff
 from app.keyboards.callbacks import SellerPanelCB
+from app.utils.text import truncate
 
 
 def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0) -> InlineKeyboardMarkup:
@@ -36,15 +38,17 @@ def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0) -> Inl
                 )
             ]
         )
-    else:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="💳 Tariflarni ko'rish", callback_data=SellerPanelCB(action="tariffs").pack()
-                )
-            ]
-        )
 
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="💳 Tariflarni ko'rish / olish", callback_data=SellerPanelCB(action="tariffs").pack()
+            ),
+            InlineKeyboardButton(
+                text="🧾 To'lovlarim", callback_data=SellerPanelCB(action="payments").pack()
+            ),
+        ]
+    )
     rows.append(
         [
             InlineKeyboardButton(
@@ -84,22 +88,24 @@ def tariff_screen_kb(*, has_subscription: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def tariffs_catalog_kb() -> InlineKeyboardMarkup:
-    """Katalog: to'lov Phase 5 da, hozir admin bilan bog'lanish taklif qilinadi."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="☎️ Tarif olish uchun yozish", callback_data=SellerPanelCB(action="support").pack()
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ Orqaga", callback_data=SellerPanelCB(action="menu").pack()
-                )
-            ],
-        ]
-    )
+def tariffs_catalog_kb(tariffs: list[Tariff] | None = None) -> InlineKeyboardMarkup:
+    """Har faol pullik tarif uchun alohida «To'lash» tugmasi."""
+    rows = [
+        [InlineKeyboardButton(
+            text=f"💳 {truncate(tariff.name, 29)} — To'lash",
+            callback_data=SellerPanelCB(action="pay", value=str(tariff.id)).pack(),
+        )]
+        for tariff in (tariffs or []) if tariff.price > 0
+    ]
+    rows.extend([
+        [InlineKeyboardButton(
+            text="☎️ Tarif olish uchun yordam", callback_data=SellerPanelCB(action="support").pack(),
+        )],
+        [InlineKeyboardButton(
+            text="◀️ Orqaga", callback_data=SellerPanelCB(action="menu").pack(),
+        )],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_to_menu_kb() -> InlineKeyboardMarkup:

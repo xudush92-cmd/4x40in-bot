@@ -421,9 +421,13 @@ async def test_panel_menu_and_sections(session, tg) -> None:
     await _feed(session, dp, bot, 6, callback_update(AdminCB(action="section", value="tariffs").pack()))
     assert "Tariflar" in fake.edited_texts()[-1]
 
-    # Hali tayyor bo'lmagan bo'lim → Phase haqida ogohlantirish
+    # Phase 5: To'lovlar bo'limi ham ochiladi
     await _feed(session, dp, bot, 7, callback_update(AdminCB(action="section", value="payments").pack()))
-    assert any("Phase" in answer for answer in fake.answers())
+    assert "To'lovlar" in fake.edited_texts()[-1]
+
+    # Hali tayyor bo'lmagan bo'lim → Phase haqida ogohlantirish
+    await _feed(session, dp, bot, 8, callback_update(AdminCB(action="section", value="guard").pack()))
+    assert any("Phase 6" in answer for answer in fake.answers())
 
 
 async def test_admin_only_access_for_foreign_user(session, tg) -> None:
