@@ -31,7 +31,7 @@ from app.constants import (
     AdminRole,
     GroupFeature,
 )
-from app.db.models import CleanerSetting, Group
+from app.db.models import ActionLog, CleanerSetting, Group
 from app.filters import IsAdmin
 from app.keyboards.callbacks import FeatureCB, GroupCB
 from app.keyboards.common import PER_PAGE_GROUPS, PER_PAGE_MATRIX
@@ -180,10 +180,14 @@ def _features_text(group: Group) -> str:
     return "\n".join(lines)
 
 
-def _settings_text(group: Group, *, old_ads_enabled: bool = False) -> str:
+def _settings_text(group: Group, *, old_ads_enabled: bool = False,
+                   old_ads_dry_run: bool = False) -> str:
     s = group.settings
     if s is None:
         return "⚠️ Sozlamalar topilmadi."
+    old_ads_text = ("🧪 sinovda (o‘chmaydi; tozalovchida jonli rejimni tasdiqlang)"
+                    if old_ads_dry_run else "🟢 faqat eng oxirgisi qoladi"
+                    if old_ads_enabled else "🔴 o‘chirilmaydi")
     return (
         f"⚙️ <b>{escape_html(group.display)}</b> — joylash sozlamalari\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -191,7 +195,7 @@ def _settings_text(group: Group, *, old_ads_enabled: bool = False) -> str:
         f"🔀 Jitter: <b>±{s.jitter_percent}%</b>\n"
         f"📆 Kunlik limit: <b>{s.daily_post_limit}</b> xabar\n"
         f"🌙 Tinch soatlar: <b>{fmt_quiet_hours(s.quiet_start, s.quiet_end)}</b>\n"
-        f"🧹 Eski e'lon nusxalari: {'🟢 faqat eng oxirgisi qoladi' if old_ads_enabled else '🔴 o‘chirilmaydi'}\n"
+        f"🧹 Eski e'lon nusxalari: {old_ads_text}\n"
         f"👋 Salomlashuv: {'🟢' if s.welcome_enabled else '🔴'}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"<i>Minimal interval: {MIN_INTERVAL_SEC // 60} daqiqa "
@@ -247,9 +251,11 @@ async def render_settings(target, session: AsyncSession, group_id: int) -> None:
         await render(target, "⚠️ Guruh topilmadi.")
         return
     policy = await session.get(CleanerSetting, group_id)
-    old_ads = bool(policy and policy.enabled and policy.delete_old_ads)
-    await render(target, _settings_text(group, old_ads_enabled=old_ads),
-                 group_settings_kb(group, old_ads_enabled=old_ads))
+    old_ads = bool(policy and policy.enabled and policy.delete_old_ads
+                   and group.settings and group.settings.cleaner_enabled)
+    dry_run = bool(old_ads and policy.dry_run)
+    await render(target, _settings_text(group, old_ads_enabled=old_ads, old_ads_dry_run=dry_run),
+                 group_settings_kb(group, old_ads_enabled=old_ads, old_ads_dry_run=dry_run))
 
 
 async def render_matrix(target, session: AsyncSession, page: int = 0) -> None:
@@ -308,7 +314,7 @@ async def on_features(callback: CallbackQuery, callback_data: GroupCB, session: 
 
 @router.callback_query(FeatureCB.filter())
 async def on_feature_toggle(
-    callback: CallbackQuery, callback_data: FeatureCB, session: AsyncSession
+    callback: CallbackQuery, callback_data: FeatureCB, session: AsyncSession, role: str | None
 ) -> None:
     """Funksiya tumbleri (funksiyalar ekrani, 🎛 matritsa yoki sozlamalardan)."""
     group = await group_service.get_group(session, callback_data.group_id)
@@ -320,8 +326,15 @@ async def on_feature_toggle(
     if feature not in FEATURE_LABELS:
         await alert(callback, "⚠️ Noma'lum funksiya", show=True)
         return
+    if feature in (GroupFeature.GUARD, GroupFeature.CLEANER) and role not in (
+        AdminRole.ADMIN, AdminRole.SUPER
+    ):
+        await alert(callback, "⛔️ Posbon/tozalovchini faqat admin boshqaradi.", show=True)
+        return
 
-    changed = await group_service.set_feature(session, group, feature, bool(callback_data.enabled))
+    changed = await group_service.set_feature(
+        session, group, feature, bool(callback_data.enabled), actor_id=callback.from_user.id,
+    )
     label = FEATURE_LABELS[feature]
     phase = FEATURE_PHASES.get(feature, 9)
 
@@ -332,6 +345,9 @@ async def on_feature_toggle(
         if feature == GroupFeature.POSTING:
             extra = "" if group.is_active else "\n⚠️ Guruh pauzada — joylash boshlanmaydi."
             await alert(callback, f"{label}: {state}{extra}", show=True)
+        elif feature in (GroupFeature.GUARD, GroupFeature.CLEANER):
+            await alert(callback, f"{label}: {state}\n🧪 Avval dry-run! Jonli rejimni guruh ekranida "
+                        "alohida tasdiqlang.", show=True)
         else:
             await alert(
                 callback,
@@ -377,17 +393,23 @@ async def on_old_ads(callback: CallbackQuery, callback_data: GroupCB, session: A
     if group is None:
         await alert(callback, "⚠️ Guruh topilmadi.", show=True)
         return
-    policy = await session.get(CleanerSetting, group.id)
-    if policy is None:
-        policy = CleanerSetting(group_id=group.id, enabled=True, delete_old_ads=True, keep_last_ads=1)
-        session.add(policy)
+    from app.services import group_policy_service as policies
+
+    policy = await policies.ensure_cleaner(session, group.id)
+    was_on = bool(policy.enabled and policy.delete_old_ads
+                  and group.settings and group.settings.cleaner_enabled)
+    actor_id = callback.from_user.id
+    if was_on:
+        await policies.edit_cleaner(session, group, "delete_old_ads", False, actor_id)
     else:
-        was_on = bool(policy.enabled and policy.delete_old_ads)
-        policy.enabled = True
-        policy.delete_old_ads = not was_on
-    await session.flush()
+        # Qisqa tugma hech qachon dry-run'ni chetlab o'tmasin. Agar cleaner
+        # oldindan jonli rejimda bo'lsa, uning shu tasdiqlangan rejimi saqlanadi.
+        if not (policy.enabled and group.settings.cleaner_enabled):
+            await policies.edit_cleaner(session, group, "enabled", True, actor_id)
+        await policies.edit_cleaner(session, group, "delete_old_ads", True, actor_id)
     await render_settings(callback, session, group.id)
-    await alert(callback, "🧹 Eski nusxalarni o'chirish " + ("yoqildi" if policy.delete_old_ads else "o'chirildi"))
+    mode = "sinovda sozlandi; jonli rejimni tozalovchi ekranida tasdiqlang" if policy.dry_run else "yoqildi"
+    await alert(callback, "🧹 Eski nusxalar " + ("o'chirildi" if was_on else mode))
 
 
 @router.callback_query(GroupCB.filter(F.action == "old_ads"))
@@ -402,13 +424,21 @@ async def on_settings(callback: CallbackQuery, callback_data: GroupCB, session: 
 
 
 @router.callback_query(GroupCB.filter(F.action == "pause"))
-async def on_pause(callback: CallbackQuery, callback_data: GroupCB, session: AsyncSession) -> None:
+async def on_pause(callback: CallbackQuery, callback_data: GroupCB, session: AsyncSession,
+                   role: str | None) -> None:
+    if role not in (AdminRole.ADMIN, AdminRole.SUPER):
+        await alert(callback, "⛔️ Guruh pauzasini faqat admin boshqaradi.", show=True)
+        return
     group = await group_service.get_group(session, callback_data.group_id)
     if group is None:
         await alert(callback, "⚠️ Guruh topilmadi", show=True)
         return
 
-    await group_service.set_active(session, group, not group.is_active)
+    previous = group.is_active
+    await group_service.set_active(session, group, not previous)
+    session.add(ActionLog(actor_id=callback.from_user.id, action="group_set_active",
+                          entity="group", entity_id=group.id, group_id=group.id,
+                          before={"is_active": previous}, after={"is_active": group.is_active}))
     await render_card(callback, session, group.id)
     await alert(
         callback,

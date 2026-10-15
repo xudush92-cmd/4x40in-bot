@@ -16,6 +16,7 @@ from app.config import Settings
 from app.scheduler.jobs import (
     daily_stats_job,
     expire_subscriptions_job,
+    group_cleanup_job,
     heartbeat_job,
     posting_tick_job,
     retention_job,
@@ -51,6 +52,13 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             args=[bot],
             id="posting_tick",
             name="Aylanma joylash",
+        )
+        scheduler.add_job(
+            group_cleanup_job,
+            IntervalTrigger(seconds=5),
+            args=[bot],
+            id="group_cleanup",
+            name="Kechiktirilgan guruh xabarlarini tozalash",
         )
 
         # ── Har 15 daqiqada: bot huquqlarini tekshirish ────────

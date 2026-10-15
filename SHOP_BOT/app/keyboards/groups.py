@@ -6,7 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import FEATURE_LABELS, FEATURE_SHORT
 from app.db.models import Group
-from app.keyboards.callbacks import AdminCB, FeatureCB, GroupCB, PostingCB
+from app.keyboards.callbacks import AdminCB, FeatureCB, GroupCB, PolicyCB, PostingCB
 from app.keyboards.common import confirm_row, nav_row
 from app.utils.text import human_int, truncate
 
@@ -94,6 +94,16 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
             ),
         ]
     )
+    rows.append([
+        InlineKeyboardButton(text="🛡 Posbon", callback_data=PolicyCB(
+            action="home", group_id=group.id, value="guard").pack()),
+        InlineKeyboardButton(text="🧹 Tozalovchi", callback_data=PolicyCB(
+            action="home", group_id=group.id, value="cleaner").pack()),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="🔑 Guruh ruxsatlari", callback_data=PolicyCB(
+            action="perm", group_id=group.id).pack()),
+    ])
     rows.append(
         [
             InlineKeyboardButton(
@@ -171,7 +181,8 @@ def group_features_kb(group: Group) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def group_settings_kb(group: Group, *, old_ads_enabled: bool = False) -> InlineKeyboardMarkup:
+def group_settings_kb(group: Group, *, old_ads_enabled: bool = False,
+                      old_ads_dry_run: bool = False) -> InlineKeyboardMarkup:
     """Interval, jitter, kunlik limit, tinch soatlar."""
     settings = group.settings
     quiet_on = bool(settings and settings.quiet_start and settings.quiet_end)
@@ -210,10 +221,12 @@ def group_settings_kb(group: Group, *, old_ads_enabled: bool = False) -> InlineK
         ],
         [
             InlineKeyboardButton(
-                text=f"{'🟢' if old_ads_enabled else '🔴'} 🧹 Eski e'lon nusxalarini o'chirish",
+                text=f"{'🧪' if old_ads_dry_run else '🟢' if old_ads_enabled else '🔴'} 🧹 Eski e'lon nusxalarini o'chirish",
                 callback_data=GroupCB(action="old_ads", group_id=group.id).pack(),
             )
         ],
+        [InlineKeyboardButton(text="🧹 Tozalovchi siyosati va jonli tasdiq", callback_data=PolicyCB(
+            action="home", group_id=group.id, value="cleaner").pack())],
         [
             InlineKeyboardButton(
                 text="◀️ Guruh kartasi",

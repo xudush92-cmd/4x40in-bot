@@ -1,8 +1,8 @@
 # SHOP-BOT — Onlayn do'kon uslubidagi e'lonlar boti
 ## To'liq texnik reja (v1.0) — kelishilgan bosqichlar va qamrov
 
-> **Amaldagi holat (2026-10-15):** Phase 0–5 bajarildi (274 offline test). Keyingisi
-> Phase 6 — faqat alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
+> **Amaldagi holat (2026-10-15):** Phase 0–6 bajarildi (302 offline test). Keyingisi
+> Phase 7 — faqat alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
 > ishlar va sinov cheklovlari uchun [HOLAT.md](HOLAT.md) ga qarang.
 > **Ish qoidasi:** ruxsatsiz yangi bosqich boshlanmaydi, yangi branch/PR ochilmaydi.
 
@@ -29,7 +29,7 @@
 
 Bir muhim ogohlantirish: rejangizda **5-8 ta joyda Texnologiya cheklovlari** bor, ular kod yozishdan oldin hal qilinishi kerak (1.2-bo'limga qarang) — aks holda keyinchalik qayta yozishga to'g'ri keladi. Masalan, **albomga (media group) inline tugma biriktirib bo'lmaydi** — bu Telegram Bot API'ning cheklovi, Aiogram'ning emas.
 
-**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–5 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
+**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–6 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
 
 ---
 
@@ -210,7 +210,7 @@ Bular **kod yozishdan oldin** hal qilinishi shart.
 | `categories` | `id PK, group_id FK NULL, name, emoji, description, is_active, position, interval_override, moderation_required, created_by, created_at, updated_at` | `group_id` bo'sh bo'lsa — guruh biriktirilmagan |
 | `group_admins` | `group_id, user_id, role, added_by, created_at` | Guruh darajasidagi adminlar (guruh ichidan) |
 | `required_channels` | `id, scope` (`global`/`group`), `group_id, channel_tg_id, username, title, invite_link, is_active` | Majburiy obuna kanallari |
-| `permissions` | `id, user_id, group_id NULL, kind, reason, granted_by, granted_at, expires_at, is_active` | `kind`: `full_exempt` / `guard_exempt` / `cleaner_exempt` / `link_allowed` / `counter_exempt`. `group_id = NULL` → hamma guruhlarda |
+| `permissions` | `id, user_id, group_id NULL, kind, reason, granted_by, expires_at, is_active, created_at` | `kind`: `full_exempt` / `guard_exempt` / `cleaner_exempt` / `link_allowed` / `counter_exempt`. `group_id = NULL` → hamma guruhlarda; guruh/global aktiv ruxsatlar uchun alohida unique indekslar |
 
 ### 4.3. Sotuvchilar, tariflar, obunalar
 
@@ -264,8 +264,9 @@ Bular **kod yozishdan oldin** hal qilinishi shart.
 | `warnings` | `group_id, user_id, count, last_at` PK`(group_id,user_id)` | Ogohlantirish hisobi |
 | `violations` | `id, group_id, user_id, kind, message_id, text_excerpt, action, penalty_until, created_at` | Qoidabuzarliklar tarixi |
 | `restrictions` | `id, group_id, user_id, kind`(`mute`/`ban`/`kick`), `until_at, reason, created_at, lifted_at, lifted_by` | Foydalanuvchilar ro'yxati shu jadvaldan |
-| `cleaner_settings` | `group_id PK, enabled, delete_join_leave, delete_service, delete_links, delete_violations, delete_old_ads, keep_last_ads, delete_after_seconds, keep_pinned` | Nima va qachon tozalanadi |
-| `cleanup_log` | `id, group_id, kind, deleted_count, created_at` | Tozalash statistikasi |
+| `cleaner_settings` | `group_id PK, enabled, dry_run, delete_join_leave, delete_service, delete_links, delete_violations, delete_old_ads, keep_last_ads, delete_after_seconds, keep_pinned` | Har guruh uchun nima/qachon tozalanadi; yangi policy sukutda sinovda |
+| `group_message_actions` | `id, group_id, message_id, user_id, source, kind, planned_action, status, due_at, is_dry_run, error` | `(group_id,message_id)` yagona; `pending/running` qayta bajarish xavfini nazorat qiladi |
+| `cleanup_log` | `id, group_id, kind, deleted_count, details, created_at` | Tozalash statistikasi + sabab/qayd |
 
 ### 4.9. Statistika va broadcast
 
@@ -479,38 +480,59 @@ Chek: majburiy kanal obunasi (getChatMember) + counter N
 Admin panel: foydalanuvchi bo'yicha son, qo'lda +/- (counter_audit'ga yoziladi), nolga tushirish
 ```
 
-### 8.5. Posbon (guard) va ruxsatlar
+### 8.5. Posbon (guard) va ruxsatlar — Phase 6 ✅
+
+**Foydalanuvchi talabi:** posbon, tozalovchi va istisnolar **to'liq nazorat ostida,
+har bitta guruh uchun alohida boshqariladigan** bo'lishi kerak. Har guruhdagi
+siyosat/global switch/guruh pauzasi alohida qatlam: global o'zgarish guruh
+qoidalarini o'zgartirmaydi. Boshqarish: admin paneli → guruh → posbon/tozalovchi;
+sozlama va sabab-amal tarixi `action_log`/`group_message_actions`da ko'rinadi.
 
 ```
 Guruhda xabar keldi
-   ↓
-[1] Ruxsat tekshiruvi (kesh) → full_exempt / guard_exempt → TOXTA (tegilmaydi)
-   ↓
-[2] Guruh admini / bot o'zi → TOXTA
-   ↓
-[3] Shartlar: obuna? sanoqchi? → bajarilmagan → xabar o'chirish + DM'da tushuntirish
-   ↓
-[4] Havola/forward/mention filtri (regex + entity + t.me + yashirilgan variantlar)
-   ├─ domen whitelist'da → TOXTA
-   └─ qoidabuzarlik → violations'ga yozish → jazo zinapoyasi:
-        dry_run → faqat log
-        warn    → xabar o'chirish + DM ogohlantirish (warnings++, warn_limit)
-        mute    → restrictChatMember (can_send_messages=False, until_date)
-        ban     → banChatMember (restrictions'ga yoziladi, admin panelda ko'rinadi)
+  ↓
+[0] Faol superguruh + bot admin + guruh switch + global kill/maintenance tekshiruvi
+  ↓
+[1] Foydalanuvchining guruh/global ruxsati (faol, muddati o'tmagan) yoki admini?
+    full_exempt / guard_exempt / cleaner_exempt / link_allowed → tegishli amal yo'q
+  ↓
+[2] Havola (matn va text_link entity), forward, @mention, taqiqlangan so'zlar;
+    domen + subdomen oq ro'yxat. Har guruhda filterlar/istisnolar mustaqil.
+  ↓
+[3] (guruh_id, xabar_id) UNIQUE xabar amali + qoidabuzarlik sababi DB'da yoziladi
+  ├─ yangi/tezkor yoqilgan policy: dry_run → FAQAT jurnal, Telegram amali yo'q
+  └─ admin jonli rejimni alohida tasdiqlagan: bot huquqi/pin/ruxsat/pauza qayta
+     tekshiriladi → deleteMessage → muvaffaqiyatdan keyin warnings oshiriladi
+     warn (standart) → DM; mute (tanlansa) → muddatli cheklash;
+     ban → FAQAT shu guruhda alohida BAN rejimi tasdiqlangandan keyin,
+     warning chegarasining ikki barobarida. Qo'lda jazo ham admin tasdig'i bilan.
 ```
 
-### 8.6. Tozalovchi
+Guruhdagi ogohlantirishlar `warn_window_hours`, `warn_limit`, `mute_minutes` va
+`penalty` bilan sozlanadi. Istisno: turi, foydalanuvchi ID, qamrov (guruh yoki
+global), sabab, 1–365 kun/doimiy muddat; ko'rish, qaytarib olish va audit.
+Aktiv ruxsatlar qisman unique indeks bilan takrorlanmaydi, muddati o'tgani
+tarixda qoladi. **Phase 7 sanoqchi va majburiy obuna hali yo'q:** saqlangan
+`require_counter`/`require_subscription` maydonlari Phase 6da yoqilmaydi va
+avtomatik jazo chiqarmaydi.
 
-| Nima | Qanday | Qachon |
+### 8.6. Tozalovchi — Phase 6 ✅
+
+| Har guruh uchun mustaqil tur | Amal | Qachon |
 |---|---|---|
-| Kirdi-chiqdi xabarlari | `deleteMessage` darhol | Xabar kelganda |
-| Xizmat xabarlari (pin, nom o'zgarishi) | `deleteMessage` | Xabar kelganda |
-| Havolali xabarlar | Guard bilan birga | Xabar kelganda |
-| Qoidabuzar xabarlar | Guard jazo bilan | Xabar kelganda |
-| **Oldingi e'lonlar** | `posted_messages` → eski `message_id`lar | Har yangi post oldidan yoki `keep_last_ads` siyosati bo'yicha |
-| Eski loglar/statistika | Retention job | Kechasi (loglar 90 kun) |
+| Kirdi-chiqdi / xizmat xabarlari | `deleteMessage` (yoki dry-run jurnal) | Kelganda yoki 0–3600 s kechiktirib |
+| Havolalar | Guruh oq ro'yxatidagi domenlarni saqlab delete | Kelganda yoki kechiktirib |
+| Qoidabuzar xabarlar | Posbon filtrini namunaga oladi, **o'zi jazo bermaydi** | Posbon o'chirilgan bo'lsa ham ixtiyoriy ishlaydi |
+| **Eski e'lonlar** | `posted_messages`dan har e'londan `keep_last_ads` ta qoldirish, pinlanganlarni saqlash | **Yangi postdan keyin**; dry-run oldinroq xabarni o'chirmaydi |
+| Eski loglar/statistika | Retention job | Belgilangan saqlash muddati tugaganda |
 
-**Muhim:** posbon bilan tozalovchi bir xil xabar ustida ishlamasligi uchun **bitta "xabar siyosati" servisi** ishlatiladi (ikki marta o'chirishga urinish = xato emas, lekin keraksiz API chaqiruv).
+Bitta xabarga faqat bitta posbon/tozalovchi qarori; dry-run posbon xabarini
+jonli cleaner chetdan o'chirmaydi. `pending` ishlarni scheduler CAS bilan oladi;
+noaniq `running` qayta urinilmaydi. Admin kechiktirilgan ishni bekor qila oladi,
+lekin Telegram'ga yuborilgan chaqiruvni ortga qaytara olmaydi. Huquq yo'qolsa
+guruh pauza va admin xabardor; global switch/kutilmagan pauza API oldidan DB'dan
+keshsiz qayta tekshiriladi. Yangi siyosatlar standartda o'chirilgan va dry-run;
+eski Phase 4 tugmasi ham jonli rejimni tasdiqsiz yoqmaydi.
 
 ### 8.7. Xato bo'lganda (sizning talabingiz)
 
@@ -680,7 +702,7 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 | **3** | E'lon + moderatsiya | E'lon ustasi, rasmlar, albom, ko'rish, tasdiq rejimi, "Mening e'lonlarim" | E'lon qo'shiladi, admin tasdiqlaydi | 12-16 soat |
 | **4** | **Aylanma joylash** | Navbat, kursor, interval, jitter, tinch soat, limiter, eski postni o'chirish, "hoziroq joylash", tartib o'zgartirish | Guruhga e'lonlar avtomatik keta boshlaydi ⭐ | 10-14 soat |
 | **5** | To'lovlar | Rekvizitlar, chek qabul qilish, tasdiq/rad, avtomatik obuna, tarix | To'liq pul sikli ishlaydi 💰 | 8-10 soat |
-| **6** | Posbon + tozalovchi + ruxsatlar | Havola filtri, obuna shartlari, jazo zinapoyasi, dry-run, tozalash siyosati, ruxsatlar | Guruh "o'zini tozalaydi" | 14-18 soat |
+| **6** ✅ | Posbon + tozalovchi + ruxsatlar | Har guruhda mustaqil filtr/jazo, dry-run, tozalash, muddatli ruxsatlar (obuna/sanoqchi sharti Phase 7da) | Guruh "o'zini tozalaydi" | 14-18 soat |
 | **7** | Sanoqchi | Shaxsiy invite linklar, attributsiya, `/takliflarim`, admin qo'lda tuzatishi, majburiy kanal | "N odam qo'shish" tizimi ishlaydi | 12-16 soat |
 | **8** | Referal + statistika + matnlar + xato jurnali | Referal sikli, grafik/hisobot, eksport, matn tahriri, xato paneli, broadcast | To'liq panel | 12-16 soat |
 | **9** | Sayqal | Testlar, yuklama testi, deploy skripti, backup/restore, README, video-qo'llanma | Ishlab chiqarishga tayyor | 10-14 soat |
@@ -875,4 +897,7 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 5. ✅ **Phase 2** (sotuvchilar, tariflar, obunalar) yozildi, tekshirildi — 164 test o'tdi.
 6. ✅ **Phase 3** (e'lonlar va moderatsiya) yozildi, tekshirildi — **221 test o'tdi**.
 7. ✅ **Phase 4** (aylanma joylash dvigateli) yozildi, tekshirildi — **258 offline test o'tdi**. Tafsilot: `HOLAT.md`.
-8. ⏳ **Phase 5** (to'lovlar) uchun alohida ruxsat kutilmoqda; keyin 6 → 7 → 8 → 9.
+8. ✅ **Phase 5** (to'lovlar) — **274 offline test**; tafsilot `HOLAT.md`.
+9. ✅ **Phase 6** (har guruhda posbon, tozalovchi, ruxsatlar) — **302 offline test**;
+   SQLite Alembic diff, seed va regressiya tekshirildi. Tafsilot `HOLAT.md`.
+10. ⏳ **Phase 7** (sanoqchi/majburiy kanal) uchun foydalanuvchidan **alohida ruxsat** kutilmoqda.

@@ -9,7 +9,7 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +19,12 @@ from app.keyboards import settings_kb
 from app.keyboards.callbacks import AdminCB
 from app.services.settings_service import DEFAULTS, settings_service
 from app.states import AdminSettingsStates
+from app.utils.tg import render
 
 router = Router(name="admin:settings")
 
 # Tumbler (on/off) ko'rinishidagi sozlamalar
-TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required", "receipt_duplicate_check"}
+TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required", "receipt_duplicate_check", "guard_enabled_global", "cleaner_enabled_global"}
 
 LABELS = {
     "kill_switch": "🛑 Hammani to'xtatish",
@@ -31,6 +32,8 @@ LABELS = {
     "referral_enabled": "🤝 Referal",
     "receipt_required": "🧾 Chek majburiy",
     "receipt_duplicate_check": "🔍 Takroriy chekni tekshirish",
+    "guard_enabled_global": "🛡 Posbon global switch",
+    "cleaner_enabled_global": "🧹 Tozalovchi global switch",
     "support_contact": "☎️ Yordam kontakti",
     "default_interval_sec": "⏱ Joylash intervali",
 }
@@ -46,6 +49,8 @@ def _format_settings(values: dict[str, object]) -> str:
         f"🤝 Referal tizimi: <b>{'YOQILGAN' if values.get('referral_enabled') else 'o‘chirilgan'}</b>\n"
         f"🧾 Chek majburiy: <b>{'ha' if values.get('receipt_required') else 'yo‘q'}</b>\n"
         f"🔍 Takroriy chek tekshiruvi: <b>{'yoqilgan' if values.get('receipt_duplicate_check') else 'o‘chirilgan'}</b>\n"
+        f"🛡 Posbon global: <b>{'YOQILGAN' if values.get('guard_enabled_global') else 'PAUZA'}</b>\n"
+        f"🧹 Tozalovchi global: <b>{'YOQILGAN' if values.get('cleaner_enabled_global') else 'PAUZA'}</b>\n"
         f"⏱ Default joylash intervali: <b>{interval} daqiqa</b>\n"
         f"☎️ Yordam kontakti: <b>{values.get('support_contact') or '—'}</b>\n"
         f"🗄 Loglarni saqlash: <b>{values.get('log_retention_days')} kun</b>\n"
@@ -78,14 +83,27 @@ async def toggle_setting(
     if key not in TOGGLE_KEYS:
         await callback.answer("⚠️ Bu sozlamani o'zgartirib bo'lmaydi.", show_alert=True)
         return
-    if key in {"receipt_required", "receipt_duplicate_check"} and role not in (
+    if key in {"receipt_required", "receipt_duplicate_check", "guard_enabled_global", "cleaner_enabled_global"} and role not in (
         AdminRole.ADMIN, AdminRole.SUPER
     ):
-        await callback.answer("⛔️ To'lov sozlamalarini faqat admin boshqaradi.", show_alert=True)
+        await callback.answer("⛔️ Bu switch'ni faqat admin boshqaradi.", show_alert=True)
         return
 
     current = bool(await settings_service.get(key, DEFAULTS.get(key, False), session))
     new_value = not current
+    if key in {"guard_enabled_global", "cleaner_enabled_global"} and new_value:
+        await render(callback, f"⚠️ <b>GLOBAL QAYTA YOQISH</b>\n\n"
+                     f"{LABELS[key]} qayta yoqilsa, jonli rejimdagi guruhlarda "
+                     "avvalgi qoidalar darhol ishlaydi. Guruhning individual qoidalari "
+                     "o'zgarmaydi. Avval ularni tekshiring.",
+                     InlineKeyboardMarkup(inline_keyboard=[
+                         [InlineKeyboardButton(text="✅ Ha, qayta yoqilsin",
+                                             callback_data=AdminCB(action="resume_policy", value=key).pack())],
+                         [InlineKeyboardButton(text="❌ Bekor qilish",
+                                             callback_data=AdminCB(action="section", value="settings").pack())],
+                     ]))
+        await callback.answer()
+        return
     await settings_service.set(session, key, new_value, updated_by=callback.from_user.id)
 
     label = LABELS.get(key, key)
@@ -96,6 +114,19 @@ async def toggle_setting(
         f"{label}: {'YOQILGAN ✅' if new_value else 'o‘chirilgan ❌'}",
         show_alert=new_value,  # yoqilganda ogohlantirish sifatida ko'rsatiladi
     )
+
+
+@router.callback_query(IsAdmin(AdminRole.ADMIN), AdminCB.filter(F.action == "resume_policy"))
+async def resume_policy(callback: CallbackQuery, callback_data: AdminCB,
+                        session: AsyncSession, role: str | None) -> None:
+    key = callback_data.value
+    if key not in {"guard_enabled_global", "cleaner_enabled_global"}:
+        await callback.answer("⚠️ Noto'g'ri switch.", show_alert=True)
+        return
+    if not bool(await settings_service.get(key, False, session)):
+        await settings_service.set(session, key, True, updated_by=callback.from_user.id)
+    await render_settings_screen(callback, session, role)
+    await callback.answer("✅ Global switch qayta yoqildi. Guruh qoidalari o'zgarmadi.", show_alert=True)
 
 
 @router.callback_query(IsAdmin(), AdminCB.filter(F.action == "edit"))

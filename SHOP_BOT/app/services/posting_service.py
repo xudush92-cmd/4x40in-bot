@@ -495,11 +495,15 @@ async def rebase_paused(session: AsyncSession, now: datetime, limit: int = DUE_B
 
 
 async def old_posts_for_cleanup(
-    session: AsyncSession, claim: PostingClaim
+    session: AsyncSession, claim: PostingClaim, *, include_dry_run: bool = False,
 ) -> list[PostedMessage]:
-    """Tozalovchi ruxsat etsa har e'londan oxirgi N ta postni qoldirish."""
+    """Guruh switch'i + cleaner siyosati ruxsat etsa eski postlarni topish."""
+    group = await session.get(Group, claim.group_id)
     policy = await session.get(CleanerSetting, claim.group_id)
-    if policy is None or not policy.enabled or not policy.delete_old_ads:
+    if (group is None or not group.is_active or group.settings is None
+            or not group.settings.cleaner_enabled or not group.bot_is_admin
+            or policy is None or not policy.enabled or not policy.delete_old_ads
+            or not policy.is_hard_delete or (policy.dry_run and not include_dry_run)):
         return []
     posts = (await session.execute(
         select(PostedMessage)
@@ -522,3 +526,5 @@ async def record_cleanup(
         session.add(CleanupLog(group_id=post.group_id, kind="old_ad", deleted_count=len(post.message_ids or [])))
     else:
         post.delete_error = (error or "Noma'lum xato")[:500]
+        session.add(CleanupLog(group_id=post.group_id, kind="old_ad", deleted_count=0,
+                               details={"post_id": post.id, "error": post.delete_error}))

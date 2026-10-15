@@ -30,6 +30,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -294,6 +296,14 @@ class Permission(Base, TimestampMixin):
     __tablename__ = "permissions"
     __table_args__ = (
         Index("ix_permissions_lookup", "user_id", "group_id", "kind"),
+        # NULL global scope uchun alohida indeks: ikkita aktiv nusxa qaytarib
+        # olingan ruxsatni tasodifan qayta faol qoldirmasin.
+        Index("uq_permissions_group_active", "user_id", "group_id", "kind", unique=True,
+              postgresql_where=text("is_active AND group_id IS NOT NULL"),
+              sqlite_where=text("is_active AND group_id IS NOT NULL")),
+        Index("uq_permissions_global_active", "user_id", "kind", unique=True,
+              postgresql_where=text("is_active AND group_id IS NULL"),
+              sqlite_where=text("is_active AND group_id IS NULL")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -820,6 +830,32 @@ class Restriction(Base, TimestampMixin):
     lifted_by: Mapped[Optional[int]] = mapped_column(BigInteger)
 
 
+class GroupMessageAction(Base, TimestampMixin):
+    """Har xabarga yagona qaror: webhook dublikatini va ikki worker amalini to'sadi.
+
+    `running` natijasi noma'lum qolsa avtomatik qayta urinilmaydi: Telegram API'da
+    idempotency key yo'q, noto'g'ri takroriy jazo xavfli.
+    """
+
+    __tablename__ = "group_message_actions"
+    __table_args__ = (
+        UniqueConstraint("group_id", "message_id", name="uq_group_message_action"),
+        Index("ix_group_message_actions_due", "status", "due_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger)
+    user_id: Mapped[int | None] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(String(16))  # guard | cleaner
+    kind: Mapped[str] = mapped_column(String(32))
+    planned_action: Mapped[str] = mapped_column(String(16))  # log | delete | warn | mute | ban
+    status: Mapped[str] = mapped_column(String(16))  # pending | running | done | failed | skipped
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(String(500))
+
+
 class CleanerSetting(Base, TimestampMixin):
     """Tozalovchi sozlamalari (REJA.md 8.6)."""
 
@@ -829,6 +865,9 @@ class CleanerSetting(Base, TimestampMixin):
         ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Eskidan yoqilgan eski post tozalashlari migratsiyadan keyin ham ishlaydi;
+    # yangi siyosatlar esa Python'da dry-run bilan yaratiladi.
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, server_default=false())
     delete_join_leave: Mapped[bool] = mapped_column(Boolean, default=True)
     delete_service: Mapped[bool] = mapped_column(Boolean, default=False)
     delete_links: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -923,7 +962,7 @@ __all__ = [
     # 4.7 Sanoqchi
     "CounterSetting", "InviteLink", "InviteEvent", "CounterTotal", "CounterAudit",
     # 4.8 Posbon / tozalovchi
-    "GuardSetting", "Warning", "Violation", "Restriction", "CleanerSetting", "CleanupLog",
+    "GuardSetting", "Warning", "Violation", "Restriction", "CleanerSetting", "CleanupLog", "GroupMessageAction",
     # 4.9 Statistika / broadcast
     "StatsDaily", "Broadcast", "BroadcastTarget",
 ]

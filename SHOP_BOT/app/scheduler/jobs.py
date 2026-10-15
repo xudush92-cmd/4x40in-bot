@@ -22,13 +22,16 @@ from app.db.models import (
     CleanupLog,
     ErrorLog,
     Group,
+    GroupMessageAction,
     GroupSettings,
     Payment,
     PostLog,
+    Restriction,
     Seller,
     StatsDaily,
     Violation,
 )
+from app.handlers.group.policy import process_due_cleanup
 from app.redis_client import redis_manager
 from app.scheduler.poster import post_group
 from app.services import posting_service, seller_service, subscription_service
@@ -75,6 +78,11 @@ async def posting_tick_job(bot: Bot) -> None:
     await asyncio.gather(*(_one(group_id) for group_id in due))
 
 
+async def group_cleanup_job(bot: Bot) -> None:
+    """Har 5 sekundda kechiktirilgan tozalash; kelajakdagi postlarni ushlamaydi."""
+    await process_due_cleanup(bot)
+
+
 async def rights_check_job(bot: Bot) -> None:
     """Bot hali ham admin ekanini tekshirish (REJA.md 8.7).
 
@@ -119,12 +127,19 @@ async def retention_job() -> None:
         r1 = await session.execute(delete(ErrorLog).where(ErrorLog.created_at < log_cutoff))
         r2 = await session.execute(delete(PostLog).where(PostLog.created_at < post_cutoff))
         r3 = await session.execute(delete(CleanupLog).where(CleanupLog.created_at < cleanup_cutoff))
+        r4 = await session.execute(delete(GroupMessageAction).where(
+            GroupMessageAction.created_at < log_cutoff,
+            GroupMessageAction.status.in_({"done", "failed", "skipped"}),
+        ))
+        r5 = await session.execute(delete(Violation).where(Violation.created_at < log_cutoff))
+        await session.execute(update(Restriction).where(
+            Restriction.kind == "mute", Restriction.is_active.is_(True),
+            Restriction.until_at <= now,
+        ).values(is_active=False, lifted_at=now))
 
     logger.info(
-        "Retention: error_log -{}, post_log -{}, cleanup_log -{} (eski yozuvlar o'chirildi)",
-        r1.rowcount,
-        r2.rowcount,
-        r3.rowcount,
+        "Retention: error_log -{}, post_log -{}, cleanup_log -{}, xabar amallari -{}, qoidabuzarliklar -{}",
+        r1.rowcount, r2.rowcount, r3.rowcount, r4.rowcount, r5.rowcount,
     )
 
 

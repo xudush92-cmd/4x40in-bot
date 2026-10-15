@@ -37,6 +37,14 @@ class GroupCB(CallbackData, prefix="grp"):
     value: str = "0"
 
 
+class PolicyCB(CallbackData, prefix="pol"):
+    """Posbon/tozalovchi/ruxsatlar: amal, guruh ID (0=global), parametr."""
+
+    action: str
+    group_id: int = 0
+    value: str = "-"
+
+
 class FeatureCB(CallbackData, prefix="feat"):
     """Funksiya tumbleri: `feat:<group_id>:<feature>:<enabled>:<origin>:<page>`.
 

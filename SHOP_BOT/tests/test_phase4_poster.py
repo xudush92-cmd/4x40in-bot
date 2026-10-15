@@ -307,7 +307,11 @@ async def test_global_pause_after_album_cleans_partial(monkeypatch, clean_db) ->
 async def test_old_post_cleanup_keeps_last_and_records_errors(clean_db) -> None:
     group_id, _, [ad_id] = await prepared()
     async with session_scope() as session:
-        session.add(CleanerSetting(group_id=group_id, enabled=True, delete_old_ads=True, keep_last_ads=1))
+        group = await session.get(Group, group_id)
+        group.settings.cleaner_enabled = True
+        session.add(CleanerSetting(
+            group_id=group_id, enabled=True, dry_run=False, delete_old_ads=True, keep_last_ads=1,
+        ))
     fake = FakeSession()
     bot = make_bot(fake)
     now = utcnow()

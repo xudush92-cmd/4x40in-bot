@@ -425,9 +425,10 @@ async def test_panel_menu_and_sections(session, tg) -> None:
     await _feed(session, dp, bot, 7, callback_update(AdminCB(action="section", value="payments").pack()))
     assert "To'lovlar" in fake.edited_texts()[-1]
 
-    # Hali tayyor bo'lmagan bo'lim → Phase haqida ogohlantirish
+    # Phase 6: Posbon guruh tanlash ekranida ochiladi.
     await _feed(session, dp, bot, 8, callback_update(AdminCB(action="section", value="guard").pack()))
-    assert any("Phase 6" in answer for answer in fake.answers())
+    assert "Posbon" in fake.edited_texts()[-1]
+    assert "guruhni tanlang" in fake.edited_texts()[-1]
 
 
 async def test_admin_only_access_for_foreign_user(session, tg) -> None:

@@ -24,7 +24,7 @@ from app.constants import (
     MIN_JITTER_PERCENT,
     GroupFeature,
 )
-from app.db.models import Ad, Category, Group, GroupRotation, GroupSettings
+from app.db.models import ActionLog, Ad, Category, Group, GroupRotation, GroupSettings
 from app.utils.text import clamp
 from app.utils.time import next_run_time, utcnow
 
@@ -236,8 +236,11 @@ async def sync_bot_status(
     missing: list[str] = []
     if is_admin:
         missing = missing_rights(group.bot_rights or {})
-        group.is_active = True
-        group.paused_reason = None
+        # Oddiy huquq yangilanishi adminning qo'lda bergan favqulodda
+        # pauzasini o'z-o'zidan bekor qilmasin.
+        if group.paused_reason != "manual":
+            group.is_active = True
+            group.paused_reason = None
         group.last_error = "Yetishmayotgan huquqlar: " + ", ".join(missing) if missing else None
     else:
         group.last_error = "Bot guruhda admin emas"
@@ -324,7 +327,7 @@ async def recompute_next_post(session: AsyncSession, group: Group, *, delay_min_
 
 
 async def set_feature(
-    session: AsyncSession, group: Group, feature: str, enabled: bool
+    session: AsyncSession, group: Group, feature: str, enabled: bool, *, actor_id: int | None = None
 ) -> bool:
     """Funksiyani yoqish/o'chirish. Qaytaradi: qiymat o'zgardimi."""
     column = FEATURE_COLUMN.get(str(feature))
@@ -352,6 +355,21 @@ async def set_feature(
                 if category.rotation and not category.rotation.is_paused:
                     category.rotation.next_post_at = None
         await recompute_next_post(session, group, delay_min_sec=5 if enabled else None)
+    elif str(feature) in (GroupFeature.GUARD, GroupFeature.CLEANER):
+        # Matritsa orqali bir bosishda yoqish ham xavfsiz dry-run'dan boshlanadi.
+        from app.services import group_policy_service as policy
+
+        row = await (policy.ensure_guard(session, group.id) if feature == GroupFeature.GUARD
+                     else policy.ensure_cleaner(session, group.id))
+        row.enabled = enabled
+        if enabled:
+            row.dry_run = True
+        if actor_id is not None:
+            session.add(ActionLog(
+                actor_id=actor_id, action="group_policy_switch", entity="group_settings",
+                entity_id=group.id, group_id=group.id,
+                before={column: current}, after={column: enabled, "dry_run": row.dry_run},
+            ))
 
     await session.flush()
     return True

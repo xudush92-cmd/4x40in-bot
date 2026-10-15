@@ -90,10 +90,11 @@ async def test_group_old_ads_toggle(tg) -> None:
     fake, bot, dp, (group_id, cat_id, first, second) = tg
     cb = GroupCB(action="old_ads", group_id=group_id).pack()
     await dp.feed_update(bot, callback_update(cb, update_id=10))
-    assert "eng oxirgisi qoladi" in fake.edited_texts()[-1]
+    assert "sinovda" in fake.edited_texts()[-1]
     async with session_scope() as session:
         policy = await session.get(CleanerSetting, group_id)
         assert policy and policy.enabled and policy.delete_old_ads and policy.keep_last_ads == 1
+        assert policy.dry_run  # eski tugma jonli o'chirishni tasdiqsiz yoqmaydi
     await dp.feed_update(bot, callback_update(cb, update_id=11))
     async with session_scope() as session:
         assert (await session.get(CleanerSetting, group_id)).delete_old_ads is False

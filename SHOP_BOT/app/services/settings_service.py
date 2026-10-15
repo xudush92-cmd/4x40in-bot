@@ -22,9 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import GroupFeature, RedisKey
 from app.db.base import session_scope
-from app.db.models import Setting
+from app.db.models import ActionLog, Setting
 from app.redis_client import redis_manager
-from app.utils.time import utcnow
 
 # Standart qiymatlar — DB'da yo'q bo'lsa ishlatiladi
 DEFAULTS: dict[str, Any] = {
@@ -144,6 +143,7 @@ class SettingsService:
     ) -> None:
         """Sozlamani yozish va keshni darhol yangilash (versiyani oshirish)."""
         row = await session.get(Setting, key)
+        before = row.value if row else DEFAULTS.get(key)
         if row is None:
             row = Setting(key=key, value=value, updated_by=updated_by, comment=comment)
             session.add(row)
@@ -152,6 +152,9 @@ class SettingsService:
             row.updated_by = updated_by
             if comment is not None:
                 row.comment = comment
+        if key in {"guard_enabled_global", "cleaner_enabled_global", "kill_switch", "maintenance_mode"} and before != value:
+            session.add(ActionLog(actor_id=updated_by, action="global_policy_switch",
+                                  entity="setting", before={key: before}, after={key: value}))
         await session.flush()
 
         # Keshni darhol yangilash + boshqa processlarga xabar berish
@@ -166,6 +169,22 @@ class SettingsService:
             return False
         key = FEATURE_SETTING_KEYS.get(str(feature), f"{feature}_enabled_global")
         return bool(self._cache.get(key, DEFAULTS.get(key, True)))
+
+    async def is_feature_enabled_fresh(self, feature: str | GroupFeature) -> bool:
+        """Telegram amali oldidan DB'dan xavfsizlik switch'ini bevosita o'qish.
+
+        Oddiy kesh ko'pi bilan 15 sekund kechikishi mumkin; favqulodda
+        global pauza/mode shu oynada ham xabar o'chirmasligi kerak.
+        """
+        keys = ["kill_switch", "maintenance_mode", FEATURE_SETTING_KEYS.get(
+            str(feature), f"{feature}_enabled_global"
+        )]
+        async with session_scope() as session:
+            rows = (await session.execute(select(Setting).where(Setting.key.in_(keys)))).scalars().all()
+        values = {row.key: row.value for row in rows}
+        return not bool(values.get("kill_switch", DEFAULTS["kill_switch"])) and not bool(
+            values.get("maintenance_mode", DEFAULTS["maintenance_mode"])
+        ) and bool(values.get(keys[2], DEFAULTS.get(keys[2], True)))
 
     async def is_kill_switch_on(self) -> bool:
         return bool(await self.get("kill_switch", False))

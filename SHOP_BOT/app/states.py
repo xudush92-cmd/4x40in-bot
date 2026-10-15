@@ -99,6 +99,20 @@ class AdminPaymentStates(StatesGroup):
     waiting_reject_reason = State()
 
 
+class AdminPolicyStates(StatesGroup):
+    """Phase 6: guruh qoidalari, ruxsat va foydalanuvchi qidiruvi."""
+
+    waiting_value = State()
+    waiting_permission_user = State()
+    waiting_permission_kind = State()
+    waiting_permission_days = State()
+    waiting_permission_reason = State()
+    confirming_permission = State()
+    waiting_user_search = State()
+    waiting_manual_reason = State()
+    confirming_manual_action = State()
+
+
 class AdminTextStates(StatesGroup):
     """Bot matnini tahrirlash (Phase 8)."""
 

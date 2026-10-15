@@ -4,7 +4,7 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–5 ✅ (274 offline test) · **Keyingisi: Phase 6** (alohida ruxsat kutilmoqda)
+**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–6 ✅ (302 offline test) · **Keyingisi: Phase 7** (alohida ruxsat kutilmoqda)
 
 ---
 
@@ -17,9 +17,9 @@
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
 | Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **274 test, hammasi o'tadi** (`pytest`, tarmoqsiz SQLite + soxta Telegram API) |
-| Migratsiya | `f789aa7b756f` (Phase 0–5: sxema o'zgarmadi, `alembic check` SQLite'da toza) |
-| Keyingi qadam | **Phase 6 — posbon, tozalovchi va ruxsatlar** (alohida ruxsat kutilmoqda) |
+| Testlar | **302 test, hammasi o'tadi** (`pytest`, tarmoqsiz SQLite + soxta Telegram API) |
+| Migratsiya | `f789aa7b756f` → `c8a21b6d0f42` (42 jadval, SQLite `alembic check` toza) |
+| Keyingi qadam | **Phase 7 — sanoqchi va majburiy kanal** (alohida ruxsat kutilmoqda) |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -38,7 +38,8 @@
 | `1fcdbf7` | **Phase 2** — sotuvchilar, tariflar, obunalar (164 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/1fcdbf7) |
 | `1ceac25` | **Phase 3** — e'lonlar va moderatsiya (221 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/1ceac25) |
 | `0ba9389` | **Phase 4** — aylanma joylash dvigateli (258 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/0ba9389) |
-| Joriy shoxobchaning eng oxirgi commiti (`git log -1 --oneline`) | **Phase 5** — to'lovlar (274 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
+| `ceea3ec` | **Phase 5** — to'lovlar (274 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/ceea3ec) |
+| Joriy shoxobchaning eng oxirgi commiti (`git log -1 --oneline`) | **Phase 6** — guruh siyosati, ruxsatlar va amallar (302 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
 
 > ⚠️ **Muhim:** ishni faqat chatning **joriy** shoxobchasida olib boring —
 > `main`ga tegmang, qo'shimcha branch/PR ochmang. Keyingi sessiyada shu kodni
@@ -56,7 +57,7 @@
 cd /home/user/4x40in-bot/SHOP_BOT
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 274 test o'tishi kerak (offline, ~90 sekund)
+.venv/bin/python -m pytest -q          # 302 test o'tishi kerak (offline, ~100 sekund)
 ```
 
 Testlar **offline** ishlaydi: SQLite (vaqtinchalik fayl) + soxta Bot API sessiyasi,
@@ -65,7 +66,7 @@ Redis talab qilinmaydi (`tests/conftest.py` ni ko'ring).
 Foydali tekshiruvlar:
 
 ```bash
-.venv/bin/python -m compileall -q app scripts tests      # sintaksis
+.venv/bin/python -m compileall -q app alembic scripts tests      # sintaksis
 # Alembic sxema farqi bo'sh bo'lishi kerak (fayl yaratmaydi):
 TMP=$(mktemp -d); export DB_URL="sqlite+aiosqlite:///$TMP/al.db"
 .venv/bin/alembic upgrade head
@@ -87,7 +88,7 @@ Telegram guruhlari (supergroup) bozorlar uchun bot:
 3. **Moderatsiya**: admin e'lonni ko'rib, tasdiqlaydi yoki sabab bilan rad etadi.
 4. **Aylanma joylash** (Phase 4 bajarildi): tasdiqlangan e'lonlar guruhlarga **navbat bilan, interval bilan** avtomatik joylanadi (albom + «Sotuvchi bilan bog'lanish» tugmasi).
 5. Pul (Phase 5 bajarildi): sotuvchi tarifni tanlaydi → kartaga o'tkazadi → **chek** yuboradi → admin bank o'tkazmasini tekshirib tasdiqlaydi → obuna avtomatik yaratiladi/uzayadi. Bot pulni o'zi olmaydi.
-6. Qo'shimcha: posbon/tozalovchi (guruh nazorati), sanoqchi (odam qo'shish tizimi), referal, statistika, broadcast (Phase 6–8).
+6. **Guruh nazorati** (Phase 6 bajarildi): alohida posbon/tozalovchi, istisnolar, dry-run, sabab-amallar tarixi. Keyin sanoqchi, referal, statistika, broadcast (Phase 7–8).
 
 **To'liq funksiyalar ro'yxati va sabablari:** `REJA.md` (16 bo'lim).
 **Foydalanuvchi bilan kelishilgan yagona haqiqat manbai:** `REJA.md` + shu fayl.
@@ -147,8 +148,8 @@ va kursorlar bazada saqlanadi. FloodWait kechiktiriladi, Forbidden/BadRequest
 guruhni to'xtatadi; navbat bo'shab qolsa ham guruh pauza qilinadi (yangi
 e'lon paydo bo'lganda admin qo'lda qayta yoqadi). Noma'lum tarmoq natijasi yoki muddati o'tgan `sending`
 **qayta yuborilmaydi**, qo'lda tekshirilishi uchun pauza va admin xabari beriladi.
-Sozlama yoqilsa eski postlardan so'nggi bittasi saqlanib, qolganlari o'chiriladi;
-muvaffaqiyatsiz o'chirishlar `cleanup_log`ga tushadi.
+Sozlama yoqilib tozalovchi jonli rejimi tasdiqlansa, eski postlardan oxirgi
+`keep_last_ads` tasi saqlanadi; muvaffaqiyatsiz o'chirishlar `cleanup_log`ga tushadi.
 
 Admin uchun guruh kartochkasida **Navbat**, toifa navbatida **⬆️/⬇️**,
 e'lon kartochkasida **Hoziroq joylash**, guruh sozlamalarida **Eski nusxalarni
@@ -184,9 +185,46 @@ qo'lda solishtirishi kerak. Telegram/haqiqiy PostgreSQL/Redis deploy va bir vaqt
 bir nechta worker bilan poyga sinovlari hali o'tkazilmagan. `alembic check` faqat
 SQLite bilan qilingan, sxemaga o'zgartirish kiritilmadi.
 
+### ✅ Phase 6 — Posbon + tozalovchi + ruxsatlar (guruhlar bo'yicha alohida)
+Admin paneli → «🛡 Posbon» / «🧹 Tozalovchi» / «🔑 Ruxsatlar» → guruhni tanlash.
+Har guruhning `guard_settings`, `cleaner_settings`, `group_settings` qiymatlari
+mustaqil. Posbon: havola/forward/@mention/taqiqlangan so'zlar, domenlar oq
+ro'yxati, jazo darajasi (warn/mute/ban), ogohlantirish oynasi/chegarasi va mute
+muddati. Avtomatik ban standartda yo'q; uni admin aynan shu guruhda **alohida
+tasdiqlaydi**. Cleaner: kirdi-chiqdi, xizmat, havola, qoidabuzar xabar, 0–3600 s
+kechikish, mahkamlanganlarni saqlash, e'londan 1–20 nusxani qoldirish. Posbon
+faol bo'lmasa ham cleaner uning filtrlaridan o'zicha foydalana oladi; jazo bermaydi.
+**Phase 7 sanoqchi/majburiy kanal shartlari hali ishga tushmagan va jazoga ulanmagan.**
+
+Yangi siyosat **o'chiq va dry-run**: qoidani yoqish faqat jurnalga yozadi, jonli
+rejim alohida tasdiqlanadi. Eski Phase 4 e'lon nusxalari tugmasi ham yangi guruhda
+faqat sinovda sozlaydi; jonli rejim tozalovchi ekranida tasdiqlanadi. Global
+`guard_enabled_global`/`cleaner_enabled_global`, `kill_switch` va `maintenance_mode`
+Telegram amali oldidan DB'dan keshsiz qayta tekshiriladi; global pauza guruh
+qoidasini o'zgartirmaydi. Favqulodda guruh pauzasi posbon, tozalovchi va joylashni
+to'xtatadi; huquq yangilanishi qo'lda berilgan pauzani olib tashlamaydi.
+
+`group_message_actions`da `(group_id, message_id)` unique: dublikat Telegram
+update yoki ikki worker ayni xabarni qayta o'chirmaydi. `pending` CAS orqali
+scheduler oladi; noma'lum `running` amal qayta bajarilmaydi. Admin «kutilayotgan
+amallar»dan uni tasdiqlab bekor qila oladi; **allachon Telegram'ga yuborilgan
+API chaqiruvi ortga qaytmaydi**. Huquq yo'qolsa guruh pauza + admin xabari,
+`violation`, `cleanup_log`, `restriction`, `action_log`da sabab/amallar saqlanadi.
+Ruxsatlar guruhga yoki global: turi, sababi, 1–365 kun yoki doimiy; qaytarib
+olish auditi bor. Qisman unique indekslar NULL global scope va guruh scopeda
+faqat bitta aktiv ruxsatni ta'minlaydi; expired yozuv qayta berilganda tarixda
+qoladi. Qo'lda mute/ban/ochish va warning reset faqat admin tasdig'i bilan.
+
+**Migratsiya:** `c8a21b6d0f42` yangi jadval/indeks va cleaner `dry_run` maydoni.
+Eski faol cleaner oldingi sozlamasini saqlaydi (`dry_run=false`), yangi guruh
+`dry_run=true`; eski ruxsat dublikatlaridan faqat so'nggisi aktiv qoladi.
+**Tekshiruv chegarasi:** 28 yangi offline test va SQLite upgrade/check/downgrade,
+dublikat migratsiya/seed o'tgan; haqiqiy PostgreSQL/Redis, Telegram, ko'p process
+race va Privacy Mode'ni ishlab turgan guruhda sinash deploy oldidan qoladi.
+
 ---
 
-## 5. Test holati (274 test)
+## 5. Test holati (302 test)
 
 | Test fayli | Qamrov | Soni |
 |---|---|---|
@@ -209,14 +247,18 @@ SQLite bilan qilingan, sxemaga o'zgartirish kiritilmadi.
 | `tests/test_posting_limiter.py` | Guruh/global tezlik va Redis Lua band qilish | 3 |
 | `tests/test_payment_service.py` | Karta CRUD/aylanma, chek dublikati, tasdiq/rad, obuna uzayishi, tarix | 7 |
 | `tests/test_phase5_payments.py` | **E2E**: karta FSM → chek → admin qarori, moderator, cheksiz to'lov, narx, xabar zaxirasi | 9 |
-| **JAMI** | | **274** |
+| `tests/test_phase6_policy.py` | **E2E + servis**: dry-run, dublikat, izolyatsiya, jazo, cleaner, kechiktirish, istisno | 17 |
+| `tests/test_phase6_admin.py` | **E2E**: har guruh paneli, tasdiqlar, global switch, favqulodda pauza, qo'lda jazo | 9 |
+| `tests/test_phase6_posting.py` | Eski e'lonlar, pin, global/guruh to'xtashi | 2 |
+| **JAMI** | | **302** |
 
-**Tekshiruv:** 274 offline test o'tdi; `compileall` va Phase 5da o'zgargan fayllar
-uchun Ruff toza; vaqtinchalik SQLite'da `alembic check`: «No new upgrade operations
-detected.»; seed ikki marta bajarilganda 2 admin / 25 sozlama / 30 matn / 3 tarif.
-Butun repo bo'ylab Ruff'da **192 ta avvalgi (Phase 5 fayllaridan tashqari) lint
-ogohlantirish** bor — shu bosqichga aloqasiz fayllar minimal tuzatish qoidasiga
-asosan o'zgartirilmadi.
+**Tekshiruv:** 302 offline test o'tdi; `compileall` va Phase 6 o'zgartirilgan
+fayllarda Ruff toza (`models.py`da avvaldan mavjud UP037/UP045 qoidalari
+alohida saqlanadi); vaqtinchalik SQLite'da `alembic upgrade/check/downgrade`: «No new
+upgrade operations detected.»; eski ruxsat dublikatlari migratsiyasi sinovdan
+o'tdi. Seed ikki marta: 2 admin / 25 sozlama / 30 matn / 3 tarif.
+Butun repo bo'ylab avvaldan mavjud lint ogohlantirishlar minimal tuzatish
+qoidasiga ko'ra avtomatik qayta formatlanmadi.
 
 **Test yozish qoidalari (buzilmasin):**
 1. Har bir test fayli **alohida ham** o'tishi kerak (`pytest tests/x.py`).
@@ -240,7 +282,7 @@ SHOP_BOT/
 │   ├── main.py                 # RUN_MODE: bot | poster | all
 │   ├── bot.py                  # Bot/Dispatcher, middleware, xato ushlagich
 │   ├── config.py, constants.py, states.py, logging_setup.py, redis_client.py
-│   ├── db/models.py            # 41 jadval (Phase 0 da yozilgan, o'zgarmagan)
+│   ├── db/models.py            # 42 jadval (Phase 6 xabar amallari + ruxsat indekslari)
 │   ├── services/
 │   │   ├── settings_service.py     # 25 global sozlama (restart kerak emas)
 │   │   ├── text_service.py         # 30 matn + safe_format
@@ -249,20 +291,22 @@ SHOP_BOT/
 │   │   ├── ad_service.py           # ⬅️ Phase 3 (e'lon hayot sikli)
 │   │   ├── posting_service.py, posting_limiter.py  # Phase 4 DB navbat va limiter
 │   │   ├── payment_service.py   # Phase 5 karta/chek/qaror/obuna
+│   │   ├── group_policy_service.py  # Phase 6 guruh filtr/jazo/ruxsat qoidalari
 │   │   └── notify.py, stats_service.py
 │   ├── handlers/
 │   │   ├── __init__.py         # build_root_router() — router tartibi MUHIM
 │   │   ├── common.py           # /start, fallback, sotuvchi holati
-│   │   ├── admin/              # panel, settings, groups, categories, sellers, tariffs, mods, posting, payments
+│   │   ├── admin/              # panel, settings, groups, policy, permissions va boshqalar
 │   │   ├── seller/ads.py, seller/payments.py  # e'lon ustasi va chek FSM
-│   │   └── group/lifecycle.py
-│   ├── keyboards/              # admin, common, groups, categories, sellers, tariffs, ads, mods, payments, seller_panel
-│   ├── scheduler/jobs.py       # posting_tick_job + old-post cleanup
+│   │   └── group/lifecycle.py, group/policy.py  # bot hayoti + xabar siyosati
+│   ├── keyboards/              # admin, groups, policy, payments va boshqalar
+│   ├── scheduler/jobs.py       # posting_tick_job + old-post/kechiktirilgan cleanup
 │   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
 │   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 274 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 302 test (+ conftest.py, fake_telegram.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
+├── alembic/versions/c8a21b6d0f42_phase6_xabar_siyosati.py
 └── scripts/seed.py, backup.sh, restore.sh
 ```
 
@@ -282,7 +326,8 @@ ushlanadi. **Boshqa prefiksdagi router'ni seller_router ichiga qo'shmang**.
 ### Callback prefikslari (64 bayt chegarasi tekshiriladi)
 `adm:` admin panel · `grp:` guruhlar · `feat:` funksiya tumbleri · `cat:` toifalar ·
 `slr:` sotuvchilar · `trf:` tariflar · `sp:` sotuvchi paneli · **`ad:` e'lonlar** ·
-**`mod:` moderatsiya** · **`pst:` joylash/navbat** · **`pay:` to'lovlar** · `nav:` navigatsiya.
+**`mod:` moderatsiya** · **`pst:` joylash/navbat** · **`pay:` to'lovlar** ·
+**`pol:` guruh siyosati/istisnolar** · `nav:` navigatsiya.
 Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`).
 
 ### Servis API (asosiy funksiyalar)
@@ -302,6 +347,12 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
   `submit_receipt` (hash + dublikat belgisi), `list_payments/count_payments`,
   `decide` (admin qarori + obuna; oldin Seller, keyin Payment qatorini bloklaydi).
   To'lovni yuborish va admin qaroridan keyingi Telegram xabarlari **commitdan keyin**.
+- `group_policy_service`: `safe_guard/safe_cleaner`, `edit_guard/edit_cleaner`,
+  `classify`, `reserve_action`, `increment_warning`, `grant_permission`,
+  `revoke_permission`, `permission_kinds`. `group/policy.py`: `perform_action`,
+  `claim_due_actions`, `process_due_cleanup` (scheduler). Dry-run va aktiv jazo
+  alohida; API oldidan guruh + global holat qayta tekshiriladi; `running`
+  noaniq amal avtomatik takrorlanmaydi.
 
 ### Klaviatura o'lchamlari (`app/keyboards/common.py`)
 `PER_PAGE_GROUPS=6`, `PER_PAGE_CATEGORIES=8`, `PER_PAGE_MATRIX=5`, `PER_PAGE_SELLERS=6`,
@@ -313,7 +364,9 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 - `category_rotation`: `cursor_ad_id` (oxirgi joylangan), `next_post_at` (toifa qaytish vaqti), `cycle_count`, `is_paused`.
 - `group_rotation`: `next_post_at` (guruh intervali/bandligi), `today_count`, `today_date`, `error_streak`; noma'lum yuborishda pauza.
 - `posted_messages`: `message_ids` (JSON) — eski postni o'chirish uchun; `post_log` — `sending`/`ok`/`error`/`skipped`/`uncertain` tarixi.
-- `group_settings`: `interval_sec` (default 1800), `jitter_percent` (10), `daily_post_limit` (50), `quiet_start/quiet_end`, `protect_content`, `posting_enabled`.
+- `group_settings`: `interval_sec` (default 1800), `jitter_percent` (10), `daily_post_limit` (50), `quiet_start/quiet_end`, `protect_content`, `posting_enabled`, `guard_enabled`, `cleaner_enabled`.
+- `group_message_actions`: `(group_id,message_id)` yagona; `pending/running/done/skipped/failed` — noaniq `running` qayta yuborilmaydi. `permissions`dagi guruh/global **aktiv** scope uchun unique indekslar; expired yozuv tarixda qoladi.
+- `cleaner_settings.dry_run`: eski yozuvga migratsiyada `false` (avvalgi niyat saqlanadi), yangi policy `true`; eski e'lon tugmasi `dry_run`ni tasdiqsiz o'chirmaydi.
 - Sessiya `expire_on_commit=False`, ammo **yangi yaratilgan ORM relationship**ni async rejimda lazy-load qilmang: `session.get()` yoki eager `selectin` bilan oling.
 
 ### Global sozlamalar (25 ta, `settings_service.DEFAULTS`)
@@ -331,23 +384,19 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 (masalan `ad.submitted` → `{elon}`, `{toifa}`, `{sotuvchi}`).
 
 ### Panelda tayyor bo'limlar (`READY_SECTIONS`)
-`stats, settings, groups, categories, sellers, tariffs, ads, moderation, payments`
-(qolganlari bosilganda "Phase N da qo'shiladi" xabari chiqadi — bu testda tekshiriladi).
-Moliyaviy panel va chek sozlamalari faqat admin/super-admin uchun; moderatorga yopiq.
+`stats, settings, groups, categories, sellers, tariffs, ads, moderation, payments,
+guard, cleaner, permissions, users` (qolganlari bosilganda "Phase N da qo'shiladi").
+Moliyaviy sozlamalar, posbon/tozalovchi siyosati, ruxsatlar va qo'lda jazolarni
+faqat admin/super-admin o'zgartiradi; moderator ko'rishi mumkin.
 
 ---
 
 ## 8. Qolgan ishlar
 
-### Phase 0–5 ✅ — bajarildi
+### Phase 0–6 ✅ — bajarildi
 
-Phase 5 tafsiloti 4-bo'limda, testlar 5-bo'limda. `payment_methods`/`payments`
-jadvallari avvaldan tayyor edi; yangi migratsiya talab qilinmadi. **Phase 6ga
-foydalanuvchi alohida ruxsat bermaguncha kod yozmang.**
-
-### Phase 6 — Posbon + tozalovchi + ruxsatlar
-Havola/reklama filtri, majburiy obuna shartlari, jazo zinapoyasi (ogohlantirish → mute → ban),
-dry-run, tozalash siyosati (nima/qachon), ruxsatlar/istisnolar (guruh yoki global), mute/ban.
+Phase 6 tafsiloti 4-bo'limda, testlar 5-bo'limda. Foydalanuvchi Phase 6ni
+alohida tasdiqlagan. Keyingi yangi bosqich uchun qayta alohida ruxsat kerak.
 
 ### Phase 7 — Sanoqchi
 Har guruhga alohida: `createChatInviteLink` (member_limit), `ChatMemberUpdated.invite_link` orqali
@@ -362,7 +411,7 @@ tahrirlash, xato jurnali paneli, broadcast (25 msg/s limit bilan).
 Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, huquqiy eslatmalar
 (REJA.md 11.2).
 
-**Qolgan bosqichlar:** 6–9. Phase 6 boshlanishi uchun alohida ruxsat kerak.
+**Qolgan bosqichlar:** 7–9. Phase 7 boshlanishi uchun alohida ruxsat kerak.
 
 ---
 
@@ -376,6 +425,7 @@ Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, hu
 | 4 | Haqiqiy bank, Telegram va PostgreSQL/Redis muhitidagi chek oqimini amalda sinash; bank o'tkazmasini admin qo'lda tekshiradi | Deploydan oldin |
 | 5 | Majburiy obuna kanali nomi | Phase 7da kerak bo'ladi |
 | 6 | Telegram siyosati/huquqiy eslatmalar yakuniy tekshiruvi | Phase 9 |
+| 7 | Phase 6 posbon/tozalovchi PostgreSQL + Redis + haqiqiy superguruhda Privacy Mode o'chirilgan holatda sinash; parallel worker poygasini yuklama bilan tekshirish | Deploydan oldin |
 
 ---
 
@@ -398,10 +448,10 @@ Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, hu
 
 ```
 Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md va SHOP_BOT/REJA.md
-fayllarini o'qing: Phase 0–5 tugagan, 274 offline test o'tadi. Kod
+fayllarini o'qing: Phase 0–6 tugagan, 302 offline test o'tadi. Kod
 `arena/18e1094b-4x40in-bot` shoxobchasida; main'ga va AVTO_BOT'ga tegmang.
 Bu chatning joriy shoxobchasini almashtirmang, yangi shoxobcha yoki PR ochmang.
-Holatni o'zbekcha aytib bering va Phase 6 (posbon/tozalovchi/ruxsatlar) uchun alohida
+Holatni o'zbekcha aytib bering va Phase 7 (sanoqchi/majburiy kanal) uchun alohida
 ruxsat so'rang; ruxsatsiz yangi bosqich kodini yozmang.
 ```
 
@@ -416,4 +466,4 @@ ruxsat so'rang; ruxsatsiz yangi bosqich kodini yozmang.
 3. **Git tarixi** (`arena/18e1094b-4x40in-bot`) — kod va testlar GitHub'da, har bosqich alohida commit.
 
 Yangi chatda yordamchi shu 3 ta manbani o'qisa, loyihani **aynan qolgan joyidan** davom ettira oladi:
-`git status` → `pytest` → holat hisoboti → Phase 6 uchun alohida ruxsat.
+`git status` → `pytest` → holat hisoboti → Phase 7 uchun alohida ruxsat.

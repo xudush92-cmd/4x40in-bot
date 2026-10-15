@@ -10,12 +10,12 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–5 ✅ · Keyingisi: Phase 6 (alohida ruxsat kutilmoqda)**
+## 📌 Hozirgi holat: **Phase 0–6 ✅ · Keyingisi: Phase 7 (alohida ruxsat kutilmoqda)**
 
 | Ish | Holat |
 |---|---|
 | Docker Compose (bot + poster + PostgreSQL 16 + Redis 7 + Caddy) | ✅ |
-| 41 jadvalli baza sxemasi + Alembic migratsiya | ✅ |
+| 42 jadvalli baza sxemasi + Alembic migratsiyalar (Phase 6: `group_message_actions`) | ✅ |
 | Konfiguratsiya (.env, pydantic-settings, validatsiya) | ✅ |
 | Loglar (loguru, kunlik aylanish), xato jurnali (`error_log`) | ✅ |
 | Middleware'lar (DB sessiya, foydalanuvchi konteksti, anti-flood, texnik rejim) | ✅ |
@@ -23,7 +23,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | Bot guruhga qo'shilganda: baza'ga yozish, admin huquqlarini tekshirish, adminga xabar | ✅ |
 | Rejalashtiruvchi: heartbeat, huquq tekshiruvi, log tozalash, kunlik statistika | ✅ |
 | `/health` va `/stats` (HTTP), webhook va polling rejimi | ✅ |
-| Seed skript, backup/restore skriptlar, 58 test | ✅ |
+| Seed skript, backup/restore skriptlar, 302 offline test | ✅ |
 
 ### Phase 1 — guruhlar va toifalar ✅
 
@@ -81,9 +81,28 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | 🔐 Moderator cheklar va moliyaviy sozlamalarga kira olmaydi; chek rasmisiz yuborish faqat `receipt_required=false` bo'lsa | ✅ |
 | 🧪 Jami **274 offline test** (7 servis + 9 E2E test qo'shildi); SQLite'da `alembic check` toza | ✅ |
 
-**Keyingi bosqich (Phase 6):** posbon, tozalovchi, ruxsatlar — faqat foydalanuvchining
-alohida ruxsati bilan. Haqiqiy Telegram, bank o'tkazmalari hamda PostgreSQL/Redis
-deploy sinovlari hali o'tkazilmagan; offline testlar ularning o'rnini bosmaydi.
+### Phase 6 — posbon, tozalovchi va ruxsatlar ✅
+
+| Ish | Holat |
+|---|---|
+| 🛡 **Har guruh uchun posbon:** havola/forward/@mention/taqiqlangan so'zlar, domenlar oq ro'yxati, ogohlantirish oynasi/chegarasi, mute muddati va faqat alohida tasdiqdan keyingi ban rejimi | ✅ |
+| 🧹 **Har guruh uchun tozalovchi:** kirdi-chiqdi, xizmat, havola va qoidabuzar xabarlar; kechiktirish (0–3600 s), pinlanganlarni saqlash, eski e'londan 1–20 nusxani qoldirish | ✅ |
+| 🔑 **Istisnolar:** bitta guruh yoki global, turi/sababi, 1–365 kun yoki doimiy, ko'rish va qaytarib olish; takroriy aktiv ruxsatni DB darajasida to'sish | ✅ |
+| 🔴 Jonli o'chirishdan avval har bir guruh uchun **dry-run → alohida tasdiq**; yangi siyosatda avtomatik ban yo'q. Global pauza guruh qoidasini o'zgartirmaydi | ✅ |
+| 📋 Xabar/amallar tarixi, Telegram dublikatidan himoya, kutilayotgan amalni bekor qilish, favqulodda guruh pauzasi; post/tozalashga ham guruh + global switch | ✅ |
+| 🧪 **302 offline test**; SQLite Alembic `upgrade/check/downgrade`, eski ruxsat dublikatini migratsiya qilish, seed 2 marta bir xil natija | ✅ |
+
+**Boshlash:** admin paneli → «🛡 Posbon», «🧹 Tozalovchi» yoki «🔑 Ruxsatlar» →
+guruhni tanlash → avval sinov jurnalini ko'rish → jonli rejimni alohida tasdiqlash.
+«Guruhlar → guruh → Sozlamalar → Eski e'lon nusxalari» tugmasi ham yangi guruhni
+**faqat sinov rejimida** sozlaydi; haqiqiy o'chirish uchun tozalovchi ekranida
+jonli rejimni tasdiqlash kerak. Global switch va guruh pauzasi barcha tegishli
+amallarni to'xtatadi, ammo guruh qoidalarini o'chirmaydi.
+
+**Chegara:** majburiy kanal va sanoqchi shartlari (Phase 7) hali jazoga ulanmagan.
+Telegram Privacy Mode o'chirilishi va botda xabar o'chirish/cheklash huquqlari bo'lishi
+shart. Haqiqiy Telegram, bank va PostgreSQL/Redis deploy sinovlari o'tkazilmagan;
+offline testlar ularning o'rnini bosmaydi. **Phase 7 faqat yangi ruxsat bilan.**
 
 ---
 
@@ -168,7 +187,7 @@ python -m app.main            # ishga tushirish
 Testlar:
 
 ```bash
-pytest                        # 274 test (SQLite + soxta Telegram API, tarmoqsiz)
+pytest                        # 302 test (SQLite + soxta Telegram API, tarmoqsiz)
 pytest -v --tb=short          # batafsil
 ```
 
@@ -202,22 +221,23 @@ SHOP_BOT/
 │   ├── redis_client.py      # Redis + FSM storage (ixtiyoriy komponent)
 │   ├── db/
 │   │   ├── base.py          # engine, sessiya, JSONB varianti
-│   │   └── models.py        # 41 jadval (REJA.md 4-bo'lim)
+│   │   └── models.py        # 42 jadval (REJA.md 4-bo'lim + xabar amallari)
 │   ├── handlers/
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
-│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs, mods, posting, payments
+│   │   ├── admin/           # panel + guruh siyosati, ruxsatlar, to'lovlar va boshqalar
 │   │   ├── seller/          # sotuvchi paneli + ads.py (e'lonlar) + payments.py (chek)
-│   │   └── group/           # lifecycle.py (bot qo'shildi/chiqarildi)
+│   │   └── group/           # lifecycle.py + policy.py (posbon/tozalovchi)
 │   ├── keyboards/           # admin klaviaturalar + callback fabrikalari
 │   ├── middlewares/         # db, user_context, throttling, maintenance
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
 │   ├── services/            # settings, text, group, category, seller, tariff,
-│   │                        # subscription, ad, posting, posting_limiter, payment, notify, stats
+│   │                        # subscription, ad, posting, posting_limiter, payment,
+│   │                        # group_policy_service, notify, stats
 │   ├── scheduler/           # jobs.py, poster.py (Telegram), runner.py (APScheduler)
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 274 test (offline E2E + servis testlari)
+├── tests/                   # 302 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -231,7 +251,8 @@ SHOP_BOT/
 
 **Sozlamalar darhol kuchga kiradi.** Admin panelda o'zgargan sozlama
 `settings_version` ni oshiradi → bot va poster 15 sekund ichida (odatda darhol)
-yangi qiymatni ko'radi. Botni qayta yoqish **shart emas**.
+yangi qiymatni ko'radi. Xavfsizlikka oid global pauzalar esa Telegram amali
+oldidan DB'dan qayta tekshiriladi. Botni qayta yoqish **shart emas**.
 
 **Keshlangan matnlar.** Standart shablonlar `bot_texts` jadvalida; ularni admin
 panelidan tahrirlash Phase 8ga qoldirilgan. Noma'lum placeholder botni yiqitmaydi
@@ -295,7 +316,7 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 | 3 | E'lonlar: usta, rasmlar/albom, moderatsiya | ✅ **Bajarildi** |
 | 4 | **Aylanma joylash dvigateli** | ✅ **Bajarildi** |
 | 5 | To'lovlar (chek → tasdiq → obuna) | ✅ **Bajarildi** |
-| 6 | Posbon + tozalovchi + ruxsatlar | ⏳ Alohida ruxsat kutilmoqda |
-| 7 | Sanoqchi (invite linklar, majburiy obuna) | ⏸ |
+| 6 | Posbon + tozalovchi + ruxsatlar | ✅ **Bajarildi** |
+| 7 | Sanoqchi (invite linklar, majburiy obuna) | ⏳ Alohida ruxsat kutilmoqda |
 | 8 | Referal, statistika, matnlar, xato jurnali, broadcast | ⏸ |
 | 9 | Sayqal: yuklama testi, deploy, hujjat | ⏸ |

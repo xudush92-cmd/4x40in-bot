@@ -17,8 +17,9 @@ from loguru import logger
 
 from app.constants import MAX_CAPTION_LEN, AdStatus
 from app.db.base import session_scope
-from app.db.models import Ad, Category, Group
+from app.db.models import Ad, Category, CleanerSetting, CleanupLog, Group
 from app.services import posting_service
+from app.services.group_service import pause_group
 from app.services.notify import notify_admins
 from app.services.posting_limiter import posting_limiter
 from app.services.settings_service import settings_service
@@ -187,22 +188,76 @@ async def _notify_problem(bot: Bot, group_id: int, detail: str) -> None:
 
 
 async def _clean_previous(bot: Bot, claim: posting_service.PostingClaim) -> None:
+    # Phase 6: global va guruh switch'i ham eski e'lonlar uchun amal qiladi.
+    if not await settings_service.is_feature_enabled_fresh("cleaner"):
+        return
     async with session_scope() as session:
-        posts = await posting_service.old_posts_for_cleanup(session, claim)
+        cleaner = await session.get(CleanerSetting, claim.group_id)
+        posts = await posting_service.old_posts_for_cleanup(session, claim, include_dry_run=True)
         old = [(post.id, list(post.message_ids or [])) for post in posts]
+        if cleaner and cleaner.dry_run:
+            for post_id, ids in old:
+                session.add(CleanupLog(group_id=claim.group_id, kind="old_ad", deleted_count=0,
+                                       details={"dry_run": True, "post_id": post_id, "message_ids": ids}))
+            return
+        keep_pinned = bool(cleaner.keep_pinned) if cleaner else True
     for post_id, message_ids in old:
+        if not await settings_service.is_feature_enabled_fresh("cleaner"):
+            return
+        async with session_scope() as session:
+            current = await posting_service.old_posts_for_cleanup(session, claim)
+            if post_id not in {post.id for post in current}:
+                continue
+        if keep_pinned:
+            try:
+                pinned = getattr(await bot.get_chat(claim.chat_id), "pinned_message", None)
+            except Exception as exc:
+                # Mahkamlangan xabarni bilmasak, noto'g'ri xabar o'chirilmasin.
+                async with session_scope() as session:
+                    await posting_service.record_cleanup(session, post_id, deleted=False,
+                                                         error=f"Pin holati noma'lum: {exc}")
+                continue
+            if pinned is not None and pinned.message_id in message_ids:
+                async with session_scope() as session:
+                    session.add(CleanupLog(group_id=claim.group_id, kind="old_ad", deleted_count=0,
+                                           details={"skipped": "pinned", "post_id": post_id}))
+                continue
         failure: str | None = None
+        forbidden = False
         for message_id in message_ids:
+            if not await settings_service.is_feature_enabled_fresh("cleaner"):
+                async with session_scope() as session:
+                    await posting_service.record_cleanup(session, post_id, deleted=False,
+                                                         error="Global tozalovchi pauzasi")
+                return
             try:
                 await posting_limiter.acquire(claim.chat_id)
+                # Limiter kutayotganda guruhning alohida siyosati o'zgargan bo'lishi mumkin.
+                async with session_scope() as session:
+                    current = await posting_service.old_posts_for_cleanup(session, claim)
+                    if post_id not in {post.id for post in current}:
+                        await posting_service.record_cleanup(session, post_id, deleted=False,
+                                                             error="Guruh tozalovchisi pauzada")
+                        return
                 await bot.delete_message(claim.chat_id, message_id)
             except TelegramBadRequest as exc:
                 if "message to delete not found" not in str(exc).lower():
                     failure = str(exc)
+            except TelegramForbiddenError as exc:
+                failure, forbidden = str(exc), True
+                break
             except Exception as exc:
                 failure = str(exc)
         async with session_scope() as session:
             await posting_service.record_cleanup(session, post_id, deleted=failure is None, error=failure)
+            if forbidden:
+                group = await session.get(Group, claim.group_id)
+                if group is not None and group.is_active:
+                    await pause_group(session, group, reason="no_rights")
+                    group.last_error = f"Tozalash huquqi yo'q: {failure}"[:500]
+        if forbidden:
+            await _notify_problem(bot, claim.group_id, f"Tozalash huquqi yo'q: {failure}")
+            return
 
 
 async def post_group(

@@ -110,6 +110,20 @@ async def open_section(
         await alert(callback, "")
         return
 
+    if key in {"guard", "cleaner", "permissions"}:
+        from app.handlers.admin.policy import render_choose
+
+        await render_choose(callback, session, key)
+        await alert(callback, "")
+        return
+
+    if key == "users":
+        from app.handlers.admin.permissions import render_users_home
+
+        await render_users_home(callback, session)
+        await alert(callback, "")
+        return
+
     phase = SECTION_PHASES.get(key, 9)
     title = SECTION_TITLES.get(key, key)
     logger.debug("Tayyor bo'lmagan bo'lim: {} (Phase {})", key, phase)
