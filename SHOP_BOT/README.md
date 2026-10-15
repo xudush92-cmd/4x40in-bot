@@ -7,6 +7,8 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > admin panel daraxti, jarayonlar, masshtablash, risklar, bosqichlar).
 > Joriy holat va **davom ettirish qo'llanmasi** (yangi chat/sessiya uchun):
 > **[HOLAT.md](HOLAT.md)** — nima bajarilgan, nima qolgan, muhim shartnomalar.
+> Administrator uchun tugma-baqadam amaliy yo‘riqnoma:
+> **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
 
 ---
 
