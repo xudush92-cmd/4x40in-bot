@@ -62,7 +62,17 @@ async def session():
 
 @pytest_asyncio.fixture
 async def clean_db():
-    """Bo'sh baza (jadvallar yaratilgan, ma'lumot yo'q)."""
+    """Bo'sh baza (jadvallar qaytadan yaratilgan, ma'lumot yo'q).
+
+    Diqqat: jadvallar **o'chirilib** qayta yaratiladi — shunda oldingi
+    testlar qoldirgan yozuvlar bu testga ta'sir qilmaydi (test tartibidan
+    mustaqillik).
+    """
+    from app.db.base import get_engine
+
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
     await create_all()
     yield
     await dispose_engine()

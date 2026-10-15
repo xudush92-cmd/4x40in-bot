@@ -8,7 +8,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0 ✅ + Phase 1 ✅ + Phase 2 (sotuvchi, tarif, obuna) ✅**
+## 📌 Hozirgi holat: **Phase 0 ✅ · Phase 1 ✅ · Phase 2 ✅ · Phase 3 (e'lonlar va moderatsiya) ✅**
 
 | Ish | Holat |
 |---|---|
@@ -46,8 +46,20 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | 💰 Narx kiritish "odam tilida": `150 000`, `150,000`, `150.000`, `150000 so'm` — hammasi to'g'ri o'qiladi, panelda "150 000 so'm" chiqadi | ✅ |
 | 🧪 Testlar: **jami 164 o'tadi** (12 sotuvchi + 24 tarif/obuna + 24 E2E oqim + Phase 0/1 testlari) | ✅ |
 
-**Keyingi bosqich (Phase 3):** e'lonlar va moderatsiya (e'lon ustasi, rasmlar/albom,
-tasdiqlash rejimi, "Mening e'lonlarim").
+### Phase 3 — e'lonlar va moderatsiya ✅
+
+| Ish | Holat |
+|---|---|
+| ➕ **E'lon ustasi**: toifa → sarlavha → tavsif → narx → aloqa → rasmlar → ko'rish → yuborish (har qadamda ⬅️ orqaga / ⏭ o'tkazib yuborish / ❌ bekor) | ✅ |
+| 📢 **Mening e'lonlarim**: ro'yxat (sahifa + holat filtri), kartochka, statistika, tahrirlash, ⏸ pauza / ▶️ yoqish, 🗑 o'chirish (tasdiq bilan) | ✅ |
+| 🖼 **Rasmlar**: Telegram `file_id` (disk tejash), tarifdagi rasm limiti, qo'shish/o'chirish | ✅ |
+| ✅ **Moderatsiya**: «🕓 Tekshiruvda» navbati, rasmlar bilan kartochka, tasdiqlash, ❌ rad etish (6 tayyor sabab yoki qo'lda) — rad etilganda limit qaytariladi | ✅ |
+| 📢 **E'lonlar (admin)**: barcha e'lonlar holat bo'yicha filtr bilan, pauza/yoqish, o'chirish, 🕘 moderatsiya tarixi | ✅ |
+| 🔔 Xabarnomalar: yangi e'lon → adminlarga; tasdiq/rad/to'xtatish → sotuvchiga | ✅ |
+| 🧪 Testlar: **jami 221 o'tadi** (30 e'lon servisi + 27 E2E oqim + oldingi bosqichlar) | ✅ |
+
+**Keyingi bosqich (Phase 4):** aylanma joylash dvigateli — e'lonlar guruhlarga avtomatik
+navbat bilan ketadi (interval, jitter, tinch soatlar, kunlik limit, «hoziroq joylash»).
 
 ---
 
@@ -148,19 +160,19 @@ SHOP_BOT/
 │   │   └── models.py        # 41 jadval (REJA.md 4-bo'lim)
 │   ├── handlers/
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
-│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs
-│   │   ├── seller/          # sotuvchi paneli (mening tarifim, katalog, referal)
+│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs, mods
+│   │   ├── seller/          # sotuvchi paneli + ads.py (e'lon ustasi, ro'yxat)
 │   │   └── group/           # lifecycle.py (bot qo'shildi/chiqarildi)
 │   ├── keyboards/           # admin klaviaturalar + callback fabrikalari
 │   ├── middlewares/         # db, user_context, throttling, maintenance
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
 │   ├── services/            # settings, text, group, category, seller, tariff,
-│   │                        # subscription, notify, stats
+│   │                        # subscription, ad, notify, stats
 │   ├── scheduler/           # jobs.py (vazifalar), runner.py (APScheduler)
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 164 test (offline E2E + servis testlari)
+├── tests/                   # 221 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -235,8 +247,8 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 | 0 | Poydevor: Docker, DB, kesh, loglar, health, panel skeleti | ✅ **Bajarildi** |
 | 1 | Guruhlar va toifalar (CRUD, interval, pauza, biriktirish) | ✅ **Bajarildi** |
 | 2 | Sotuvchilar, tariflar, obunalar, eslatmalar | ✅ **Bajarildi** |
-| 3 | E'lonlar: usta, rasmlar/albom, moderatsiya | ⏳ Keyingi |
-| 4 | **Aylanma joylash dvigateli** | ⏸ |
+| 3 | E'lonlar: usta, rasmlar/albom, moderatsiya | ✅ **Bajarildi** |
+| 4 | **Aylanma joylash dvigateli** | ⏳ Keyingi |
 | 5 | To'lovlar (chek → tasdiq → obuna) | ⏸ |
 | 6 | Posbon + tozalovchi + ruxsatlar | ⏸ |
 | 7 | Sanoqchi (invite linklar, majburiy obuna) | ⏸ |

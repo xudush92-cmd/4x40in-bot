@@ -1,12 +1,12 @@
 """🛒 Sotuvchi paneli (Phase 2 → 3).
 
-Phase 2 da to'liq ishlaydigan qism:
+Ishlaydigan qismlar:
   * 📅 Mening tarifim — tarif, muddat, qolgan kun, limit, eslatma holati
+  * 📢 Mening e'lonlarim — ro'yxat, kartochka, statistika (Phase 3)
+  * ➕ Yangi e'lon — usta: toifa → matn → narx → aloqa → rasmlar → yuborish (Phase 3)
   * 💳 Tariflarni ko'rish — katalog (to'lov va chek Phase 5 da)
   * ☎️ Yordam — admin bilan bog'lanish
   * 🎁 Referal — kod va havola (bonuslar Phase 8 da)
-
-Phase 3 da qo'shiladi: e'lon qo'shish ustasi va "Mening e'lonlarim".
 
 Diqqat: sotuvchi yozuvi `seller_service.get_seller()` orqali olinadi —
 `users` jadvali bilan FK yo'q (REJA.md 4.3), shuning uchun middleware
@@ -16,6 +16,7 @@ faqat `user` ni beradi.
 from __future__ import annotations
 
 from aiogram import F, Router
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from app.keyboards.seller_panel import (
     tariff_screen_kb,
     tariffs_catalog_kb,
 )
+from app.handlers.seller import ads as ad_handlers
 from app.services import seller_service, subscription_service, tariff_service
 from app.services.settings_service import settings_service
 from app.utils.text import escape_html, fmt_amount, truncate
@@ -39,10 +41,11 @@ seller_router = Router(name="seller")
 # Faqat sotuvchi, faqat shaxsiy chat, faqat sotuvchi paneli callback'lari
 seller_router.callback_query.filter(SellerPanelCB.filter(), PrivateChat(), IsSeller())
 
-PENDING_PHASES = {
-    "ads": ("📢 Mening e'lonlarim", 3),
-    "new_ad": ("➕ Yangi e'lon", 3),
-}
+# Eslatma: `ad_handlers.router` SHU router ichiga qo'shilmaydi!
+# `seller_router.callback_query.filter(SellerPanelCB...)` — router darajasidagi
+# filtr bo'lib, u **barcha** ichki router'larga ham qo'llanadi (aiogram:
+# `check_root_filters` sub-router'lardan oldin ishlaydi). Shuning uchun e'lon
+# router'i `app/handlers/__init__.py` da alohida ulanadi.
 
 
 # ═══════════════════════════ Yordamchilar ═════════════════════════
@@ -230,11 +233,16 @@ async def on_support(callback: CallbackQuery, session: AsyncSession) -> None:
     await alert(callback, "")
 
 
-@seller_router.callback_query(SellerPanelCB.filter(F.action.in_(set(PENDING_PHASES))))
-async def on_pending_sections(callback: CallbackQuery, callback_data: SellerPanelCB) -> None:
-    """E'lon bo'limlari — Phase 3 da to'liq ishga tushadi."""
-    title, phase = PENDING_PHASES[callback_data.action]
-    await alert(callback, f"{title} — Phase {phase} da qo'shiladi.", show=True)
+@seller_router.callback_query(SellerPanelCB.filter(F.action == "ads"))
+async def on_my_ads(callback: CallbackQuery, session: AsyncSession) -> None:
+    """📢 Mening e'lonlarim (Phase 3)."""
+    await ad_handlers.open_ads_list(callback, session)
+
+
+@seller_router.callback_query(SellerPanelCB.filter(F.action == "new_ad"))
+async def on_new_ad(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    """➕ Yangi e'lon ustasi (Phase 3)."""
+    await ad_handlers.start_ad_wizard(callback, session, state)
 
 
 # ═══════════════════ Tashqi foydalanish uchun ══════════════════════
@@ -259,5 +267,5 @@ def seller_balance_line(seller: Seller) -> str:
     return f"💵 Balans: {fmt_amount(seller.balance)}"
 
 
-__all__ = ["seller_balance_line", "seller_router", "seller_status_text"]
+__all__ = ["ad_handlers", "seller_balance_line", "seller_router", "seller_status_text"]
 _ = logger

@@ -459,7 +459,10 @@ class Ad(Base, TimestampMixin):
         """E'lon izohi (albom izohi / xabar matni)."""
         lines = [f"<b>{self.title}</b>"]
         if self.price is not None:
-            lines.append(f"💰 Narx: <b>{self.price:,.0f} {self.currency}</b>".replace(",", " "))
+            # Valyuta belgisi (`so'm`, `$`, ...) — `fmt_amount` orqali (app/utils/text.py)
+            from app.utils.text import fmt_amount
+
+            lines.append(f"💰 Narx: <b>{fmt_amount(self.price, self.currency or 'UZS')}</b>")
         if self.description:
             lines.append(f"\n{self.description}")
         if self.contact_value and self.contact_type == "phone":

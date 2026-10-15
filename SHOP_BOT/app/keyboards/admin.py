@@ -37,7 +37,16 @@ ADMIN_SECTIONS: list[tuple[str, str, int]] = [
 SECTION_TITLES: dict[str, str] = {key: label for key, label, _ in ADMIN_SECTIONS}
 SECTION_PHASES: dict[str, int] = {key: phase for key, _, phase in ADMIN_SECTIONS}
 
-READY_SECTIONS = {"stats", "settings", "groups", "categories", "sellers", "tariffs"}
+READY_SECTIONS = {
+    "stats",
+    "settings",
+    "groups",
+    "categories",
+    "sellers",
+    "tariffs",
+    "ads",
+    "moderation",
+}
 
 
 # Qaysi bo'limlarga raqamli hisoblagich qo'shiladi

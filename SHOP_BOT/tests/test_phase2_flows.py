@@ -444,16 +444,22 @@ async def test_seller_sees_active_tariff(session, tg) -> None:
     menu = fake.edited_texts()[-1]
     assert "Biznes" in menu and "0/10" in menu
 
-    # Faol obuna bo'lsa — "Yangi e'lon" tugmasi ko'rinadi (Phase 3 gacha stub)
+    # Faol obuna bo'lsa — "Yangi e'lon" tugmasi ko'rinadi (Phase 3 da ishga tushdi)
     markup = fake.called("EditMessageText")[-1]["reply_markup"]
     labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
     assert any("Yangi e'lon" in label for label in labels)
 
-    # Stub bo'lim — Phase 3 haqida ogohlantiradi
+    # 📢 Mening e'lonlarim (Phase 3) — bo'sh ro'yxat
     await _feed(
-        session, dp, bot, 3, callback_update(SellerPanelCB(action="new_ad").pack(), user_id=SELLER_ID)
+        session, dp, bot, 3, callback_update(SellerPanelCB(action="ads").pack(), user_id=SELLER_ID)
     )
-    assert any("Phase 3" in answer for answer in fake.answers())
+    assert "Mening e'lonlarim" in fake.edited_texts()[-1]
+
+    # ➕ Yangi e'lon (Phase 3): faol toifa yo'q → ogohlantirish
+    await _feed(
+        session, dp, bot, 4, callback_update(SellerPanelCB(action="new_ad").pack(), user_id=SELLER_ID)
+    )
+    assert any("toifa" in answer.lower() for answer in fake.answers())
 
 
 async def test_seller_catalog_and_support(session, tg) -> None:

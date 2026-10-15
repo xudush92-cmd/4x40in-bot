@@ -119,7 +119,7 @@ async def test_ad_caption_rendering(session) -> None:
 
     caption = ad.caption
     assert "iPhone 15 Pro" in caption
-    assert "12 500 000 UZS" in caption
+    assert "12 500 000 so'm" in caption       # valyuta belgisi (Phase 2-3 tuzatishi)
     assert "#Telefonlar" in caption
     assert len(ad.photos) == 1
 

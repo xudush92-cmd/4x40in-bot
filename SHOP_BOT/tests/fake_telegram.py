@@ -22,6 +22,7 @@ from aiogram.types import (
     ChatMemberMember,
     ChatMemberUpdated,
     Message,
+    PhotoSize,
     Update,
     User as TgUser,
 )
@@ -228,6 +229,38 @@ def text_update(text: str, *, user_id: int = ADMIN_ID, update_id: int = 1) -> Up
             chat=private_chat(user_id),
             from_user=admin_user(user_id),
             text=text,
+        ),
+    )
+
+
+def photo_update(
+    *,
+    file_id: str = "AgADfake-photo",
+    file_unique_id: str | None = None,
+    caption: str | None = None,
+    user_id: int = ADMIN_ID,
+    update_id: int = 1,
+    width: int = 1280,
+    height: int = 960,
+) -> Update:
+    """Private chatda yuborilgan rasm (e'lon ustasi uchun).
+
+    `file_id` dan `file_unique_id` avtomatik yasaladi (Telegram'da ular
+    har xil, lekin testda izchil bo'lishi yetarli).
+    """
+    unique = file_unique_id or f"AQAD{abs(hash(file_id)) % 10**12}"
+    return Update(
+        update_id=update_id,
+        message=Message(
+            message_id=3000 + update_id,
+            date=datetime.now(UTC),
+            chat=private_chat(user_id),
+            from_user=admin_user(user_id),
+            caption=caption,
+            photo=[
+                PhotoSize(file_id=file_id, file_unique_id=unique, width=90, height=67),
+                PhotoSize(file_id=file_id, file_unique_id=unique, width=width, height=height),
+            ],
         ),
     )
 

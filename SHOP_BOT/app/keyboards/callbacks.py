@@ -94,3 +94,34 @@ class SellerPanelCB(CallbackData, prefix="sp"):
 
     action: str = "menu"
     value: str = "-"
+
+
+class AdCB(CallbackData, prefix="ad"):
+    """📢 E'lonlar (sotuvchi tomoni).
+
+    action: list | card | new | edit | preview | send | pause | resume |
+            delete | delete_confirm | stats | filter | photos | photo_del |
+            e_title | e_desc | e_price | e_contact | e_cat |
+            wiz_cat | wiz_back | wiz_skip | wiz_done | wiz_send | wiz_cancel |
+            c_type
+    ad_id: e'lon ID (usta boshida 0 — hali yaratilmagan)
+    value: sahifa|filtr yoki qo'shimcha parametr
+    """
+
+    action: str
+    ad_id: int = 0
+    value: str = "-"
+
+
+class ModCB(CallbackData, prefix="mod"):
+    """✅ Moderatsiya (admin tomoni).
+
+    action: list | card | approve | reject | reason | history | ads | ads_card |
+            pause | resume | delete | delete_confirm | filter | page
+    ad_id: e'lon ID
+    value: sahifa|filtr yoki sabab kaliti
+    """
+
+    action: str
+    ad_id: int = 0
+    value: str = "-"

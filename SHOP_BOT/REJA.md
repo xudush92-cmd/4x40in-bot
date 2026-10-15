@@ -778,6 +778,48 @@ seed toza bazada: **25 sozlama**, **26 matn**, 3 namuna tarif.
 "Tekshiruvda → Tasdiqlangan/Rad etilgan" rejimi, "Mening e'lonlarim", e'lon limitini
 obunadan tekshirish).
 
+### ✅ Phase 3 — BAJARILDI (2026-10-15)
+
+| Bajarilgan ish | Fayl |
+|---|---|
+| **E'lon ustasi** (sotuvchi): toifa → sarlavha → tavsif → narx → aloqa → rasmlar → ko'rish (preview) → yuborish; har qadamda ⬅️ Orqaga / ⏭ O'tkazib yuborish / ❌ Bekor qilish | `app/handlers/seller/ads.py`, `app/keyboards/ads.py`, `app/states.py` |
+| **«Mening e'lonlarim»**: ro'yxat (sahifalash + holat filtri), kartochka, statistika (necha marta joylandi, nechta guruh), tahrirlash (sarlavha/tavsif/narx/aloqa/toifa), pauza↔yoqish, o'chirish (tasdiq bilan) | `app/handlers/seller/ads.py` |
+| **Rasmlar**: faqat `file_id` saqlanadi (disk tejash), tarifdagi `max_photos` bilan cheklanadi, qo'shish/o'chirish va qayta raqamlash, albom chegarasi (10) hisobga olingan | `app/services/ad_service.py` |
+| **Moderatsiya**: "Tekshiruvda" navbati, e'lon kartochkasi **rasmlari bilan** (albom + alohida tugmalar xabari), ✅ Tasdiqlash, ❌ Rad etish (6 tayyor sabab yoki qo'lda yozish), rad etilganda **limit qaytariladi** | `app/handlers/admin/mods.py`, `app/keyboards/mods.py` |
+| **📢 E'lonlar (admin)**: barcha e'lonlar holat bo'yicha filtr bilan, kartochka, pauza/yoqish, o'chirish, 🕘 moderatsiya tarixi (kim/qachon/sabab) | `app/handlers/admin/mods.py` |
+| Servis qatlami: qoralama, maydon tekshiruvlari, navbat pozitsiyasi (100, 200, 300...), yuborish (limitdan hisoblash), tasdiq/rad, tahrir mantiqi (`draft`→qayta yuborish, `active`→jurnalga "revised") | `app/services/ad_service.py` |
+| Sotuvchi e'lon yuborganda **adminlarga xabar**; tasdiq/rad/to'xtatishda **sotuvchiga xabar** (matnlar bazasidan) | `app/handlers/seller/ads.py`, `app/services/text_service.py` |
+| Yangi matnlar: `ad.submitted`, `ad.approved`, `ad.rejected`, `ad.paused` (jami 26 → **30**) | `app/services/text_service.py` |
+| Panel: «📢 E'lonlar» va «✅ Moderatsiya» bo'limlari ishga tushdi (tugmalarda hisoblagichlar allaqachon bor edi) | `app/keyboards/admin.py`, `app/handlers/admin/panel.py` |
+| **Jami 221 test — hammasi o'tadi** | `pytest` |
+
+**Testlar tarkibi (Phase 3 qo'shgani):**
+
+| Test fayli | Nima tekshiradi | Soni |
+|---|---|---|
+| `tests/test_ad_service.py` | Qoralama, maydon tekshiruvlari, narx/caption, rasm limiti (tarif va global sozlama), yuborish (avto-tasdiq/moderatsiya), limit tugashi, tasdiq/rad + limit qaytarilishi, pauza, o'chirish, navbat tartibi (`move`/`renumber`), statistika | 30 |
+| `tests/test_phase3_flows.py` | **E2E**: sotuvchi tugmalarni bosib e'lon yaratadi (rasm bilan), tahrirlab qayta yuboradi, rad etilganini tuzatadi; admin moderatsiyadan o'tkazadi (sabab bilan), filtrlarni bosadi; huquq cheklovlari | 27 |
+
+**Yo'l-yo'lakay topilgan va tuzatilgan xatolar (Phase 3):**
+
+| # | Xato | Oqibati | Yechim |
+|---|---|---|---|
+| 1 | E'lon izohida narx **"12 500 000 UZS"** ko'rinishida chiqardi | Guruhga chiqadigan postda o'zbek foydalanuvchisi uchun tushunarsiz valyuta kodi | `Ad.caption` endi `fmt_amount` ishlatadi → "12 500 000 so'm" |
+| 2 | E'lon router'i sotuvchi paneli router'i **ichiga** qo'shilgan edi | aiogram'da router darajasidagi filtr (`SellerPanelCB.filter()`) **barcha ichki router'larga** qo'llanadi → `ad:` callback'lari umuman ishlamasdi (jimgina "unhandled") | E'lon router'i root darajasida alohida ulanadi (`app/handlers/__init__.py`) — sabab kodda izoh bilan yozilgan |
+| 3 | `_do_reject()` da `await ... if seller else False` ko'rinishidagi ifoda | Rad etish yo'li mantiqiy xato bilan yozilgan edi (sotuvchi topilmasa jim o'tardi) | Aniq tekshiruvlarga bo'lindi (sotuvchi yo'q / holat mos emas) |
+| 4 | `filterlar` qatori klaviaturaga **ro'yxat ichida ro'yxat** bo'lib qo'shilardi | Telegram `InlineKeyboardMarkup` xato berardi (ro'yxat ekrani ochilmasdi) | `rows.append(...)` → `rows.extend(...)` |
+| 5 | `_category()` test yordamchisi bir xil `tg_chat_id` bilan guruh yaratardi | Ikkinchi toifa qo'shilganda unique constraint → test yiqilardi | Guruh qayta ishlatiladi (test yordamchisi) |
+| 6 | `clean_text(reason, 300)` — ikkinchi argument pozitsion berilgan | `TypeError` (funksiya uni keyword-only kutadi) | `clean_text(reason, limit=300)` |
+
+**Tekshirilgan:** 221 test o'tadi; har bir test fayli **alohida** ham o'tadi (tartibga bog'liqlik yo'q;
+`clean_db` fixture endi jadvallarni to'liq tozalaydi); Alembic autogenerate diff **bo'sh**
+(Phase 3 sxemani o'zgartirmadi); seed: 25 sozlama, **30 matn**, 3 namuna tarif;
+`app.main` importi va router yig'ish ishlaydi.
+
+**Keyingi qadam:** Phase 4 — **Aylanma joylash dvigateli** (navbat kursori, atomar
+`next_post_at`, jitter, tinch soatlar, kunlik limit, "hoziroq joylash", navbat tartibini
+o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
+
 **Jami: ~105-135 soat ish ≈ 14-18 ish kuni** (bitta kishi intensiv ishlasa; men bilan bosqichma-bosqich, real vaqtda tezroq — chunki testimiz parallel ketadi).
 
 **Tez natija uchun MVP varianti (✅ tanlandi):** bosqich **0→5** ni birinchi qilib chiqamiz — shunda **guruh, toifa, sotuvchi, tarif, e'lon, aylanma joylash va to'lov** to'liq ishlaydi va pul ishlay boshlaydi. Keyin 6-9 (posbon, tozalovchi, sanoqchi, referal...) qo'shiladi. Shu tariqa loyihani ~5-6 ish kunida "ishlaydigan" holatga keltirish mumkin.
@@ -819,6 +861,7 @@ obunadan tekshirish).
 2. ✅ 4 ta texnik qaror tasdiqlandi (PostgreSQL+Redis, `SHOP_BOT/`, Docker+webhook, MVP 0→5).
 3. ✅ **Phase 0** (poydevor) yozildi, tekshirildi va taqdim etildi — 58 test o'tdi.
 4. ✅ **Phase 1** (guruhlar va toifalar) yozildi, tekshirildi — 104 test o'tdi.
-5. ✅ **Phase 2** (sotuvchilar, tariflar, obunalar) yozildi, tekshirildi — **164 test o'tdi**.
-6. ⏳ **Phase 3** (e'lonlar va moderatsiya) uchun ruxsat kutilmoqda.
-7. Taxminiy tartib: 3 → 4 → 5 (MVP), so'ng 6 → 7 → 8 → 9.
+5. ✅ **Phase 2** (sotuvchilar, tariflar, obunalar) yozildi, tekshirildi — 164 test o'tdi.
+6. ✅ **Phase 3** (e'lonlar va moderatsiya) yozildi, tekshirildi — **221 test o'tdi**.
+7. ⏳ **Phase 4** (**aylanma joylash dvigateli**) uchun ruxsat kutilmoqda.
+8. Taxminiy tartib: 4 → 5 (MVP), so'ng 6 → 7 → 8 → 9.

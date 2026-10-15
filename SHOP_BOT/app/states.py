@@ -58,7 +58,11 @@ class AdminTariffStates(StatesGroup):
 
 
 class SellerAdStates(StatesGroup):
-    """E'lon qo'shish ustasi (Phase 3)."""
+    """E'lon qo'shish ustasi va tahrirlash (Phase 3).
+
+    Bitta holatlar guruhi ham usta, ham tahrirlash uchun ishlatiladi:
+    ajratish FSM ma'lumotidagi `flow` (`wizard` | `edit`) orqali bo'ladi.
+    """
 
     waiting_category = State()
     waiting_title = State()
@@ -67,6 +71,13 @@ class SellerAdStates(StatesGroup):
     waiting_contact = State()
     waiting_photos = State()
     preview = State()
+
+
+class AdminModerationStates(StatesGroup):
+    """Moderatsiya bo'limi (Phase 3)."""
+
+    choosing_reason = State()   # tayyor sabab tanlanmoqda
+    waiting_reason = State()    # qo'lda yozilgan sabab
 
 
 class AdminTextStates(StatesGroup):

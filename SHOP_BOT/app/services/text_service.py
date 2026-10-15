@@ -98,6 +98,30 @@ DEFAULT_TEXTS: dict[str, str] = {
     "seller.extended": (
         "✅ Tarifingiz {kun} kunga uzaytirildi.\n📅 Yangi muddat: <b>{sana}</b>"
     ),
+    # ── E'lonlar (Phase 3) ──
+    "ad.submitted": (
+        "🕓 <b>Yangi e'lon tekshiruvga tushdi</b>\n\n"
+        "📢 {elon}\n"
+        "🗂 Toifa: {toifa}\n"
+        "👤 Sotuvchi: {sotuvchi}\n\n"
+        "<i>«✅ Moderatsiya» bo'limida ko'rib chiqing.</i>"
+    ),
+    "ad.approved": (
+        "✅ <b>E'loningiz tasdiqlandi!</b>\n\n"
+        "📢 {elon}\n\n"
+        "E'lon navbatga qo'shildi — navbati kelganda guruhlarga joylanadi."
+    ),
+    "ad.rejected": (
+        "❌ <b>E'loningiz rad etildi</b>\n\n"
+        "📢 {elon}\n"
+        "📝 Sabab: {sabab}\n\n"
+        "<i>E'lonni tahrirlab, qaytadan yuborishingiz mumkin.</i>"
+    ),
+    "ad.paused": (
+        "⏸ <b>E'loningiz to'xtatildi</b>\n\n"
+        "📢 {elon}\n\n"
+        "<i>Savol bo'lsa admin bilan bog'laning.</i>"
+    ),
     "notify.payment_received": "📥 <b>Yangi to'lov cheki</b>\n\nSotuvchi: {sotuvchi}\nTarif: {tarif}\nSumma: {summa}",
     "notify.group_paused": "⏸ <b>{guruh}</b> guruhi to'xtatildi.\nSabab: {sabab}",
     "notify.error": "⚠️ <b>Xatolik</b>\nManba: {manba}\nTafsilot: {xato}",
