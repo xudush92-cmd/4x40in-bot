@@ -28,9 +28,10 @@ from app.constants import (
     MAX_INTERVAL_SEC,
     MAX_JITTER_PERCENT,
     MIN_INTERVAL_SEC,
+    AdminRole,
     GroupFeature,
 )
-from app.db.models import Group
+from app.db.models import CleanerSetting, Group
 from app.filters import IsAdmin
 from app.keyboards.callbacks import FeatureCB, GroupCB
 from app.keyboards.common import PER_PAGE_GROUPS, PER_PAGE_MATRIX
@@ -44,7 +45,7 @@ from app.keyboards.groups import (
     groups_list_kb,
     matrix_kb,
 )
-from app.services import category_service, group_service
+from app.services import group_service
 from app.services.group_service import (
     RightsCheck,
     apply_rights_check,
@@ -62,8 +63,8 @@ from app.utils.text import (
     parse_quiet_hours,
     truncate,
 )
-from app.utils.time import fmt_dt
 from app.utils.tg import alert, render
+from app.utils.time import fmt_dt
 
 router = Router(name="admin:groups")
 router.message.filter(IsAdmin())
@@ -179,7 +180,7 @@ def _features_text(group: Group) -> str:
     return "\n".join(lines)
 
 
-def _settings_text(group: Group) -> str:
+def _settings_text(group: Group, *, old_ads_enabled: bool = False) -> str:
     s = group.settings
     if s is None:
         return "⚠️ Sozlamalar topilmadi."
@@ -190,6 +191,7 @@ def _settings_text(group: Group) -> str:
         f"🔀 Jitter: <b>±{s.jitter_percent}%</b>\n"
         f"📆 Kunlik limit: <b>{s.daily_post_limit}</b> xabar\n"
         f"🌙 Tinch soatlar: <b>{fmt_quiet_hours(s.quiet_start, s.quiet_end)}</b>\n"
+        f"🧹 Eski e'lon nusxalari: {'🟢 faqat eng oxirgisi qoladi' if old_ads_enabled else '🔴 o‘chirilmaydi'}\n"
         f"👋 Salomlashuv: {'🟢' if s.welcome_enabled else '🔴'}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"<i>Minimal interval: {MIN_INTERVAL_SEC // 60} daqiqa "
@@ -244,7 +246,10 @@ async def render_settings(target, session: AsyncSession, group_id: int) -> None:
     if group is None:
         await render(target, "⚠️ Guruh topilmadi.")
         return
-    await render(target, _settings_text(group), group_settings_kb(group))
+    policy = await session.get(CleanerSetting, group_id)
+    old_ads = bool(policy and policy.enabled and policy.delete_old_ads)
+    await render(target, _settings_text(group, old_ads_enabled=old_ads),
+                 group_settings_kb(group, old_ads_enabled=old_ads))
 
 
 async def render_matrix(target, session: AsyncSession, page: int = 0) -> None:
@@ -365,6 +370,31 @@ async def on_setting_toggle(
 
 
 # ═══════════════════════════ Sozlamalar ════════════════════════════
+@router.callback_query(GroupCB.filter(F.action == "old_ads"), IsAdmin(AdminRole.ADMIN))
+async def on_old_ads(callback: CallbackQuery, callback_data: GroupCB, session: AsyncSession) -> None:
+    """Phase 4 tozalash: bitta e'londan guruhda oxirgi nusxa qolsin."""
+    group = await group_service.get_group(session, callback_data.group_id)
+    if group is None:
+        await alert(callback, "⚠️ Guruh topilmadi.", show=True)
+        return
+    policy = await session.get(CleanerSetting, group.id)
+    if policy is None:
+        policy = CleanerSetting(group_id=group.id, enabled=True, delete_old_ads=True, keep_last_ads=1)
+        session.add(policy)
+    else:
+        was_on = bool(policy.enabled and policy.delete_old_ads)
+        policy.enabled = True
+        policy.delete_old_ads = not was_on
+    await session.flush()
+    await render_settings(callback, session, group.id)
+    await alert(callback, "🧹 Eski nusxalarni o'chirish " + ("yoqildi" if policy.delete_old_ads else "o'chirildi"))
+
+
+@router.callback_query(GroupCB.filter(F.action == "old_ads"))
+async def on_old_ads_denied(callback: CallbackQuery) -> None:
+    await alert(callback, "⛔️ Buni faqat admin sozlay oladi.", show=True)
+
+
 @router.callback_query(GroupCB.filter(F.action == "settings"))
 async def on_settings(callback: CallbackQuery, callback_data: GroupCB, session: AsyncSession) -> None:
     await render_settings(callback, session, callback_data.group_id)

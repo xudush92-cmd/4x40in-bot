@@ -10,7 +10,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0 ✅ · Phase 1 ✅ · Phase 2 ✅ · Phase 3 (e'lonlar va moderatsiya) ✅**
+## 📌 Hozirgi holat: **Phase 0–4 ✅ · Keyingisi: Phase 5 (to'lovlar, ruxsat kutilmoqda)**
 
 | Ish | Holat |
 |---|---|
@@ -60,8 +60,18 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | 🔔 Xabarnomalar: yangi e'lon → adminlarga; tasdiq/rad/to'xtatish → sotuvchiga | ✅ |
 | 🧪 Testlar: **jami 221 o'tadi** (30 e'lon servisi + 27 E2E oqim + oldingi bosqichlar) | ✅ |
 
-**Keyingi bosqich (Phase 4):** aylanma joylash dvigateli — e'lonlar guruhlarga avtomatik
-navbat bilan ketadi (interval, jitter, tinch soatlar, kunlik limit, «hoziroq joylash»).
+### Phase 4 — aylanma joylash ✅
+
+| Ish | Holat |
+|---|---|
+| ⏱ Tasdiqlangan e'lonlar avtomatik navbat bilan ketadi: guruh/toifa intervali, jitter, tinch soatlar, kunlik limit | ✅ |
+| 🛡 Atomar DB band qilish (multi-worker), Redis tezlik cheklovi, noma'lum Telegram natijasida dublikatdan himoya | ✅ |
+| 🖼 Surat albomi + «Sotuvchi bilan bog'lanish» tugmasi, post tarixi/statistika, eski nusxalarni ixtiyoriy o'chirish | ✅ |
+| 🎛 Admin navbati, ⬆️⬇️ tartib, «Hoziroq joylash»; moderatorga cheklov | ✅ |
+| 🧪 **258 ta offline test**: servis, soxta Telegram E2E, limiter va oldingi bosqichlar | ✅ |
+
+**Keyingi bosqich (Phase 5):** to'lovlar — faqat foydalanuvchining alohida ruxsati bilan.
+Haqiqiy Telegram supergroup va PostgreSQL/Redis deploy sinovlari hali o'tkazilmagan.
 
 ---
 
@@ -125,7 +135,7 @@ python -m app.main            # ishga tushirish
 Testlar:
 
 ```bash
-pytest                        # 58 test (SQLite'da, tarmoqsiz ishlaydi)
+pytest                        # 258 test (SQLite'da, tarmoqsiz ishlaydi)
 pytest -v --tb=short          # batafsil
 ```
 
@@ -162,19 +172,19 @@ SHOP_BOT/
 │   │   └── models.py        # 41 jadval (REJA.md 4-bo'lim)
 │   ├── handlers/
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
-│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs, mods
+│   │   ├── admin/           # panel, settings, groups, categories, sellers, tariffs, mods, posting
 │   │   ├── seller/          # sotuvchi paneli + ads.py (e'lon ustasi, ro'yxat)
 │   │   └── group/           # lifecycle.py (bot qo'shildi/chiqarildi)
 │   ├── keyboards/           # admin klaviaturalar + callback fabrikalari
 │   ├── middlewares/         # db, user_context, throttling, maintenance
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
 │   ├── services/            # settings, text, group, category, seller, tariff,
-│   │                        # subscription, ad, notify, stats
-│   ├── scheduler/           # jobs.py (vazifalar), runner.py (APScheduler)
+│   │                        # subscription, ad, posting, posting_limiter, notify, stats
+│   ├── scheduler/           # jobs.py, poster.py (Telegram), runner.py (APScheduler)
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 221 test (offline E2E + servis testlari)
+├── tests/                   # 258 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile

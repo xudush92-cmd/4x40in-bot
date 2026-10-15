@@ -1,20 +1,14 @@
 """Rejalashtirilgan vazifalar (APScheduler job'lari).
 
-Phase 0 da ishlaydiganlari:
-  * heartbeat      — tizim "tirik" ekanini Redis'ga yozish
-  * rights_check   — bot admin huquqini yo'qotgan guruhlarni to'xtatish (REJA.md 8.7)
-  * retention      — eski loglarni tozalash (REJA.md 11.1)
-  * daily_stats    — kunlik statistika jamlanmasi (REJA.md 4.9)
-
-Keyingi bosqichlarda qo'shiladi:
-  * posting_tick   — aylanma joylash (Phase 4)
+  * heartbeat, rights_check, retention, daily_stats
+  * posting_tick   — har 10 sekundda Phase 4 joylash dvigateli
   * reminders      — tarif eslatmalari (Phase 2)
-  * referral/bonus — bonus hisoblash (Phase 8)
+  * referral/bonus — keyingi bosqich (Phase 8)
 """
 
 from __future__ import annotations
 
-import time
+import asyncio
 from datetime import timedelta
 
 from aiogram import Bot
@@ -28,24 +22,21 @@ from app.db.models import (
     CleanupLog,
     ErrorLog,
     Group,
-    GroupRotation,
     GroupSettings,
     Payment,
     PostLog,
     Seller,
     StatsDaily,
-    Subscription,
     Violation,
 )
 from app.redis_client import redis_manager
-from app.services import seller_service, subscription_service, tariff_service
+from app.scheduler.poster import post_group
+from app.services import posting_service, seller_service, subscription_service
 from app.services.group_service import apply_rights_check, check_group_rights
-from app.services.notify import notify_admins
+from app.services.notify import notify_admins, save_error
 from app.services.settings_service import settings_service
 from app.services.text_service import text_service
 from app.utils.time import fmt_date, utcnow
-
-_last_posting_notice = 0.0
 
 
 async def heartbeat_job() -> None:
@@ -57,40 +48,31 @@ async def heartbeat_job() -> None:
 
 
 async def posting_tick_job(bot: Bot) -> None:
-    """Aylanma joylash tick'i.
-
-    Phase 0 da: navbatga tayyor guruhlar bor-yo'qligini hisoblaydi.
-    Haqiqiy joylash mantig'i Phase 4 da qo'shiladi (REJA.md 9).
-    """
-    global _last_posting_notice
-
-    if not await settings_service.is_feature_enabled("posting"):
+    """Har 10 sekundda tayyor guruhlar; bitta xato qolganlarini to'xtatmaydi."""
+    now = utcnow()
+    if not await settings_service.is_feature_enabled("posting") or await settings_service.get("maintenance_mode", False):
+        # Pauza davomida eski due vaqtlar qarzga aylanmasin.
+        async with session_scope() as session:
+            await posting_service.rebase_paused(session, now, limit=1000)
         return
 
-    now = utcnow()
     async with session_scope() as session:
-        due = (
-            await session.execute(
-                select(func.count())
-                .select_from(GroupRotation)
-                .join(Group, Group.id == GroupRotation.group_id)
-                .join(GroupSettings, GroupSettings.group_id == Group.id)
-                .where(
-                    Group.is_active.is_(True),
-                    GroupSettings.posting_enabled.is_(True),
-                    GroupRotation.next_post_at.is_not(None),
-                    GroupRotation.next_post_at <= now,
-                )
-            )
-        ).scalar_one()
+        due = await posting_service.due_group_ids(session, now)
+    limiter = asyncio.Semaphore(10)  # 1000 guruhda Bot API kutishlari parallel, DB claim alohida
 
-    if due and time.monotonic() - _last_posting_notice > 300:
-        _last_posting_notice = time.monotonic()
-        logger.info(
-            "{} ta guruhda joylash vaqti keldi — aylanma dvigatel Phase 4 da ulanadi",
-            due,
-        )
-    _ = bot
+    async def _one(group_id: int) -> None:
+        async with limiter:
+            try:
+                await post_group(bot, group_id)
+            except Exception as exc:
+                logger.exception("Poster job xatosi (guruh={}): {}", group_id, exc)
+                await save_error(None, "poster", f"{type(exc).__name__}: {exc}", exc=exc, group_id=group_id)
+                try:
+                    await notify_admins(bot, f"⚠️ Poster xatosi (guruh #{group_id}): {type(exc).__name__}")
+                except Exception:
+                    pass
+
+    await asyncio.gather(*(_one(group_id) for group_id in due))
 
 
 async def rights_check_job(bot: Bot) -> None:
@@ -156,7 +138,7 @@ async def daily_stats_job() -> None:
         posts = (
             await session.execute(
                 select(func.count()).select_from(PostLog).where(
-                    PostLog.created_at >= start, PostLog.created_at < end
+                    PostLog.status == "ok", PostLog.created_at >= start, PostLog.created_at < end
                 )
             )
         ).scalar_one()
@@ -241,7 +223,6 @@ async def subscription_reminders_job(bot: Bot) -> None:
     Eslatma bir marta yuboriladi (`reminder_sent_at`), muddati o'tgani haqidagi
     xabar ham bir marta (`expired_notified_at`).
     """
-    from app.handlers.seller import seller_status_text  # aylanma importdan qochish
 
     sent_reminders = 0
     sent_expired = 0
@@ -257,7 +238,6 @@ async def subscription_reminders_job(bot: Bot) -> None:
                 subscription_service.mark_reminded(subscription)
                 continue
 
-            tariff = await tariff_service.get_tariff(session, subscription.tariff_id)
             text = await text_service.get(
                 "seller.subscription_reminder",
                 kun=max(0, subscription_service.days_left(subscription)),

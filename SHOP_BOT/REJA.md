@@ -707,7 +707,7 @@ pauza/yoqish, toifa biriktirish, funksiya tumbleri).
 |---|---|
 | Guruhlar bo'limi: ro'yxat, kartochka, huquqlar tekshiruvi, pauza/yoqish, o'chirish (tasdiq bilan) | `app/handlers/admin/groups.py`, `app/keyboards/groups.py` |
 | Funksiyalar boshqaruvi: **matritsa** (barcha guruhlar × 5 funksiya), tumblerlar, ekran moslamasi (`origin`) | `app/keyboards/groups.py`, `app/keyboards/callbacks.py` |
-| Guruh sozlamalari (FSM): interval (1–1440 daq), jitter (0–50%), kunlik limit, tinch soatlar (`23:00-08:00` / `off`) | `app/handlers/admin/groups.py`, `app/states.py`, `app/utils/text.py` |
+| Guruh sozlamalari (FSM): interval (1–1440 daq), jitter (0–30%), kunlik limit, tinch soatlar (`23:00-08:00` / `off`) | `app/handlers/admin/groups.py`, `app/states.py`, `app/utils/text.py` |
 | Toifalar bo'limi: yaratish (emoji bilan), nomini o'zgartirish, guruhga biriktirish/uzish, alohida interval, moderatsiya rejimi, tartibni o'zgartirish, o'chirish | `app/handlers/admin/categories.py`, `app/services/category_service.py`, `app/keyboards/categories.py` |
 | Servis qatlami: huquq tekshiruvi (`RightsCheck`), guruh CRUD, toifa CRUD + navbat kursori (`category_rotation`) | `app/services/group_service.py`, `app/services/category_service.py` |
 | Panel: bo'lim tugmalarida jonli hisoblagichlar (guruhlar, toifalar, to'lovlar, xatolar...) | `app/keyboards/admin.py`, `app/services/stats_service.py` |
@@ -867,5 +867,5 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 4. ✅ **Phase 1** (guruhlar va toifalar) yozildi, tekshirildi — 104 test o'tdi.
 5. ✅ **Phase 2** (sotuvchilar, tariflar, obunalar) yozildi, tekshirildi — 164 test o'tdi.
 6. ✅ **Phase 3** (e'lonlar va moderatsiya) yozildi, tekshirildi — **221 test o'tdi**.
-7. ⏳ **Phase 4** (**aylanma joylash dvigateli**) uchun ruxsat kutilmoqda.
-8. Taxminiy tartib: 4 → 5 (MVP), so'ng 6 → 7 → 8 → 9.
+7. ✅ **Phase 4** (aylanma joylash dvigateli) yozildi, tekshirildi — **258 offline test o'tdi**. Tafsilot: `HOLAT.md`.
+8. ⏳ **Phase 5** (to'lovlar) uchun alohida ruxsat kutilmoqda; keyin 6 → 7 → 8 → 9.

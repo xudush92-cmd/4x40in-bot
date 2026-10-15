@@ -113,6 +113,17 @@ class AdCB(CallbackData, prefix="ad"):
     value: str = "-"
 
 
+class PostingCB(CallbackData, prefix="pst"):
+    """Phase 4: group (guruh toifalari) | queue | up | down | send.
+
+    `target_id` group/category/ad ID; up/down.value = category_id|page.
+    """
+
+    action: str
+    target_id: int = 0
+    value: str = "0"
+
+
 class ModCB(CallbackData, prefix="mod"):
     """✅ Moderatsiya (admin tomoni).
 

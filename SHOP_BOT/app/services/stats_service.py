@@ -67,7 +67,7 @@ async def get_overview(session: AsyncSession) -> dict[str, Any]:
         ),
         "payments_pending": await _count(session, Payment, Payment.status == PaymentStatus.PENDING),
         "payments_week_sum": float(approved_sum or 0),
-        "posts_24h": await _count(session, PostLog, PostLog.created_at >= day_ago),
+        "posts_24h": await _count(session, PostLog, PostLog.status == "ok", PostLog.created_at >= day_ago),
         "violations_24h": await _count(session, Violation, Violation.created_at >= day_ago),
         "errors_unresolved": await _count(session, ErrorLog, ErrorLog.resolved_at.is_(None)),
     }

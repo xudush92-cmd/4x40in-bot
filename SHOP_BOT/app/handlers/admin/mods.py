@@ -43,8 +43,8 @@ from app.services import ad_service, seller_service
 from app.services.text_service import text_service
 from app.states import AdminModerationStates
 from app.utils.text import escape_html, truncate
-from app.utils.time import fmt_date, human_delta
 from app.utils.tg import alert, render
+from app.utils.time import fmt_date, human_delta
 
 router = Router(name="admin:moderation")
 router.message.filter(IsAdmin(AdminRole.MODERATOR), StateFilter(AdminModerationStates))
@@ -423,18 +423,22 @@ async def _render_ad_card(
     *,
     page: int = 0,
     status: str = "all",
+    role: str | None = None,
 ) -> None:
     """Admin kartochkasini chizish (rasmlar bilan)."""
     text = await _ad_card_text(session, ad, for_moderation=ad.status == AdStatus.PENDING)
     message = callback.message
     if message is not None and ad.photos:
         await _send_ad_photos(message, ad, truncate(text, 1024))
-    await render(callback, text, admin_ad_card_kb(ad, page=page, status=status))
+    await render(callback, text, admin_ad_card_kb(
+        ad, page=page, status=status, can_post=role in (AdminRole.ADMIN, AdminRole.SUPER)
+    ))
 
 
 @router.callback_query(ModCB.filter(F.action == "ads_card"))
 async def on_admin_ad_card(
-    callback: CallbackQuery, callback_data: ModCB, session: AsyncSession, state: FSMContext
+    callback: CallbackQuery, callback_data: ModCB, session: AsyncSession, state: FSMContext,
+    role: str | None,
 ) -> None:
     ad = await _load_ad(callback, session, callback_data.ad_id)
     if ad is None:
@@ -442,13 +446,14 @@ async def on_admin_ad_card(
 
     await state.clear()
     page, status = _parse_page_status(callback_data.value, "all")
-    await _render_ad_card(callback, session, ad, page=page, status=status)
+    await _render_ad_card(callback, session, ad, page=page, status=status, role=role)
     await alert(callback, "")
 
 
 @router.callback_query(ModCB.filter(F.action == "pause"))
 async def on_admin_pause(
-    callback: CallbackQuery, callback_data: ModCB, session: AsyncSession, bot: Bot
+    callback: CallbackQuery, callback_data: ModCB, session: AsyncSession, bot: Bot,
+    role: str | None,
 ) -> None:
     ad = await _load_ad(callback, session, callback_data.ad_id)
     if ad is None:
@@ -463,7 +468,7 @@ async def on_admin_pause(
     await _notify_seller(bot, seller, text)
 
     page, status = _parse_page_status(callback_data.value, "all")
-    await _render_ad_card(callback, session, ad, page=page, status=status)
+    await _render_ad_card(callback, session, ad, page=page, status=status, role=role)
     await alert(callback, "⏸ To'xtatildi")
 
 

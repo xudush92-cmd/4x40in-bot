@@ -8,7 +8,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.db.models import Ad, Seller
-from app.keyboards.callbacks import ModCB
+from app.keyboards.callbacks import ModCB, PostingCB
 from app.keyboards.common import nav_row
 from app.services import ad_service
 from app.utils.text import truncate
@@ -195,7 +195,7 @@ def admin_ads_list_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_ad_card_kb(ad: Ad, *, page: int = 0, status: str = "all") -> InlineKeyboardMarkup:
+def admin_ad_card_kb(ad: Ad, *, page: int = 0, status: str = "all", can_post: bool = False) -> InlineKeyboardMarkup:
     """Admin e'lon kartochkasi: tasdiq/rad, pauza, o'chirish."""
     back = f"{page}|{status}"
     rows: list[list[InlineKeyboardButton]] = []
@@ -233,6 +233,13 @@ def admin_ad_card_kb(ad: Ad, *, page: int = 0, status: str = "all") -> InlineKey
         )
     if actions:
         rows.append(actions)
+    if can_post and ad.status == "active":
+        rows.append([
+            InlineKeyboardButton(
+                text="🚀 Hoziroq joylash",
+                callback_data=PostingCB(action="send", target_id=ad.id, value=back).pack(),
+            )
+        ])
 
     rows.append(
         [

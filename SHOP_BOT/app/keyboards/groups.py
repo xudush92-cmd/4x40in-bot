@@ -6,7 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import FEATURE_LABELS, FEATURE_SHORT
 from app.db.models import Group
-from app.keyboards.callbacks import AdminCB, FeatureCB, GroupCB
+from app.keyboards.callbacks import AdminCB, FeatureCB, GroupCB, PostingCB
 from app.keyboards.common import confirm_row, nav_row
 from app.utils.text import human_int, truncate
 
@@ -97,6 +97,14 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
     rows.append(
         [
             InlineKeyboardButton(
+                text="📋 E'lonlar navbati",
+                callback_data=PostingCB(action="group", target_id=group.id).pack(),
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
                 text="🔍 Huquqlarni tekshirish",
                 callback_data=GroupCB(action="refresh", group_id=group.id).pack(),
             )
@@ -163,7 +171,7 @@ def group_features_kb(group: Group) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def group_settings_kb(group: Group) -> InlineKeyboardMarkup:
+def group_settings_kb(group: Group, *, old_ads_enabled: bool = False) -> InlineKeyboardMarkup:
     """Interval, jitter, kunlik limit, tinch soatlar."""
     settings = group.settings
     quiet_on = bool(settings and settings.quiet_start and settings.quiet_end)
@@ -202,6 +210,12 @@ def group_settings_kb(group: Group) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                text=f"{'🟢' if old_ads_enabled else '🔴'} 🧹 Eski e'lon nusxalarini o'chirish",
+                callback_data=GroupCB(action="old_ads", group_id=group.id).pack(),
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 text="◀️ Guruh kartasi",
                 callback_data=GroupCB(action="card", group_id=group.id).pack(),
             )
@@ -221,7 +235,6 @@ def matrix_kb(groups: list[Group], page: int, total_pages: int) -> InlineKeyboar
         feature_row: list[InlineKeyboardButton] = []
         for feature in MATRIX_FEATURES:
             enabled = bool(getattr(settings, f"{feature}_enabled", False)) if settings else False
-            label = FEATURE_LABELS.get(feature, feature).split(" ", 1)[-1]
             feature_row.append(
                 InlineKeyboardButton(
                     text=f"{FEATURE_SHORT.get(feature, '')}{'✅' if enabled else '⬜️'}",

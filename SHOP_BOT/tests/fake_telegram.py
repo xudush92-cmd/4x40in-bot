@@ -7,8 +7,9 @@ olinadi va oldindan tayyorlangan javoblar qaytariladi.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Any, AsyncGenerator
+from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
@@ -24,6 +25,8 @@ from aiogram.types import (
     Message,
     PhotoSize,
     Update,
+)
+from aiogram.types import (
     User as TgUser,
 )
 
@@ -60,6 +63,7 @@ class FakeSession(BaseSession):
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.overrides = overrides
         self.errors: dict[str, Exception] = {}
+        self._next_message_id = 500
 
     # ── BaseSession talablari ─────────────────────────────────────
     async def close(self) -> None:  # pragma: no cover
@@ -101,7 +105,7 @@ class FakeSession(BaseSession):
         if name == "GetMe":
             return self._bot_user()
         if name == "SendMediaGroup":
-            return [self._message(payload, index).as_(bot) for index in range(3)]
+            return [self._message(payload).as_(bot) for _ in payload.get("media", [])]
         if name in _MESSAGE_METHODS:
             # Real aiogram xulqi: sessiya qaytargan obyekt botga bog'lanadi
             # (aks holda `.edit_text()` ishlamaydi)
@@ -118,11 +122,13 @@ class FakeSession(BaseSession):
             return Chat(id=GROUP_CHAT_ID, type="supergroup", title=GROUP_TITLE)
         return Chat(id=ADMIN_ID, type="private", first_name="Admin")
 
-    def _message(self, payload: dict[str, Any], index: int = 0) -> Message:
+    def _message(self, payload: dict[str, Any]) -> Message:
         chat_id = payload.get("chat_id")
         chat = self._chat(chat_id)
+        message_id = self._next_message_id
+        self._next_message_id += 1
         return Message(
-            message_id=500 + index,
+            message_id=message_id,
             date=datetime.now(UTC),
             chat=chat,
             text=payload.get("text") or payload.get("caption"),

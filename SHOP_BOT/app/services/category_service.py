@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import AdStatus
@@ -135,6 +135,10 @@ async def create_category(
 
     if group_id is not None:
         await _ensure_rotation(session, category)
+        from app.services.group_service import recompute_next_post
+        group = await session.get(Group, group_id)
+        if group is not None:
+            await recompute_next_post(session, group)
 
     logger.info("Toifa yaratildi: {}{} (guruh: {})", emoji or "", title, group_id)
     return category
@@ -164,11 +168,16 @@ async def attach_group(
     session: AsyncSession, category: Category, group_id: int | None
 ) -> None:
     """Guruhga biriktirish (yoki biriktirilishini olib tashlash)."""
+    old_group_id = category.group_id
     category.group_id = group_id
     await session.flush()
+    # Eski e'lonlarda ham manzil eski guruh bo'lib qolmasin.
+    await session.execute(update(Ad).where(Ad.category_id == category.id).values(group_id=group_id))
 
     if group_id is not None:
-        await _ensure_rotation(session, category)
+        rotation = await _ensure_rotation(session, category)
+        if old_group_id != group_id:
+            rotation.next_post_at = None  # yangi guruhda yangi jadvalga qo'shiladi
     else:
         # Guruhsiz toifa navbatda ishtirok etmaydi
         rotation = await _get_rotation(session, category.id)
@@ -178,6 +187,12 @@ async def attach_group(
             await session.flush()
         await _reload_rotation(session, category)
 
+    if old_group_id != group_id:
+        from app.services.group_service import recompute_next_post
+        for changed_group_id in {old_group_id, group_id} - {None}:
+            changed_group = await session.get(Group, changed_group_id)
+            if changed_group is not None:
+                await recompute_next_post(session, changed_group)
     logger.info(
         "Toifa '{}' {} guruhiga biriktirildi",
         category.name,
@@ -226,8 +241,21 @@ async def set_moderation(session: AsyncSession, category: Category, required: bo
 
 
 async def set_interval_override(session: AsyncSession, category: Category, seconds: int | None) -> None:
-    """Toifa uchun alohida interval (None = guruh intervali)."""
+    """Toifa intervali o'zgarsa, keyingi post vaqti ham qayta hisoblanadi."""
     category.interval_override = seconds
+    await session.flush()
+    if category.group_id is not None:
+        from app.services.group_service import recompute_next_post
+        from app.utils.time import next_run_time
+
+        group = await session.get(Group, category.group_id)
+        if group is not None and group.settings is not None:
+            if category.rotation is not None:
+                category.rotation.next_post_at = next_run_time(
+                    seconds or group.settings.interval_sec,
+                    jitter_ratio=group.settings.jitter_percent / 100,
+                ) if category.rotation.last_post_at is not None else None
+            await recompute_next_post(session, group)
     await session.flush()
 
 

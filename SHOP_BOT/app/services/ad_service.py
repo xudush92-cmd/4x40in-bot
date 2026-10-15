@@ -25,7 +25,7 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import AdStatus, SellerStatus
+from app.constants import AdStatus
 from app.db.models import Ad, AdPhoto, Category, ModerationLog, Seller
 from app.services import subscription_service
 from app.services.settings_service import settings_service
@@ -400,6 +400,7 @@ async def create_draft(
     ad = Ad(
         seller_id=seller.id,
         category_id=category.id,
+        group_id=category.group_id,  # toifa biriktirilgan guruhning denormalizatsiyasi
         title=(title or "").strip(),
         status=AdStatus.DRAFT,
         currency="UZS",
@@ -430,6 +431,7 @@ async def set_category(session: AsyncSession, ad: Ad, category: Category) -> Non
     if ad.category_id != category.id:
         ad.category_id = category.id
         ad.position = await next_position(session, category.id)
+    ad.group_id = category.group_id
     await session.flush()
 
 
@@ -578,7 +580,6 @@ async def submit(session: AsyncSession, seller: Seller, ad: Ad) -> tuple[bool, s
 
     Qaytaradi: (muvaffaqiyat, xabar/holat).
     """
-    from app.constants import SubscriptionStatus
 
     ok, reason = await can_submit(session, seller, ad)
     if not ok:
@@ -736,10 +737,10 @@ async def move(
 ) -> bool:
     """Navbat tartibini o'zgartirish (⬆️ avvalroq / ⬇️ keyinroq) — Phase 4 qo'shimcha.
 
-    Faqat ko'rinib turgan sahifa chegarasida ishlaydi: qo'shni e'lon bilan
-    `position` almashadi, kerak bo'lsa qayta raqamlanadi.
+    Qo'shni (boshqa sahifada bo'lsa ham) e'lon bilan `position` almashadi.
+    Eski ma'lumotda pozitsiyalar bir xil bo'lsa — oldin qayta raqamlanadi.
     """
-    if ad.status not in (AdStatus.ACTIVE, AdStatus.PAUSED):
+    if direction not in ("up", "down") or ad.status not in (AdStatus.ACTIVE, AdStatus.PAUSED):
         return False
 
     siblings = (
@@ -761,13 +762,14 @@ async def move(
         return False
 
     neighbour = ordered[target]
-    ad.position, neighbour.position = neighbour.position, ad.position
-
-    # Pozitsiyalar teng bo'lib qolsa — qayta raqamlash (barqarorlik uchun)
     if ad.position == neighbour.position:
         await renumber_category(session, ad.category_id)
-    else:
-        await session.flush()
+        ordered.sort(key=lambda row: (row.position, row.id))
+        index = ordered.index(ad)
+        target = index - 1 if direction == "up" else index + 1
+        neighbour = ordered[target]
+    ad.position, neighbour.position = neighbour.position, ad.position
+    await session.flush()
     return True
 
 

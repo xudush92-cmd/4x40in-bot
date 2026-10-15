@@ -17,12 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import (
     FEATURE_LABELS,
-    GroupFeature,
     MAX_DAILY_POST_LIMIT,
     MAX_INTERVAL_SEC,
     MAX_JITTER_PERCENT,
     MIN_INTERVAL_SEC,
     MIN_JITTER_PERCENT,
+    GroupFeature,
 )
 from app.db.models import Ad, Category, Group, GroupRotation, GroupSettings
 from app.utils.text import clamp
@@ -296,18 +296,28 @@ async def count_groups_by_status(session: AsyncSession) -> tuple[int, int]:
 # ─────────────────────────── Sozlamalar ────────────────────────────
 async def recompute_next_post(session: AsyncSession, group: Group, *, delay_min_sec: int | None = None) -> None:
     """Keyingi joylash vaqtini guruh sozlamalari asosida hisoblash."""
-    rotation = group.rotation
+    # Guruh shu sessiyada yangidan yaratilgan bo'lsa relationship hali
+    # yuklanmagan bo'lishi mumkin — async lazy-load (MissingGreenlet) bo'lmasin.
+    rotation = await session.get(GroupRotation, group.id)
     if rotation is None:
         return
 
-    settings = group.settings
+    settings = await session.get(GroupSettings, group.id)
     if settings is None or not settings.posting_enabled or not group.is_active:
         rotation.next_post_at = None
         return
 
+    # Bir guruhda bir nechta toifa bo'lishi mumkin: eng yaqin toifa intervali
+    # guruhni uyg'otadi, category_rotation esa o'z intervalini alohida saqlaydi.
+    intervals = (await session.execute(
+        select(Category.interval_override).where(
+            Category.group_id == group.id, Category.is_active.is_(True)
+        )
+    )).scalars().all()
+    shortest = min((int(value or settings.interval_sec) for value in intervals), default=settings.interval_sec)
     minimum = delay_min_sec if delay_min_sec is not None else MIN_INTERVAL_SEC
     rotation.next_post_at = next_run_time(
-        settings.interval_sec,
+        shortest,
         jitter_ratio=clamp(settings.jitter_percent, MIN_JITTER_PERCENT, MAX_JITTER_PERCENT) / 100,
         minimum_sec=max(MIN_INTERVAL_SEC, minimum),
     )
@@ -334,6 +344,13 @@ async def set_feature(
     )
 
     if str(feature) == GroupFeature.POSTING:
+        if enabled:
+            categories = (await session.execute(
+                select(Category).where(Category.group_id == group.id)
+            )).scalars().all()
+            for category in categories:
+                if category.rotation and not category.rotation.is_paused:
+                    category.rotation.next_post_at = None
         await recompute_next_post(session, group, delay_min_sec=5 if enabled else None)
 
     await session.flush()
@@ -351,6 +368,17 @@ async def set_setting(
         return
     setattr(group.settings, field_name, value)
     if field_name in ("interval_sec", "jitter_percent"):
+        categories = (await session.execute(
+            select(Category).where(Category.group_id == group.id, Category.is_active.is_(True))
+        )).scalars().all()
+        for category in categories:
+            if category.rotation is not None:
+                category.rotation.next_post_at = (
+                    next_run_time(
+                        category.interval_override or group.settings.interval_sec,
+                        jitter_ratio=clamp(group.settings.jitter_percent, 0, MAX_JITTER_PERCENT) / 100,
+                    ) if category.rotation.last_post_at is not None else None
+                )
         await recompute_next_post(session, group)
     await session.flush()
 
@@ -389,6 +417,12 @@ async def resume_group(session: AsyncSession, group: Group, *, enable_posting: b
         group.settings.posting_enabled = True
         if group.rotation is not None:
             group.rotation.error_streak = 0
+        categories = (await session.execute(
+            select(Category).where(Category.group_id == group.id)
+        )).scalars().all()
+        for category in categories:
+            if category.rotation and not category.rotation.is_paused:
+                category.rotation.next_post_at = None
     await recompute_next_post(session, group, delay_min_sec=5)
     logger.info("Guruh qayta yoqildi: {}", group.display)
 

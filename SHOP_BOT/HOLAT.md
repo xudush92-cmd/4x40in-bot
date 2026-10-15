@@ -4,7 +4,7 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–3 ✅ tugadi (221 test yashil) · **Keyingisi: Phase 4** (ruxsat kutilmoqda)
+**Oxirgi yangilanish:** 2026-10-15 · **Holat:** Phase 0–4 ✅ (258 offline test) · **Keyingisi: Phase 5** (alohida ruxsat kutilmoqda)
 
 ---
 
@@ -15,11 +15,11 @@
 | Loyiha | **SHOP-BOT** — Telegram guruhlariga sotuvchi e'lonlarini navbat bilan avtomatik joylashtiruvchi bot |
 | Papka | Repo ichida `SHOP_BOT/` (ildizdagi `AVTO_BOT/` — **boshqa loyiha, tegilmaydi**) |
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
-| Ish shoxobi | `arena/40593d24-4x40in-bot` (oxirgi commit `1ceac25`) |
+| Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **221 test, hammasi o'tadi** (`pytest`, tarmoqsiz SQLite) |
-| Migratsiya | `f789aa7b756f` (Phase 0 dan beri o'zgarmagan — Phase 1–3 sxemaga tegilmadi) |
-| Keyingi qadam | **Phase 4 — aylanma joylash dvigateli** (ruxsat kutilmoqda) |
+| Testlar | **258 test, hammasi o'tadi** (`pytest`, tarmoqsiz SQLite) |
+| Migratsiya | `f789aa7b756f` (Phase 0–4: sxema o'zgarmadi, `alembic check` toza) |
+| Keyingi qadam | **Phase 5 — to'lovlar** (alohida ruxsat kutilmoqda; boshlanmagan) |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -27,7 +27,7 @@
 ## 1. Kod qayerga yozilgan (GitHub'dagi joyi)
 
 **Repo:** https://github.com/xudush92-cmd/4x40in-bot
-**Shoxobcha:** [`arena/40593d24-4x40in-bot`](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/40593d24-4x40in-bot) — `main` **tegilmagan** (`ccbbe99` da turibdi).
+**Shoxobcha:** [`arena/18e1094b-4x40in-bot`](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) — shu sessiyaning shoxobchasi; `main` **tegilmagan** (`ccbbe99`).
 
 | Commit | Nima qilingan | GitHub havolasi |
 |---|---|---|
@@ -37,19 +37,12 @@
 | `50b77dc` | **Phase 1** — guruhlar va toifalar (104 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/50b77dc) |
 | `1fcdbf7` | **Phase 2** — sotuvchilar, tariflar, obunalar (164 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/1fcdbf7) |
 | `1ceac25` | **Phase 3** — e'lonlar va moderatsiya (221 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/1ceac25) |
+| Shu chatdagi commit | **Phase 4** — aylanma joylash dvigateli (258 test) | `arena/18e1094b-4x40in-bot` |
 
-> ⚠️ **Muhim:** Arena'da har bir **yangi chat yangi shoxobcha** ochadi
-> (`arena/<yangi-chat-id>-4x40in-bot`). Eski ishni yangi chatga olib o'tish:
->
-> ```bash
-> cd /home/user/4x40in-bot
-> git fetch origin arena/40593d24-4x40in-bot
-> git merge --ff-only FETCH_HEAD     # Phase 0–3 kodi keladi (main'dan to'g'ri shoxlangan)
-> # ... shundan keyin YANGI chatning o'z shoxobchasida davom etiladi
-> ```
->
-> Merge ishlamasa: `git cherry-pick` yoki eng yomoni — eski shoxobchadagi fayllarni
-> qo'lda ko'chirish (commitlar soni 6 ta, hammasi shu faylda sanab o'tilgan).
+> ⚠️ **Muhim:** ishni faqat chatning **joriy** shoxobchasida olib boring —
+> `main`ga tegmang, qo'shimcha branch/PR ochmang. Keyingi sessiyada shu kodni
+> topish uchun yuqoridagi shoxobcha va commit tarixidan foydalaning; chatga
+> biriktirilgan shoxobchani almashtirmang.
 
 ---
 
@@ -62,7 +55,7 @@
 cd /home/user/4x40in-bot/SHOP_BOT
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 221 test o'tishi kerak (~70 sekund)
+.venv/bin/python -m pytest -q          # 258 test o'tishi kerak (~80 sekund)
 ```
 
 Testlar **offline** ishlaydi: SQLite (vaqtinchalik fayl) + soxta Bot API sessiyasi,
@@ -72,11 +65,13 @@ Foydali tekshiruvlar:
 
 ```bash
 .venv/bin/python -m compileall -q app scripts tests      # sintaksis
-# Alembic sxema farqi bo'sh bo'lishi kerak:
+# Alembic sxema farqi bo'sh bo'lishi kerak (fayl yaratmaydi):
 TMP=$(mktemp -d); export DB_URL="sqlite+aiosqlite:///$TMP/al.db"
-.venv/bin/python -m alembic upgrade head
-.venv/bin/python -m alembic revision --autogenerate -m "dif"   # op. bo'lmasligi kerak
-# Seed sinovi (toza bazada): 0 admin / 25 sozlama / 30 matn / 3 tarif
+.venv/bin/alembic upgrade head
+.venv/bin/alembic check          # "No new upgrade operations detected."
+.venv/bin/python -m scripts.seed
+# Seed natijasi (ADMIN_IDS bo'sh bo'lsa): 0 admin / 25 sozlama / 30 matn / 3 tarif
+rm -rf "$TMP"                    # faqat o'zingiz yaratgan vaqtinchalik papka
 ```
 
 ---
@@ -88,7 +83,7 @@ Telegram guruhlari (supergroup) bozorlar uchun bot:
 1. **Toifalar ↔ guruhlar**: har toifa bitta guruhga biriktiriladi (masalan «📱 Telefonlar» → «Telefonlar bozori» guruhi).
 2. **Sotuvchilar** bot orqali e'lon qo'shadi (rasmlar bilan). Admin ularga **tarif** beradi (narx, muddat, e'lon limiti, rasm limiti).
 3. **Moderatsiya**: admin e'lonni ko'rib, tasdiqlaydi yoki sabab bilan rad etadi.
-4. **Aylanma joylash** (Phase 4): tasdiqlangan e'lonlar guruhlarga **navbat bilan, interval bilan** avtomatik joylanadi (albom + «Sotuvchi bilan bog'lanish» tugmasi).
+4. **Aylanma joylash** (Phase 4 bajarildi): tasdiqlangan e'lonlar guruhlarga **navbat bilan, interval bilan** avtomatik joylanadi (albom + «Sotuvchi bilan bog'lanish» tugmasi).
 5. Pul: sotuvchi **chek** yuboradi → admin tasdiqlaydi → obuna avtomatik uzayadi (Phase 5).
 6. Qo'shimcha: posbon/tozalovchi (guruh nazorati), sanoqchi (odam qo'shish tizimi), referal, statistika, broadcast (Phase 6–8).
 
@@ -108,7 +103,7 @@ log tozalash, kunlik statistika), `scripts/seed.py`, `backup.sh`/`restore.sh`.
 
 ### ✅ Phase 1 — Guruhlar va toifalar
 Guruhlar CRUD + huquq tekshiruvi, funksiyalar **matritsasi** (barcha guruhlar × 5 funksiya),
-guruh sozlamalari (interval 1–1440 daq, jitter 0–50%, kunlik limit, tinch soatlar),
+guruh sozlamalari (interval 1–1440 daq, jitter 0–30%, kunlik limit, tinch soatlar),
 toifalar CRUD (emoji, guruhga biriktirish, alohida interval, moderatsiya rejimi, tartib),
 panelda jonli hisoblagichlar. *Yo'l-yo'lakay 4 runtime xato tuzatilgan (filtr imzosi,
 `PrivateChat`, aware datetime, FSM `action`).*
@@ -133,9 +128,40 @@ edi — aiogram'da router darajasidagi filtr **barcha ichki router'larga** qo'll
 uchun `ad:` callback'lari umuman ishlamasdi. Yechim: e'lon router'i root darajasida alohida
 ulanadi (`app/handlers/__init__.py`, izohi bilan). **Buni qaytarib buzmaslik kerak.**
 
+### ✅ Phase 4 — Aylanma joylash
+`posting_tick_job` har 10 sekundda due guruhlardan nomzod tanlaydi. Navbat toifa
+`position`i va har toifadagi e'lon `position`iga asoslanadi; kursorlar `group_rotation`
+va `category_rotation`da saqlanadi. Faol obuna, sotuvchi/guruh/toifa holati,
+`ads_left`, tarifning guruh/toifa cheklovi va keyingi ruxsat vaqti tekshiriladi.
+Guruh yoki toifa intervali, jitter, tinch soatlar, Tashkent vaqti bilan kunlik
+limit va global kill switch/texnik rejim hisobga olinadi.
+
+`app/services/posting_service.py` DB da `sending` yozib, guruh vaqtini CAS bilan
+band qiladi; PostgreSQL'da `FOR UPDATE SKIP LOCKED`. `app/services/posting_limiter.py`
+Redis Lua rezervatsiyasidan (Redis bo'lmasa lokal zaxiradan) foydalanadi: bir
+guruhdagi API jo'natmalari orasida kamida 2s, bir guruhga 20 xabar/daq va jami 25 xabar/s. `app/scheduler/poster.py` surat albomi va
+alohida aloqa tugmasini yuboradi; natija `post_log`/`posted_messages`da, hisoblar
+va kursorlar bazada saqlanadi. FloodWait kechiktiriladi, Forbidden/BadRequest
+guruhni to'xtatadi; navbat bo'shab qolsa ham guruh pauza qilinadi (yangi
+e'lon paydo bo'lganda admin qo'lda qayta yoqadi). Noma'lum tarmoq natijasi yoki muddati o'tgan `sending`
+**qayta yuborilmaydi**, qo'lda tekshirilishi uchun pauza va admin xabari beriladi.
+Sozlama yoqilsa eski postlardan so'nggi bittasi saqlanib, qolganlari o'chiriladi;
+muvaffaqiyatsiz o'chirishlar `cleanup_log`ga tushadi.
+
+Admin uchun guruh kartochkasida **Navbat**, toifa navbatida **⬆️/⬇️**,
+e'lon kartochkasida **Hoziroq joylash**, guruh sozlamalarida **Eski nusxalarni
+o'chirish** qo'shildi. Moderator joylash tugmalaridan foydalana olmaydi; admin
+amallari `action_log`da qayd qilinadi. Toifa guruhini o'zgartirish mavjud e'lonlarni
+sinxronlaydi; interval o'zgarsa navbat vaqti qayta hisoblanadi.
+
+**Cheklovlar:** Telegram real supergroup/deploy sinovi hali o'tkazilmadi;
+PostgreSQL `SKIP LOCKED` va Redis Lua haqiqiy serverlarda sinovdan o'tmagan;
+SQLite CAS va soxta `Redis.eval` chaqiruvi testlari mavjud. Tarif cheklovlari ishlaydi, ularni panelda
+sozlash UI hali mavjud emas (ochiq band №1, Phase 8).
+
 ---
 
-## 5. Test holati (221 test)
+## 5. Test holati (258 test)
 
 | Test fayli | Qamrov | Soni |
 |---|---|---|
@@ -152,7 +178,11 @@ ulanadi (`app/handlers/__init__.py`, izohi bilan). **Buni qaytarib buzmaslik ker
 | `tests/test_text_service.py` | Matn shabloni + placeholder indeksi | 9 |
 | `tests/test_seed_and_wiring.py` | Seed (subprocess) + router yig'ish | 7 |
 | `tests/test_settings_service.py` / `test_group_service.py` | Sozlama keshi / guruh servisi | 6 + 6 |
-| **JAMI** | | **221** |
+| `tests/test_posting_service.py` | Nomzod, kursor, CAS, interval, limit, pauza, xatolar | 14 |
+| `tests/test_phase4_poster.py` | Albom/aloqa, FloodWait, Forbidden, dublikatning oldi, eski post, statistika | 15 |
+| `tests/test_phase4_flows.py` | Admin navbati, tartib, qo'lda jo'natish, moderator cheklovi, cleaner tugmasi | 5 |
+| `tests/test_posting_limiter.py` | Guruh/global tezlik va Redis Lua band qilish | 3 |
+| **JAMI** | | **258** |
 
 **Test yozish qoidalari (buzilmasin):**
 1. Har bir test fayli **alohida ham** o'tishi kerak (`pytest tests/x.py`).
@@ -183,18 +213,20 @@ SHOP_BOT/
 │   │   ├── group_service.py, category_service.py
 │   │   ├── seller_service.py, tariff_service.py, subscription_service.py
 │   │   ├── ad_service.py           # ⬅️ Phase 3 (e'lon hayot sikli)
+│   │   ├── posting_service.py, posting_limiter.py  # Phase 4 DB navbat va limiter
 │   │   └── notify.py, stats_service.py
 │   ├── handlers/
 │   │   ├── __init__.py         # build_root_router() — router tartibi MUHIM
 │   │   ├── common.py           # /start, fallback, sotuvchi holati
-│   │   ├── admin/              # panel, settings, groups, categories, sellers, tariffs, mods
+│   │   ├── admin/              # panel, settings, groups, categories, sellers, tariffs, mods, posting
 │   │   ├── seller/ads.py       # e'lon ustasi, «Mening e'lonlarim», tahrir
 │   │   └── group/lifecycle.py
 │   ├── keyboards/              # admin, common, groups, categories, sellers, tariffs, ads, mods, seller_panel
-│   ├── scheduler/jobs.py       # posting_tick_job ⬅️ Phase 4 shu yerda to'ladi
+│   ├── scheduler/jobs.py       # posting_tick_job + old-post cleanup
+│   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
 │   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 221 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 258 test (+ conftest.py, fake_telegram.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
 └── scripts/seed.py, backup.sh, restore.sh
 ```
@@ -214,7 +246,7 @@ Phase 3 xatosi). Sotuvchi panelida esa `SellerPanelCB.filter()` router filtri bo
 ### Callback prefikslari (64 bayt chegarasi tekshiriladi)
 `adm:` admin panel · `grp:` guruhlar · `feat:` funksiya tumbleri · `cat:` toifalar ·
 `slr:` sotuvchilar · `trf:` tariflar · `sp:` sotuvchi paneli · **`ad:` e'lonlar** ·
-**`mod:` moderatsiya** · `nav:` navigatsiya.
+**`mod:` moderatsiya** · **`pst:` joylash/navbat** · `nav:` navigatsiya.
 Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`).
 
 ### Servis API (asosiy funksiyalar)
@@ -237,12 +269,12 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 
 ### Bazadagi muhim faktlar
 - `ads.group_id` — denormalizatsiya (toifa guruhidan olinadi); `ad_photos` faqat `file_id` saqlaydi.
-- `Ad.position` — navbat tartibi (100 qadam), `post_count`, `last_posted_at`, `next_eligible_at`.
-- `category_rotation`: `cursor_ad_id` (oxirgi joylangan), `next_post_at`, `cycle_count`, `is_paused` — **Phase 4 shu kursordan foydalanadi**.
-- `group_rotation`: `next_post_at` (indeksli), `today_count`, `today_date`, `error_streak`.
-- `posted_messages`: `message_ids` (JSON) — eski postni o'chirish uchun; `post_log` — joylash tarixi.
+- `Ad.position` — navbat tartibi (100 qadam), `post_count`, `last_posted_at`, qo'lda belgilangan `next_eligible_at`.
+- `category_rotation`: `cursor_ad_id` (oxirgi joylangan), `next_post_at` (toifa qaytish vaqti), `cycle_count`, `is_paused`.
+- `group_rotation`: `next_post_at` (guruh intervali/bandligi), `today_count`, `today_date`, `error_streak`; noma'lum yuborishda pauza.
+- `posted_messages`: `message_ids` (JSON) — eski postni o'chirish uchun; `post_log` — `sending`/`ok`/`error`/`skipped`/`uncertain` tarixi.
 - `group_settings`: `interval_sec` (default 1800), `jitter_percent` (10), `daily_post_limit` (50), `quiet_start/quiet_end`, `protect_content`, `posting_enabled`.
-- Sessiya `expire_on_commit=False` (ishlab chiqarish kodida `MissingGreenlet` xavfi yo'q).
+- Sessiya `expire_on_commit=False`, ammo **yangi yaratilgan ORM relationship**ni async rejimda lazy-load qilmang: `session.get()` yoki eager `selectin` bilan oling.
 
 ### Global sozlamalar (25 ta, `settings_service.DEFAULTS`)
 `kill_switch`, `maintenance_mode`, `support_contact`, `timezone`, 5 ta funksiya kaliti,
@@ -266,41 +298,10 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 
 ## 8. Qolgan ishlar
 
-### ⭐ Phase 4 — Aylanma joylash dvigateli (KEYINGI QADAM, ruxsat kutilmoqda)
+### Phase 4 ✅ — bajarildi
 
-**Maqsad:** tasdiqlangan e'lonlar guruhlarga interval bilan o'zi keta boshlaydi.
-
-Tayyor turgan "kulisa": `posting_tick_job` (har 10 sekund, hozir faqat sanaydi), `group_rotation`
-va `category_rotation` jadvallari, `post_log`, `posted_messages`, `GroupSettings` maydonlari,
-`text_service."notify.group_paused"`, `ad_service.move()` (navbat tartibi).
-
-Vazifalar ro'yxati:
-1. **Nomzod tanlash**: `category_rotation.cursor_ad_id` dan keyingi `Ad` (`status=active`,
-   `position` bo'yicha, oxiriga yetganda boshidan aylanadi) + filtrlash: sotuvchi obunasi faol,
-   `ads_left > 0`, sotuvchi bloklanmagan, guruh/toifa faol, tarif cheklovi (bo'lsa), `next_eligible_at`.
-2. **Interval va jitter**: manba — `category.interval_override` yoki `group_settings.interval_sec`;
-   minimal 60 sekund; `next = now + interval * random(0.9..1.1)`.
-3. **Atomar yangilash**: `UPDATE group_rotation SET next_post_at=:new WHERE group_id=:id AND next_post_at=:old`
-   (`rowcount=0` → boshqa worker oldin oldi, o'tkazib yuboriladi). Ko'p poster uchun
-   PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED`.
-4. **Tinch soatlar** (`quiet_start..quiet_end`) va **kunlik limit** (`daily_post_limit`,
-   `today_count`/`today_date` bilan) — buzilsa keyingi ruxsat etilgan vaqtga suriladi.
-5. **Yuborish**: `sendMediaGroup` (1..10 rasm, `protect_content` sozlamasi bilan) + alohida
-   xabar: `🔘 "Sotuvchi bilan bog'lanish"` (inline URL/`@username`/telefon). 10 dan ortiq rasm →
-   bir necha albom. `posted_messages` ga `message_ids` yozish.
-6. **Xato ishlovi**: `TelegramRetryAfter` → `retry_after` kutish (faqat shu guruh kechiktiriladi);
-   `TelegramForbiddenError`/`BadRequest` → guruh pauza + adminga xabar + `error_log`
-   (+ `error_streak`); muvaffaqiyatda `error_streak=0`.
-7. **Eski postni o'chirish** (sozlama bo'lsa): botning o'z xabari o'zi uchun har doim o'chiriladi
-   (`deleteMessage`). 48 soatdan oshganini faqat bot admin bo'lsa o'chira oladi.
-8. **Kursorni yangilash + statistika**: `cursor_ad_id`, `last_post_at`, `post_count++`,
-   `last_posted_at`, `post_log` yozuvi, `cycle_count`.
-9. **«Hoziroq joylash»** tugmasi (guruh kartochkasida yoki e'lon kartochkasida) — navbatni
-   buzmasdan darhol joylaydi va kursorni shu e'longa o'rnatadi.
-10. **Navbatni ko'rish/o'zgartirish** (admin): toifa navbati ro'yxati + ⬆️⬇️ (servis `move()` tayyor).
-11. **Kill switch / texnik rejim** hurmat qilinadi; global pauzada `next_post_at` "qarz" to'plamaydi.
-12. **Testlar**: navbat mantiqi (unit) + E2E (soxta Bot API: `SendMediaGroup` allaqachon
-    qo'llab-quvvatlanadi) + FloodWait/Forbidden stsenariylari (`fake.errors` bilan).
+Yuqoridagi 4-bo'limda kod va shartnomalar, 5-bo'limda 37 yangi test tafsiloti bor.
+Sxema o'zgarmadi. Keyingi ishni Phase 5 ruxsatisiz boshlamang.
 
 ### Phase 5 — To'lovlar (MVP shu bilan yopiladi)
 Rekvizitlar CRUD (bir necha karta, aylanma), sotuvchi tarif tanlab «To'lash» → karta ma'lumoti +
@@ -325,7 +326,7 @@ tahrirlash, xato jurnali paneli, broadcast (25 msg/s limit bilan).
 Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, huquqiy eslatmalar
 (REJA.md 11.2).
 
-**Umumiy qolgan vaqt:** **66–88 soat** (~9–11 ish kuni). MVP (Phase 4+5): 18–24 soat.
+**Qolgan bosqichlar:** 5–9. Phase 5 boshlanishi uchun alohida ruxsat kerak.
 
 ---
 
@@ -333,7 +334,7 @@ Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, hu
 
 | # | Nima | Qachon |
 |---|---|---|
-| 1 | Tarifda «qaysi guruh/toifalar uchun» cheklovi (`allowed_category_ids`/`allowed_group_ids`) UI | Phase 4 yoki 8 |
+| 1 | Tarifdagi guruh/toifa cheklovi joylashda ishlaydi; uni **sozlash UI** (`allowed_category_ids`/`allowed_group_ids`) | Phase 8 |
 | 2 | Sotuvchi e'lonlarini **toifa bo'yicha guruhlash** (hozir ro'yxat + toifa ko'rsatkichi) | Phase 8 bilan |
 | 3 | E'lon statistikasida kunlik grafik | Phase 8 |
 | 4 | To'lov rekvizitlari (kodga yozilmaydi — paneldan kiritiladi) | Phase 5da kerak bo'ladi |
@@ -361,14 +362,11 @@ Yuklama testi, deploy skripti, backup/restore sinovi, README/video-qo'llanma, hu
 
 ```
 Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md va SHOP_BOT/REJA.md
-fayllarini o'qib chiqing — bu loyihaning to'liq holati va qolgan ishlar ro'yxati.
-Keyin:
-1) git fetch origin arena/40593d24-4x40in-bot && git merge --ff-only FETCH_HEAD
-   (Phase 0–3 kodi shu shoxobchada; main'ga tegmaymiz);
-2) .venv ni qayta yaratib, pytest ni ishga tushiring — 221 test o'tishi kerak
-   (batafsil buyruqlar HOLAT.md 2-bo'limida);
-3) holatni menga o'zbekcha qisqacha aytib bering va Phase 4 (aylanma joylash dvigateli)
-   uchun ruxsat so'rang. Mendan ruxsat olmasdan kod yozmang.
+fayllarini o'qing: Phase 0–4 tugagan, 258 offline test o'tadi. Kod
+`arena/18e1094b-4x40in-bot` shoxobchasida; main'ga va AVTO_BOT'ga tegmang.
+Bu chatning joriy shoxobchasini almashtirmang, yangi shoxobcha yoki PR ochmang.
+Holatni o'zbekcha aytib bering va Phase 5 (to'lovlar) uchun alohida ruxsat
+so'rang; ruxsatsiz yangi bosqich kodini yozmang.
 ```
 
 ---
@@ -379,7 +377,7 @@ Keyin:
 
 1. **`SHOP_BOT/HOLAT.md`** (shu fayl) — holat, qolgan ishlar, shartnomalar, ish muhitini tiklash, yangi chat uchun tayyor so'rov.
 2. **`SHOP_BOT/REJA.md`** — to'liq texnik reja (funksiya talablari, DB sxemasi, flow'lar, masshtablash, risklar, bosqichlar).
-3. **Git tarixi** (`1ceac25` … `f1c85ff`) — kod va testlar GitHub'da, har bosqich alohida commit.
+3. **Git tarixi** (`arena/18e1094b-4x40in-bot`) — kod va testlar GitHub'da, har bosqich alohida commit.
 
 Yangi chatda yordamchi shu 3 ta manbani o'qisa, loyihani **aynan qolgan joyidan** davom ettira oladi:
-`git fetch` → `merge` → `pytest` → ruxsat → Phase 4.
+`git status` → `pytest` → holat hisoboti → Phase 5 uchun alohida ruxsat.
