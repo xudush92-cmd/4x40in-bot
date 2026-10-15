@@ -855,6 +855,10 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 
 ---
 
+> 📌 **Joriy holat va davom ettirish qo'llanmasi:** [`HOLAT.md`](HOLAT.md) —
+> qaysi bosqich bajarilgan, qolgan ishlar ro'yxati, servis shartnomalari va
+> yangi chatda ishni qaytadan boshlash uchun aniq buyruqlar.
+
 ## 16. KEYINGI QADAM
 
 1. ✅ Reja yozildi va ko'rib chiqish uchun taqdim etildi.
