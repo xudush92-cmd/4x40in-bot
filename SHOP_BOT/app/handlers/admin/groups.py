@@ -167,7 +167,7 @@ def _features_text(group: Group) -> str:
     for feature, label in FEATURE_LABELS.items():
         enabled = bool(getattr(s, f"{feature}_enabled", False)) if s else False
         phase = FEATURE_PHASES.get(feature, 9)
-        note = "" if feature == GroupFeature.POSTING else f"  <i>(Phase {phase} da ishga tushadi)</i>"
+        note = (f"  <i>(Phase {phase} da ishga tushadi)</i>" if phase > 7 else "")
         lines.append(f"{'🟢' if enabled else '🔴'} {label}{note}")
 
     lines += [
@@ -212,7 +212,8 @@ def _matrix_text(groups: list[Group], page: int, total_pages: int, total: int) -
         f"{legend}\n\n"
         f"Jami guruh: <b>{total}</b> · sahifa <b>{page + 1}/{max(1, total_pages)}</b>\n\n"
         "<i>Guruh nomini bosing — kartasi ochiladi.\n"
-        "✅ — yoqilgan, ⬜️ — o'chirilgan. Faqat 📢 joylash hozircha jonli ishlaydi.</i>"
+        "✅ — yoqilgan, ⬜️ — o'chirilgan. Sanoqchi/posbon/tozalovchi "
+        "faqat o'z siyosatida jonli rejim tasdiqlanganda amal qiladi.</i>"
     )
 
 
@@ -326,10 +327,10 @@ async def on_feature_toggle(
     if feature not in FEATURE_LABELS:
         await alert(callback, "⚠️ Noma'lum funksiya", show=True)
         return
-    if feature in (GroupFeature.GUARD, GroupFeature.CLEANER) and role not in (
+    if feature in (GroupFeature.GUARD, GroupFeature.CLEANER, GroupFeature.COUNTER) and role not in (
         AdminRole.ADMIN, AdminRole.SUPER
     ):
-        await alert(callback, "⛔️ Posbon/tozalovchini faqat admin boshqaradi.", show=True)
+        await alert(callback, "⛔️ Sanoqchi/posbon/tozalovchini faqat admin boshqaradi.", show=True)
         return
 
     changed = await group_service.set_feature(
@@ -345,7 +346,7 @@ async def on_feature_toggle(
         if feature == GroupFeature.POSTING:
             extra = "" if group.is_active else "\n⚠️ Guruh pauzada — joylash boshlanmaydi."
             await alert(callback, f"{label}: {state}{extra}", show=True)
-        elif feature in (GroupFeature.GUARD, GroupFeature.CLEANER):
+        elif feature in (GroupFeature.GUARD, GroupFeature.CLEANER, GroupFeature.COUNTER):
             await alert(callback, f"{label}: {state}\n🧪 Avval dry-run! Jonli rejimni guruh ekranida "
                         "alohida tasdiqlang.", show=True)
         else:

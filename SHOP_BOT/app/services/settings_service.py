@@ -152,7 +152,7 @@ class SettingsService:
             row.updated_by = updated_by
             if comment is not None:
                 row.comment = comment
-        if key in {"guard_enabled_global", "cleaner_enabled_global", "kill_switch", "maintenance_mode"} and before != value:
+        if key in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global", "kill_switch", "maintenance_mode"} and before != value:
             session.add(ActionLog(actor_id=updated_by, action="global_policy_switch",
                                   entity="setting", before={key: before}, after={key: value}))
         await session.flush()

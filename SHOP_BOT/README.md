@@ -10,12 +10,12 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–6 ✅ · Keyingisi: Phase 7 (alohida ruxsat kutilmoqda)**
+## 📌 Hozirgi holat: **Phase 0–7 ✅ · Keyingisi: Phase 8 (yangi alohida ruxsat kutilmoqda)**
 
 | Ish | Holat |
 |---|---|
 | Docker Compose (bot + poster + PostgreSQL 16 + Redis 7 + Caddy) | ✅ |
-| 42 jadvalli baza sxemasi + Alembic migratsiyalar (Phase 6: `group_message_actions`) | ✅ |
+| 45 jadvalli baza sxemasi + Alembic migratsiyalar (Phase 7: sanoqchi navbati/cheklovlari) | ✅ |
 | Konfiguratsiya (.env, pydantic-settings, validatsiya) | ✅ |
 | Loglar (loguru, kunlik aylanish), xato jurnali (`error_log`) | ✅ |
 | Middleware'lar (DB sessiya, foydalanuvchi konteksti, anti-flood, texnik rejim) | ✅ |
@@ -23,7 +23,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | Bot guruhga qo'shilganda: baza'ga yozish, admin huquqlarini tekshirish, adminga xabar | ✅ |
 | Rejalashtiruvchi: heartbeat, huquq tekshiruvi, log tozalash, kunlik statistika | ✅ |
 | `/health` va `/stats` (HTTP), webhook va polling rejimi | ✅ |
-| Seed skript, backup/restore skriptlar, 302 offline test | ✅ |
+| Seed skript, backup/restore skriptlar, 319 offline test | ✅ |
 
 ### Phase 1 — guruhlar va toifalar ✅
 
@@ -99,10 +99,45 @@ guruhni tanlash → avval sinov jurnalini ko'rish → jonli rejimni alohida tasd
 jonli rejimni tasdiqlash kerak. Global switch va guruh pauzasi barcha tegishli
 amallarni to'xtatadi, ammo guruh qoidalarini o'chirmaydi.
 
-**Chegara:** majburiy kanal va sanoqchi shartlari (Phase 7) hali jazoga ulanmagan.
-Telegram Privacy Mode o'chirilishi va botda xabar o'chirish/cheklash huquqlari bo'lishi
-shart. Haqiqiy Telegram, bank va PostgreSQL/Redis deploy sinovlari o'tkazilmagan;
-offline testlar ularning o'rnini bosmaydi. **Phase 7 faqat yangi ruxsat bilan.**
+**Chegara:** real Telegram, bank va PostgreSQL/Redis deploy sinovlari o'tkazilmagan;
+offline testlar ularning o'rnini bosmaydi. Phase 7 sanoqchi/kanal shartlari endi
+shu siyosat bilan bitta xabar bo'yicha birlashtirilgan. **Phase 8 faqat yangi
+alohida ruxsat bilan.**
+
+### Phase 7 — sanoqchi va majburiy kanal ✅
+
+| Ish | Holat |
+|---|---|
+| 🧮 Guruhga xos N, qolish muddati, kunlik va havola limiti, havola/qo'lda qo'shish manbasi, SOFT/HARD rejimi | ✅ |
+| 🔗 Shaxsiy `createChatInviteLink`; `chat_member.invite_link`dan inviter; xizmat xabari fallback; bir odam bir guruhda bir marta | ✅ |
+| ⏳ Join request kredit EMAS; muddatdan so'ng scheduler `getChatMember` bilan a'zolikni tekshiradi | ✅ |
+| 📣 Majburiy kanal — global yoki guruhga xos, bot kanal adminligini qayta tekshiradi; Telegram noaniq javobida jazo YO'Q | ✅ |
+| 🧪 Guruh yoqilganda avval sinov; jonli SOFT o'chirish/HARD mute faqat **alohida tasdiq** bilan; guruh/global pauzalar va posbon/tozalovchi saqlanadi | ✅ |
+| 👤 `/takliflarim`, shaxsiy havola va a'zolik holati; admin +/-/0, audit, cheklovni ochish | ✅ |
+| 🧪 319 offline test; SQLite migratsiya/check/downgrade, seed ×2, PostgreSQL offline SQL (real server emas) | ✅ |
+
+**Sozlash tartibi:** admin paneli → «🧮 Sanoqchi» → guruh → sanoqchini yoqish
+(🧪 sinov) → N/limitlar/manbalarni sozlash → majburiy kanalni kiritish
+(botingiz kanalda ADMIN) **yoki kanal shartini o'chirish** → «JONLI rejim»ni
+guruhning o'zida tasdiqlash.
+Kanal nomi/ID hali ko'rsatilmagan, hech qaysi kanal avtomatik belgilanmagan.
+Kanalsiz kanal shartini jonli yoqib bo'lmaydi. SOFT sukut bo'yicha; HARD'ni
+tanlash yana sinovga qaytaradi va jonli rejimni **qayta** tasdiqlash talab qiladi.
+Guruh switch, global sanoqchi switch, favqulodda pauza hamda `kill_switch`
+alohida; o'zgartirish bir guruhdan boshqasiga o'tmaydi.
+
+**A'zo yo'li:** bot bilan shaxsiy chatda `/takliflarim` → guruhni tanlash →
+«🔗 Havola olish/yangilash» → uni odamga yuborish. Havola shaxsiy chatdagina
+ko'rsatiladi. Hard mute olgan a'zolar guruhda yozolmagani uchun botga /start
+bosib, «✅ Tekshirdim» tugmasini shaxsiy chatda ishlatsin; imkon bo'lsa
+guruh tavsifida bot manzilini yozib qo'ying. Telegram a'zoligi noma'lum bo'lsa
+jazo berilmaydi. Kanal bot adminligi yo'qolsa jazo to'xtaydi.
+
+**Chegara:** haqiqiy Telegram/supergroup/kanal, botning Privacy Mode'i va
+PostgreSQL/Redis parallel worker sinovi deploydan oldin shart. Eski dublikat
+shaxsiy linklar migratsiyada DB'da faolsizlantirilsa, ularni Telegramda
+alohida revoke qilish kerak. Bot huquqini yo'qotsa avvalgi hard mute'ni ochish
+uchun admin huquqlarini tiklash yoki qo'lda aralashish zarur bo'lishi mumkin.
 
 ---
 
@@ -187,8 +222,8 @@ python -m app.main            # ishga tushirish
 Testlar:
 
 ```bash
-pytest                        # 302 test (SQLite + soxta Telegram API, tarmoqsiz)
-pytest -v --tb=short          # batafsil
+python -m pytest              # 319 test (SQLite + soxta Telegram API, tarmoqsiz)
+python -m pytest -v --tb=short # batafsil
 ```
 
 ---
@@ -199,7 +234,7 @@ Bot guruhlarda **to'liq** ishlashi uchun (REJA.md 1.2):
 
 | # | Nima | Qayerda |
 |---|---|---|
-| 1 | **Privacy Mode'ni o'chirish** — aks holda bot guruhdagi oddiy xabarlarni ko'rmaydi (posbon/tozalovchi ishlamaydi) | @BotFather → `/setprivacy` → **Disable** → botni guruhdan chiqarib, qayta qo'shish |
+| 1 | **Privacy Mode'ni o'chirish** — aks holda bot guruhdagi oddiy xabarlarni ko'rmaydi (posbon/tozalovchi/sanoqchi ishlamaydi) | @BotFather → `/setprivacy` → **Disable** → botni guruhdan chiqarib, qayta qo'shish |
 | 2 | Bot **admin** bo'lishi | Guruh → Administratorlar → botga: ✏️ Xabarlarni o'chirish, 🚫 A'zolarni cheklash, 🔗 Taklif havolalari |
 | 3 | Guruh **supergroup** bo'lishi | Oddiy guruhda mute/ban ishlamaydi: Sozlamalar → Chat history → Convert to supergroup |
 | 4 | Majburiy kanalda bot **admin** bo'lishi | Kanal → Administratorlar → bot qo'shish |
@@ -221,23 +256,23 @@ SHOP_BOT/
 │   ├── redis_client.py      # Redis + FSM storage (ixtiyoriy komponent)
 │   ├── db/
 │   │   ├── base.py          # engine, sessiya, JSONB varianti
-│   │   └── models.py        # 42 jadval (REJA.md 4-bo'lim + xabar amallari)
+│   │   └── models.py        # 45 jadval (REJA.md 4-bo'lim + Phase 6–7)
 │   ├── handlers/
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
-│   │   ├── admin/           # panel + guruh siyosati, ruxsatlar, to'lovlar va boshqalar
+│   │   ├── admin/           # panel + guruh siyosati, counter.py, to'lovlar
 │   │   ├── seller/          # sotuvchi paneli + ads.py (e'lonlar) + payments.py (chek)
-│   │   └── group/           # lifecycle.py + policy.py (posbon/tozalovchi)
+│   │   └── group/           # lifecycle.py + policy.py + counter.py
 │   ├── keyboards/           # admin klaviaturalar + callback fabrikalari
 │   ├── middlewares/         # db, user_context, throttling, maintenance
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
 │   ├── services/            # settings, text, group, category, seller, tariff,
 │   │                        # subscription, ad, posting, posting_limiter, payment,
-│   │                        # group_policy_service, notify, stats
-│   ├── scheduler/           # jobs.py, poster.py (Telegram), runner.py (APScheduler)
+│   │                        # group_policy_service, counter_service, notify, stats
+│   ├── scheduler/           # jobs.py (sanoqchi navbati), poster.py, runner.py
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 302 test (offline E2E + servis testlari)
+├── tests/                   # 319 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -317,6 +352,6 @@ haqida adminga aniq ko'rsatma bilan xabar beriladi.
 | 4 | **Aylanma joylash dvigateli** | ✅ **Bajarildi** |
 | 5 | To'lovlar (chek → tasdiq → obuna) | ✅ **Bajarildi** |
 | 6 | Posbon + tozalovchi + ruxsatlar | ✅ **Bajarildi** |
-| 7 | Sanoqchi (invite linklar, majburiy obuna) | ⏳ Alohida ruxsat kutilmoqda |
-| 8 | Referal, statistika, matnlar, xato jurnali, broadcast | ⏸ |
+| 7 | Sanoqchi (invite linklar, majburiy obuna) | ✅ **Bajarildi** (offline) |
+| 8 | Referal, statistika, matnlar, xato jurnali, broadcast | ⏳ Yangi alohida ruxsat kutilmoqda |
 | 9 | Sayqal: yuklama testi, deploy, hujjat | ⏸ |

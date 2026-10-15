@@ -10,6 +10,7 @@ from aiogram import Router
 from app.filters import PrivateChat
 from app.handlers.admin import (
     categories,
+    counter,
     groups,
     mods,
     panel,
@@ -29,6 +30,7 @@ admin_router.callback_query.filter(PrivateChat())
 
 admin_router.include_router(settings.router)     # ⚙️ global sozlamalar (FSM)
 admin_router.include_router(groups.router)       # 👥 guruhlar (FSM)
+admin_router.include_router(counter.router)      # 🧮 har guruh sanoqchisi (FSM)
 admin_router.include_router(policy.router)       # 🛡 guruh siyosati (FSM)
 admin_router.include_router(permissions.router)  # 🔑 istisnolar va foydalanuvchi
 admin_router.include_router(categories.router)   # 🗂 toifalar (FSM)

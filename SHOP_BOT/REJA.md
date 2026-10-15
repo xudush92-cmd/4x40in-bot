@@ -1,8 +1,8 @@
 # SHOP-BOT — Onlayn do'kon uslubidagi e'lonlar boti
 ## To'liq texnik reja (v1.0) — kelishilgan bosqichlar va qamrov
 
-> **Amaldagi holat (2026-10-15):** Phase 0–6 bajarildi (302 offline test). Keyingisi
-> Phase 7 — faqat alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
+> **Amaldagi holat (2026-10-15):** Phase 0–7 bajarildi (319 offline test). Keyingisi
+> Phase 8 — faqat yangi alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
 > ishlar va sinov cheklovlari uchun [HOLAT.md](HOLAT.md) ga qarang.
 > **Ish qoidasi:** ruxsatsiz yangi bosqich boshlanmaydi, yangi branch/PR ochilmaydi.
 
@@ -29,7 +29,7 @@
 
 Bir muhim ogohlantirish: rejangizda **5-8 ta joyda Texnologiya cheklovlari** bor, ular kod yozishdan oldin hal qilinishi kerak (1.2-bo'limga qarang) — aks holda keyinchalik qayta yozishga to'g'ri keladi. Masalan, **albomga (media group) inline tugma biriktirib bo'lmaydi** — bu Telegram Bot API'ning cheklovi, Aiogram'ning emas.
 
-**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–6 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
+**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–7 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
 
 ---
 
@@ -250,11 +250,12 @@ Bular **kod yozishdan oldin** hal qilinishi shart.
 
 | Jadval | Ustunlar | Izoh |
 |---|---|---|
-| `counter_settings` | `group_id PK, enabled, required_n, mode, min_stay_minutes, max_per_day, count_sources JSONB, updated_at` | `mode`: `soft` (xabar o'chiriladi + ogohlantirish) / `hard` (yangi a'zo mute qilinadi) |
-| `invite_links` | `id, group_id, user_id, invite_link, join_count, created_at, revoked_at, is_active` | Har foydalanuvchining shaxsiy havolasi (pool bilan) |
+| `counter_settings` | `group_id PK, enabled, dry_run, required_n, mode, link_member_limit, min_stay_minutes, max_per_day, count_sources JSONB, require_subscription, notify_inviter, updated_at` | `soft` xabarni o'chiradi; `hard` qo'shimcha mute; yangi guruh uchun o'chiq va dry-run |
+| `invite_links` | `id, group_id, user_id, invite_link, join_count, created_at, revoked_at, is_active` | Har foydalanuvchining shaxsiy havolasi; faol `(group_id,user_id)` qisman unique |
 | `invite_events` | `id, group_id, inviter_id, invitee_id, source, message_id, counted, reject_reason, created_at` | **`UNIQUE(group_id, invitee_id)`** → "bir odam bir marta sanaladi" |
-| `counter_totals` | `group_id, user_id, counted, updated_at` PK`(group_id, user_id)` | Tez o'qish uchun jamlanma (`/takliflarim`) |
+| `counter_totals` | `(group_id, user_id) PK, counted, is_unlocked, unlocked_at, last_count_at, updated_at` | Guruhga xos jamlanma (`/takliflarim`) |
 | `counter_audit` | `id, group_id, user_id, delta, admin_id, reason, created_at` | Admin qo'lda qo'shgani/ayirgani tarixi |
+| `counter_join_requests`, `counter_message_checks`, `counter_restrictions` | Join request expiry, bir xabar uchun rezervatsiya, faqat bot qo'ygan mute | Phase 7 navbat/idempotentlik va xavfsiz unlock |
 
 ### 4.8. Posbon va tozalovchi
 
@@ -464,21 +465,30 @@ Shart bajarildi → bonus: kunlar (obunaga qo'shiladi) | chegirma (%) | balans
    └─ Statistika: kim nechta taklif qildi, qancha bonus berildi
 ```
 
-### 8.4. Sanoqchi (har guruhda alohida)
+### 8.4. Sanoqchi (har guruhda alohida) — Phase 7 ✅
 
 ```
 Foydalanuvchi guruhga kiradi (yoki uni kimdir qo'shadi)
-   ├─ chat_join_request / chat_member update → invite_link kimga tegishli?
-   │     ├─ shaxsiy havola → inviter aniqlanadi
-   │     └─ xizmat xabari fallback ("X added Y") → from = inviter
+   ├─ chat_join_request faqat linkni vaqtincha qayd etadi; o'zi kredit EMAS
+   ├─ chat_member.invite_link → bot yaratgan shaxsiy link egasini topadi
+   │     └─ xizmat xabari fallback ("X added Y"); haqiqiy link keyin kelsa ustun
    ├─ Tekshiruvlar: invitee yangimi (UNIQUE) │ o'zi o'zini emasmi │
-   │                min_stay_minutes o'tdimi │ kunlik limit
-   └─ counter_totals.inviter += 1  (bir odam BIR MARTA)
-Chek: majburiy kanal obunasi (getChatMember) + counter N
-   ├─ ikkisi ham OK → yozish huquqi ochiladi (hard rejimda mute olib tashlanadi)
-   └─ /takliflarim → "N qo'shildi, M qoldi" + shaxsiy havola
-Admin panel: foydalanuvchi bo'yicha son, qo'lda +/- (counter_audit'ga yoziladi), nolga tushirish
+   │                min_stay_minutes o'tdimi │ kunlik limit (guruh vaqt mintaqasi)
+   └─ scheduler getChatMember bilan hali a'zoligini tekshiradi →
+      counter_totals.inviter += 1  (bir odam bir guruhda BIR MARTA)
+Chek: majburiy kanal obunasi (getChatMember, bot o'zi ham kanal admini) + counter N
+   ├─ ikkisi ham OK → yozish huquqi ochiladi (hard rejimda bot qo'ygan mute olinadi)
+   ├─ SOFT (standart): faqat xabar o'chiriladi; HARD: qo'shimcha mute
+   └─ /takliflarim (shaxsiy chat) → "N qo'shildi, M qoldi" + shaxsiy havola
+Admin panel: har guruh uchun N, qolish muddati, kunlik/havola limiti, manbalar,
+kanal talabi (guruh/global kanal), sinov/jonli tasdiq, foydalanuvchi bo'yicha
+qo'lda +/-/nol va counter_audit/action_log tarixi.
 ```
+
+**Ishga tushirish:** yangi guruhda sanoqchi O'CHIQ; yoqilganda ham dry-run.
+Haqiqiy o'chirish/mute alohida jonli tasdiq va Telegram huquqlari tekshiruvidan
+keyin ishlaydi. Aniq kanal berilmagan: admin panelda kanal ID/@username va bot
+adminligini tekshirib kiritiladi. API noma'lum bo'lsa fail-open (jazo yo'q).
 
 ### 8.5. Posbon (guard) va ruxsatlar — Phase 6 ✅
 
@@ -512,9 +522,10 @@ Guruhdagi ogohlantirishlar `warn_window_hours`, `warn_limit`, `mute_minutes` va
 `penalty` bilan sozlanadi. Istisno: turi, foydalanuvchi ID, qamrov (guruh yoki
 global), sabab, 1–365 kun/doimiy muddat; ko'rish, qaytarib olish va audit.
 Aktiv ruxsatlar qisman unique indeks bilan takrorlanmaydi, muddati o'tgani
-tarixda qoladi. **Phase 7 sanoqchi va majburiy obuna hali yo'q:** saqlangan
-`require_counter`/`require_subscription` maydonlari Phase 6da yoqilmaydi va
-avtomatik jazo chiqarmaydi.
+tarixda qoladi. **Phase 7:** obuna/N cheki `counter_settings`dagi guruhga xos
+switchlar orqali posbonning yagona xabar-amali yo'liga xavfsiz ulangan;
+`guard_settings.require_counter`/`require_subscription` eski zaxira maydonlari
+alohida jazo yo'liga ulanmaydi (ikki marta o'chirish yoki yashirin yoqishni oldini oladi).
 
 ### 8.6. Tozalovchi — Phase 6 ✅
 
@@ -703,7 +714,7 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 | **4** | **Aylanma joylash** | Navbat, kursor, interval, jitter, tinch soat, limiter, eski postni o'chirish, "hoziroq joylash", tartib o'zgartirish | Guruhga e'lonlar avtomatik keta boshlaydi ⭐ | 10-14 soat |
 | **5** | To'lovlar | Rekvizitlar, chek qabul qilish, tasdiq/rad, avtomatik obuna, tarix | To'liq pul sikli ishlaydi 💰 | 8-10 soat |
 | **6** ✅ | Posbon + tozalovchi + ruxsatlar | Har guruhda mustaqil filtr/jazo, dry-run, tozalash, muddatli ruxsatlar (obuna/sanoqchi sharti Phase 7da) | Guruh "o'zini tozalaydi" | 14-18 soat |
-| **7** | Sanoqchi | Shaxsiy invite linklar, attributsiya, `/takliflarim`, admin qo'lda tuzatishi, majburiy kanal | "N odam qo'shish" tizimi ishlaydi | 12-16 soat |
+| **7** ✅ | Sanoqchi | Shaxsiy invite linklar, attributsiya, `/takliflarim`, admin qo'lda tuzatishi, majburiy kanal | "N odam qo'shish" tizimi ishlaydi (offline; deploy sinovi qolgan) | 12-16 soat |
 | **8** | Referal + statistika + matnlar + xato jurnali | Referal sikli, grafik/hisobot, eksport, matn tahriri, xato paneli, broadcast | To'liq panel | 12-16 soat |
 | **9** | Sayqal | Testlar, yuklama testi, deploy skripti, backup/restore, README, video-qo'llanma | Ishlab chiqarishga tayyor | 10-14 soat |
 
@@ -880,7 +891,7 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 
 **Hali ochiq (MVP davomida hal qilamiz):**
 - Sotuvchi e'lonlari orasida rasm limiti (tarif standartlari)
-- Majburiy obuna kanali aniq nomi (Phase 7 uchun)
+- Majburiy obuna kanali aniq nomi hali berilmagan; Phase 7 panelida admin tekshirib kiritadi
 
 ---
 
@@ -900,4 +911,6 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 8. ✅ **Phase 5** (to'lovlar) — **274 offline test**; tafsilot `HOLAT.md`.
 9. ✅ **Phase 6** (har guruhda posbon, tozalovchi, ruxsatlar) — **302 offline test**;
    SQLite Alembic diff, seed va regressiya tekshirildi. Tafsilot `HOLAT.md`.
-10. ⏳ **Phase 7** (sanoqchi/majburiy kanal) uchun foydalanuvchidan **alohida ruxsat** kutilmoqda.
+10. ✅ **Phase 7** (har guruh sanoqchisi/majburiy kanal) — **319 offline test**;
+    SQLite Alembic upgrade/check/downgrade, seed ×2 va PostgreSQL offline SQL tekshirildi.
+11. ⏳ **Phase 8** (referal/statistika/matn/broadcast) uchun **yangi alohida ruxsat** kutilmoqda.

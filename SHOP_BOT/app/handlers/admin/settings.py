@@ -24,7 +24,7 @@ from app.utils.tg import render
 router = Router(name="admin:settings")
 
 # Tumbler (on/off) ko'rinishidagi sozlamalar
-TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required", "receipt_duplicate_check", "guard_enabled_global", "cleaner_enabled_global"}
+TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required", "receipt_duplicate_check", "counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"}
 
 LABELS = {
     "kill_switch": "🛑 Hammani to'xtatish",
@@ -32,6 +32,7 @@ LABELS = {
     "referral_enabled": "🤝 Referal",
     "receipt_required": "🧾 Chek majburiy",
     "receipt_duplicate_check": "🔍 Takroriy chekni tekshirish",
+    "counter_enabled_global": "🧮 Sanoqchi global switch",
     "guard_enabled_global": "🛡 Posbon global switch",
     "cleaner_enabled_global": "🧹 Tozalovchi global switch",
     "support_contact": "☎️ Yordam kontakti",
@@ -49,6 +50,7 @@ def _format_settings(values: dict[str, object]) -> str:
         f"🤝 Referal tizimi: <b>{'YOQILGAN' if values.get('referral_enabled') else 'o‘chirilgan'}</b>\n"
         f"🧾 Chek majburiy: <b>{'ha' if values.get('receipt_required') else 'yo‘q'}</b>\n"
         f"🔍 Takroriy chek tekshiruvi: <b>{'yoqilgan' if values.get('receipt_duplicate_check') else 'o‘chirilgan'}</b>\n"
+        f"🧮 Sanoqchi global: <b>{'YOQILGAN' if values.get('counter_enabled_global') else 'PAUZA'}</b>\n"
         f"🛡 Posbon global: <b>{'YOQILGAN' if values.get('guard_enabled_global') else 'PAUZA'}</b>\n"
         f"🧹 Tozalovchi global: <b>{'YOQILGAN' if values.get('cleaner_enabled_global') else 'PAUZA'}</b>\n"
         f"⏱ Default joylash intervali: <b>{interval} daqiqa</b>\n"
@@ -83,7 +85,7 @@ async def toggle_setting(
     if key not in TOGGLE_KEYS:
         await callback.answer("⚠️ Bu sozlamani o'zgartirib bo'lmaydi.", show_alert=True)
         return
-    if key in {"receipt_required", "receipt_duplicate_check", "guard_enabled_global", "cleaner_enabled_global"} and role not in (
+    if key in {"receipt_required", "receipt_duplicate_check", "counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"} and role not in (
         AdminRole.ADMIN, AdminRole.SUPER
     ):
         await callback.answer("⛔️ Bu switch'ni faqat admin boshqaradi.", show_alert=True)
@@ -91,7 +93,7 @@ async def toggle_setting(
 
     current = bool(await settings_service.get(key, DEFAULTS.get(key, False), session))
     new_value = not current
-    if key in {"guard_enabled_global", "cleaner_enabled_global"} and new_value:
+    if key in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"} and new_value:
         await render(callback, f"⚠️ <b>GLOBAL QAYTA YOQISH</b>\n\n"
                      f"{LABELS[key]} qayta yoqilsa, jonli rejimdagi guruhlarda "
                      "avvalgi qoidalar darhol ishlaydi. Guruhning individual qoidalari "
@@ -120,7 +122,7 @@ async def toggle_setting(
 async def resume_policy(callback: CallbackQuery, callback_data: AdminCB,
                         session: AsyncSession, role: str | None) -> None:
     key = callback_data.value
-    if key not in {"guard_enabled_global", "cleaner_enabled_global"}:
+    if key not in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"}:
         await callback.answer("⚠️ Noto'g'ri switch.", show_alert=True)
         return
     if not bool(await settings_service.get(key, False, session)):

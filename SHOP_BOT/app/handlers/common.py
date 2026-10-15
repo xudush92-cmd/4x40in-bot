@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from loguru import logger
@@ -102,6 +102,7 @@ async def cmd_help(message: Message, is_admin: bool) -> None:
         "/help — yordam",
         "/id — Telegram ID'ingizni ko'rish",
         "/ping — bot ishlayotganini tekshirish",
+        "/takliflarim — guruh sanoqchisi, obuna holati va shaxsiy havola",
         f"☎️ Yordam: {support}",
     ]
     if is_admin:

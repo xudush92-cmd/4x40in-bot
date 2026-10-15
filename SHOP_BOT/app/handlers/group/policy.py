@@ -389,10 +389,17 @@ async def perform_action(bot: Bot, action_id: int) -> None:
 async def on_group_message(
     message: Message, session: AsyncSession, bot: Bot, is_admin: bool | None = None,
 ) -> None:
+    # Bir xil xabar Phase 7 attributsiyasi VA Phase 6 xizmat tozalashidan o'tadi.
+    from app.handlers.group import counter as counter_handler
+
+    if message.new_chat_members and message.from_user:
+        await counter_handler.service_join(message, bot, session)
     # Anonymous admin/sender_chat va botlar: yozuvchining shaxsi aniq emas.
     if (message.sender_chat is not None or message.from_user is None or message.from_user.is_bot
             or is_admin or message.from_user.id in get_settings().admin_ids):
         return
+    if await counter_handler.check_message(message, session, bot):
+        return  # counter (jonli) bitta xabar uchun API amalini band qildi
     guard_global = await _global_enabled("guard")
     cleaner_global = await _global_enabled("cleaner")
     if not guard_global and not cleaner_global:

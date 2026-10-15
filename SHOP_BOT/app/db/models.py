@@ -32,6 +32,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
     text,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -676,8 +677,11 @@ class CounterSetting(Base, TimestampMixin):
         ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Eski matritsa sozlamasi migratsiyadan keyin birdan jazo bermasin.
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     required_n: Mapped[int] = mapped_column(Integer, default=3)
     mode: Mapped[str] = mapped_column(String(8), default=CounterMode.SOFT)
+    link_member_limit: Mapped[int] = mapped_column(Integer, default=20, server_default=text("20"))
     min_stay_minutes: Mapped[int] = mapped_column(Integer, default=10)  # soxta akkauntlarga qarshi
     max_per_day: Mapped[int] = mapped_column(Integer, default=20)
     count_sources: Mapped[Optional[Any]] = mapped_column(JSONType)  # {"link":true,"added_by":true}
@@ -691,6 +695,8 @@ class InviteLink(Base, TimestampMixin):
     __tablename__ = "invite_links"
     __table_args__ = (
         Index("ix_invite_links_group_user", "group_id", "user_id"),
+        Index("uq_invite_links_active_owner", "group_id", "user_id", unique=True,
+              postgresql_where=text("is_active"), sqlite_where=text("is_active")),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -750,6 +756,44 @@ class CounterAudit(Base, TimestampMixin):
     delta: Mapped[int] = mapped_column(Integer)
     reason: Mapped[Optional[str]] = mapped_column(String(255))
     admin_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+
+class CounterJoinRequest(Base, TimestampMixin):
+    """Join request hali a'zo emas: atributsiya faqat haqiqiy kirganda olinadi."""
+
+    __tablename__ = "counter_join_requests"
+
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    invite_link: Mapped[str] = mapped_column(String(255))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CounterMessageCheck(Base, TimestampMixin):
+    """Har xabar uchun sanoqchi tekshiruvi (dry-run ham boshqa filtrni to'smaydi)."""
+
+    __tablename__ = "counter_message_checks"
+    __table_args__ = (UniqueConstraint("group_id", "message_id", name="uq_counter_message_check"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    issue: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16))  # dry_run | running | deleted | failed | skipped
+    error: Mapped[str | None] = mapped_column(String(255))
+
+
+class CounterRestriction(Base, TimestampMixin):
+    """Faqat botning o'zi qo'ygan sanoqchi mute'ini xavfsiz ochish uchun."""
+
+    __tablename__ = "counter_restrictions"
+
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16))  # running | active | uncertain | released
+    issue: Mapped[str] = mapped_column(String(32))
+    error: Mapped[str | None] = mapped_column(String(255))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -961,6 +1005,7 @@ __all__ = [
     "ReferralSetting", "Referral", "ReferralBonusLog",
     # 4.7 Sanoqchi
     "CounterSetting", "InviteLink", "InviteEvent", "CounterTotal", "CounterAudit",
+    "CounterJoinRequest", "CounterMessageCheck", "CounterRestriction",
     # 4.8 Posbon / tozalovchi
     "GuardSetting", "Warning", "Violation", "Restriction", "CleanerSetting", "CleanupLog", "GroupMessageAction",
     # 4.9 Statistika / broadcast

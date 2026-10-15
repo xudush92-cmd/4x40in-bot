@@ -355,6 +355,20 @@ async def set_feature(
                 if category.rotation and not category.rotation.is_paused:
                     category.rotation.next_post_at = None
         await recompute_next_post(session, group, delay_min_sec=5 if enabled else None)
+    elif str(feature) == GroupFeature.COUNTER:
+        # Phase 7: matritsa tugmasi sanoqchini faqat sinov rejimida yoqadi.
+        from app.services.counter_service import ensure_counter
+
+        row = await ensure_counter(session, group.id)
+        row.enabled = enabled
+        if enabled:
+            row.dry_run = True
+        if actor_id is not None:
+            session.add(ActionLog(
+                actor_id=actor_id, action="counter_switch", entity="group_settings",
+                entity_id=group.id, group_id=group.id,
+                before={column: current}, after={column: enabled, "dry_run": row.dry_run},
+            ))
     elif str(feature) in (GroupFeature.GUARD, GroupFeature.CLEANER):
         # Matritsa orqali bir bosishda yoqish ham xavfsiz dry-run'dan boshlanadi.
         from app.services import group_policy_service as policy

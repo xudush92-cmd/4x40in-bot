@@ -18,6 +18,7 @@ from aiogram.methods import TelegramMethod
 from aiogram.types import (
     CallbackQuery,
     Chat,
+    ChatInviteLink,
     ChatMemberAdministrator,
     ChatMemberLeft,
     ChatMemberMember,
@@ -104,6 +105,11 @@ class FakeSession(BaseSession):
             return self._chat(payload.get("chat_id"))
         if name == "GetMe":
             return self._bot_user()
+        if name == "CreateChatInviteLink":
+            return ChatInviteLink(invite_link=f"https://t.me/+fake{len(self.calls)}",
+                                  creator=self._bot_user(), creates_join_request=False,
+                                  is_primary=False, is_revoked=False,
+                                  name=payload.get("name"), member_limit=payload.get("member_limit"))
         if name == "SendMediaGroup":
             return [self._message(payload).as_(bot) for _ in payload.get("media", [])]
         if name in _MESSAGE_METHODS:

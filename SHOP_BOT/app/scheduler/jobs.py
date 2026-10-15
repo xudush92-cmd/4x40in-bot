@@ -20,6 +20,8 @@ from app.db.base import session_scope
 from app.db.models import (
     Ad,
     CleanupLog,
+    CounterJoinRequest,
+    CounterMessageCheck,
     ErrorLog,
     Group,
     GroupMessageAction,
@@ -31,6 +33,7 @@ from app.db.models import (
     StatsDaily,
     Violation,
 )
+from app.handlers.group.counter import process_due, process_restrictions
 from app.handlers.group.policy import process_due_cleanup
 from app.redis_client import redis_manager
 from app.scheduler.poster import post_group
@@ -83,6 +86,12 @@ async def group_cleanup_job(bot: Bot) -> None:
     await process_due_cleanup(bot)
 
 
+async def counter_job(bot: Bot) -> None:
+    """Tasdiqlangan yangi a'zoni muddatidan keyin bir marta hisoblash."""
+    await process_due(bot)
+    await process_restrictions(bot)
+
+
 async def rights_check_job(bot: Bot) -> None:
     """Bot hali ham admin ekanini tekshirish (REJA.md 8.7).
 
@@ -98,7 +107,8 @@ async def rights_check_job(bot: Bot) -> None:
                     Group.is_active.is_(True),
                     (GroupSettings.posting_enabled.is_(True))
                     | (GroupSettings.guard_enabled.is_(True))
-                    | (GroupSettings.cleaner_enabled.is_(True)),
+                    | (GroupSettings.cleaner_enabled.is_(True))
+                    | (GroupSettings.counter_enabled.is_(True)),
                 )
                 .limit(200)
             )
@@ -132,14 +142,23 @@ async def retention_job() -> None:
             GroupMessageAction.status.in_({"done", "failed", "skipped"}),
         ))
         r5 = await session.execute(delete(Violation).where(Violation.created_at < log_cutoff))
+        r6 = await session.execute(delete(CounterMessageCheck).where(
+            CounterMessageCheck.created_at < log_cutoff,
+            CounterMessageCheck.status.in_({"dry_run", "deleted", "failed", "skipped"}),
+        ))
+        r7 = await session.execute(delete(CounterJoinRequest).where(
+            CounterJoinRequest.expires_at < now,
+        ))
         await session.execute(update(Restriction).where(
             Restriction.kind == "mute", Restriction.is_active.is_(True),
             Restriction.until_at <= now,
         ).values(is_active=False, lifted_at=now))
 
     logger.info(
-        "Retention: error_log -{}, post_log -{}, cleanup_log -{}, xabar amallari -{}, qoidabuzarliklar -{}",
+        "Retention: error_log -{}, post_log -{}, cleanup_log -{}, xabar amallari -{}, "
+        "qoidabuzarliklar -{}, sanoqchi xabarlari -{}, join request -{}",
         r1.rowcount, r2.rowcount, r3.rowcount, r4.rowcount, r5.rowcount,
+        r6.rowcount, r7.rowcount,
     )
 
 
@@ -300,6 +319,7 @@ async def _send_to_seller(bot: Bot, user_id: int, text: str) -> bool:
 
 
 __all__ = [
+    "counter_job",
     "daily_stats_job",
     "expire_subscriptions_job",
     "heartbeat_job",

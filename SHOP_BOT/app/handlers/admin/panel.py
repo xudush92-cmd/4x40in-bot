@@ -110,6 +110,13 @@ async def open_section(
         await alert(callback, "")
         return
 
+    if key == "counter":
+        from app.handlers.admin.counter import render_choose
+
+        await render_choose(callback, session)
+        await alert(callback, "")
+        return
+
     if key in {"guard", "cleaner", "permissions"}:
         from app.handlers.admin.policy import render_choose
 

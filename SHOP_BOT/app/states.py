@@ -113,6 +113,15 @@ class AdminPolicyStates(StatesGroup):
     confirming_manual_action = State()
 
 
+class AdminCounterStates(StatesGroup):
+    """Phase 7: har guruh sanoqchisi, kanal va qo'lda hisob tuzatish."""
+
+    waiting_number = State()
+    waiting_channel = State()
+    waiting_user = State()
+    waiting_adjust = State()
+
+
 class AdminTextStates(StatesGroup):
     """Bot matnini tahrirlash (Phase 8)."""
 

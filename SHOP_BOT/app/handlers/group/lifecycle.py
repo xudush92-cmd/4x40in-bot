@@ -99,12 +99,6 @@ async def _member_count(bot: Bot, chat_id: int) -> int | str:
         return "—"
 
 
-@router.chat_member()
-async def on_chat_member(event: ChatMemberUpdated) -> None:
-    """A'zolar holati o'zgarishi — Phase 7 da sanoqchi uchun ishlatiladi."""
-    _ = event
-
-
 def group_admin_button(group_id: int) -> InlineKeyboardMarkup:
     """Guruhni panelda ochish tugmasi (Phase 1 da ishlaydi)."""
     return InlineKeyboardMarkup(

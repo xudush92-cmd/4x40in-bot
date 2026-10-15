@@ -45,6 +45,21 @@ class PolicyCB(CallbackData, prefix="pol"):
     value: str = "-"
 
 
+class CounterCB(CallbackData, prefix="mine"):
+    """Foydalanuvchining shaxsiy sanoqchi sahifasi (boshqa odamga ID yo'q)."""
+
+    action: str
+    group_id: int = 0
+
+
+class CounterAdminCB(CallbackData, prefix="acnt"):
+    """Admin sanoqchi amallari (group_id=0: umumiy kanallar)."""
+
+    action: str
+    group_id: int = 0
+    value: str = "-"
+
+
 class FeatureCB(CallbackData, prefix="feat"):
     """Funksiya tumbleri: `feat:<group_id>:<feature>:<enabled>:<origin>:<page>`.
 

@@ -14,6 +14,7 @@ from loguru import logger
 
 from app.config import Settings
 from app.scheduler.jobs import (
+    counter_job,
     daily_stats_job,
     expire_subscriptions_job,
     group_cleanup_job,
@@ -59,6 +60,13 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             args=[bot],
             id="group_cleanup",
             name="Kechiktirilgan guruh xabarlarini tozalash",
+        )
+        scheduler.add_job(
+            counter_job,
+            IntervalTrigger(seconds=30),
+            args=[bot],
+            id="counter",
+            name="Taklif va sanoqchi mute'larini tekshirish",
         )
 
         # ── Har 15 daqiqada: bot huquqlarini tekshirish ────────

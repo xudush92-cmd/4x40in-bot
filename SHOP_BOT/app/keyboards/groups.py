@@ -6,7 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import FEATURE_LABELS, FEATURE_SHORT
 from app.db.models import Group
-from app.keyboards.callbacks import AdminCB, FeatureCB, GroupCB, PolicyCB, PostingCB
+from app.keyboards.callbacks import AdminCB, CounterAdminCB, FeatureCB, GroupCB, PolicyCB, PostingCB
 from app.keyboards.common import confirm_row, nav_row
 from app.utils.text import human_int, truncate
 
@@ -101,6 +101,8 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
             action="home", group_id=group.id, value="cleaner").pack()),
     ])
     rows.append([
+        InlineKeyboardButton(text="🧮 Sanoqchi", callback_data=CounterAdminCB(
+            action="home", group_id=group.id).pack()),
         InlineKeyboardButton(text="🔑 Guruh ruxsatlari", callback_data=PolicyCB(
             action="perm", group_id=group.id).pack()),
     ])
@@ -159,6 +161,9 @@ def group_features_kb(group: Group) -> InlineKeyboardMarkup:
                 )
             ]
         )
+
+    rows.append([InlineKeyboardButton(text="🔧 Sanoqchi qoidalari va jonli tasdiq",
+                                    callback_data=CounterAdminCB(action="home", group_id=group.id).pack())])
 
     if settings is not None:
         rows.append(

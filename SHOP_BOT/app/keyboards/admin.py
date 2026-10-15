@@ -49,6 +49,7 @@ READY_SECTIONS = {
     "payments",
     "guard",
     "cleaner",
+    "counter",
     "permissions",
     "users",
 }
@@ -137,6 +138,7 @@ def settings_kb(values: dict[str, object], role: str | None = None) -> InlineKey
     ]
     if role != AdminRole.MODERATOR:
         rows.extend([
+            [toggle("counter_enabled_global", "🧮 Sanoqchi global")],
             [toggle("guard_enabled_global", "🛡 Posbon global")],
             [toggle("cleaner_enabled_global", "🧹 Tozalovchi global")],
             [toggle("receipt_required", "🧾 Chek rasmi majburiy")],
