@@ -33,6 +33,7 @@ from app.constants import (
 )
 from app.db.models import ActionLog, CleanerSetting, Group
 from app.filters import IsAdmin
+from app.handlers.admin._roles import ReadOnlyForModerator
 from app.keyboards.callbacks import FeatureCB, GroupCB
 from app.keyboards.common import PER_PAGE_GROUPS, PER_PAGE_MATRIX
 from app.keyboards.groups import (
@@ -67,8 +68,11 @@ from app.utils.tg import alert, render
 from app.utils.time import fmt_dt
 
 router = Router(name="admin:groups")
-router.message.filter(IsAdmin())
+router.message.filter(IsAdmin(AdminRole.ADMIN))
 router.callback_query.filter(IsAdmin())
+router.callback_query.middleware(ReadOnlyForModerator(
+    {"list", "card", "add", "matrix", "feats", "settings", "cats"},
+))
 
 PAUSED_REASONS = {
     "manual": "admin qo'lda to'xtatgan",

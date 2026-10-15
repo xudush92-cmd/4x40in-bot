@@ -19,9 +19,10 @@ from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import MAX_INTERVAL_SEC, MIN_INTERVAL_SEC
+from app.constants import MAX_INTERVAL_SEC, MIN_INTERVAL_SEC, AdminRole
 from app.db.models import Category
 from app.filters import IsAdmin
+from app.handlers.admin._roles import ReadOnlyForModerator
 from app.keyboards.callbacks import CategoryCB, GroupCB
 from app.keyboards.categories import (
     cancel_create_kb,
@@ -40,8 +41,9 @@ from app.utils.text import escape_html, fmt_interval, human_int, truncate
 from app.utils.tg import alert, render
 
 router = Router(name="admin:categories")
-router.message.filter(IsAdmin())
+router.message.filter(IsAdmin(AdminRole.ADMIN))
 router.callback_query.filter(IsAdmin())
+router.callback_query.middleware(ReadOnlyForModerator({"list", "card", "group", "order"}))
 
 NAV_ACTIONS = {"list", "card", "create", "order", "group", "setgroup", "rename", "interval"}
 

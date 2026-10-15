@@ -132,6 +132,16 @@ def seller_pay_kb(card_number: str, *, receipt_required: bool) -> InlineKeyboard
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def bonus_checkout_kb() -> InlineKeyboardMarkup:
+    """Butunlay bonus hisobidan chek — bankka pul o'tkazilmaydi, admin tasdig'i shart."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 Bonus bilan yuborish (admin tekshiradi)",
+                              callback_data=SellerPanelCB(action="submit_no_receipt").pack())],
+        [InlineKeyboardButton(text="❌ Bekor qilish",
+                              callback_data=SellerPanelCB(action="cancel_pay").pack())],
+    ])
+
+
 def seller_history_kb(payments: list[Payment], *, page: int, pages: int) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(
         text=f"{'🕓' if item.status == PaymentStatus.PENDING else '✅' if item.status == PaymentStatus.APPROVED else '❌'} #{item.id} · {truncate(item.tariff.name if item.tariff else '—', 24)}",

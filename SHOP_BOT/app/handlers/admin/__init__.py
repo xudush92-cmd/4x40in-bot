@@ -9,8 +9,11 @@ from aiogram import Router
 
 from app.filters import PrivateChat
 from app.handlers.admin import (
+    admins,
+    broadcast,
     categories,
     counter,
+    errors,
     groups,
     mods,
     panel,
@@ -18,9 +21,12 @@ from app.handlers.admin import (
     permissions,
     policy,
     posting,
+    referral,
     sellers,
     settings,
+    stats,
     tariffs,
+    texts,
 )
 
 # Faqat shaxsiy chatdagi admin amallari (guruh ichida panel ishlamaydi)
@@ -29,6 +35,12 @@ admin_router.message.filter(PrivateChat())
 admin_router.callback_query.filter(PrivateChat())
 
 admin_router.include_router(settings.router)     # ⚙️ global sozlamalar (FSM)
+admin_router.include_router(texts.router)        # ✍️ bot matnlari (FSM)
+admin_router.include_router(errors.router)       # ⚠️ xatolar jurnali
+admin_router.include_router(referral.router)     # 🤝 referal (FSM)
+admin_router.include_router(broadcast.router)    # 📣 broadcast (FSM)
+admin_router.include_router(stats.router)        # 📊 kunlik/guruh hisobotlari
+admin_router.include_router(admins.router)       # 👑 super admin rollari
 admin_router.include_router(groups.router)       # 👥 guruhlar (FSM)
 admin_router.include_router(counter.router)      # 🧮 har guruh sanoqchisi (FSM)
 admin_router.include_router(policy.router)       # 🛡 guruh siyosati (FSM)

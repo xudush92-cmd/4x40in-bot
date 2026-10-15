@@ -56,11 +56,18 @@ class PostingRateLimiter:
         self._lock = asyncio.Lock()
         self._global = _Bucket(GLOBAL_CAPACITY, time.monotonic())
         self._groups: dict[int, _Bucket] = {}
+        self._last_cleanup = time.monotonic()
 
     async def _local_reserve(self, chat_id: int, cost: int) -> float:
         """Xotiradagi ikki bucket uchun umumiy atomar qaror; kutish sekundda."""
         async with self._lock:
             now = time.monotonic()
+            # Broadcast dev rejimida har user uchun bir bucket ishlatadi;
+            # uzoq ishlagan process xotirasida eskilar cheksiz yig'ilmasin.
+            if len(self._groups) > 2048 and now - self._last_cleanup > 60:
+                self._groups = {gid: bucket for gid, bucket in self._groups.items()
+                                if now - bucket.last < 120}
+                self._last_cleanup = now
             global_bucket = self._global
             group = self._groups.setdefault(chat_id, _Bucket(GROUP_CAPACITY, now))
             gt = min(GLOBAL_CAPACITY, global_bucket.tokens + max(0, now - global_bucket.at) * 25)

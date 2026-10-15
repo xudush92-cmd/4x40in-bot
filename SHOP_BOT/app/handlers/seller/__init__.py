@@ -15,7 +15,7 @@ faqat `user` ni beradi.
 
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 from loguru import logger
@@ -31,7 +31,7 @@ from app.keyboards.seller_panel import (
     tariff_screen_kb,
     tariffs_catalog_kb,
 )
-from app.services import seller_service, subscription_service, tariff_service
+from app.services import referral_service, seller_service, subscription_service, tariff_service
 from app.services.settings_service import settings_service
 from app.states import SellerPaymentStates
 from app.utils.text import escape_html, fmt_amount, truncate
@@ -149,17 +149,24 @@ async def _catalog_text(session: AsyncSession, tariffs: list[Tariff] | None = No
     return "\n".join(lines)
 
 
-async def _referral_text(seller: Seller, session: AsyncSession) -> str:
+async def _referral_text(seller: Seller, session: AsyncSession, bot: Bot | None = None) -> str:
     code = await seller_service.ensure_referral_code(session, seller)
-    bot_username = await settings_service.get("bot_username", "", session)
-    link = f"https://t.me/{bot_username}?start=ref_{code}" if bot_username else f"ref_{code}"
+    username = str(await settings_service.get("bot_username", "", session) or "").lstrip("@")
+    if not username and bot:
+        username = (await bot.get_me()).username or ""
+    link = f"https://t.me/{username}?start=ref_{code}" if username else f"ref_{code}"
+    stats = await referral_service.seller_stats(session, seller.id)
+    enabled = bool(await settings_service.get("referral_enabled", False, session))
     return (
-        "🎁 <b>Referal</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔑 Sizning kodingiz: <code>{code}</code>\n"
-        f"🔗 Havola: <code>{link}</code>\n\n"
-        "<i>Havoladan kelgan har bir sotuvchi uchun bonus tizimi Phase 8 da "
-        "(«🤝 Referal» bo'limi) ishga tushadi.</i>"
+        "🎁 <b>Referal</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔑 Shaxsiy kod: <code>{escape_html(code)}</code>\n"
+        f"🔗 Havola: <code>{escape_html(link)}</code>\n"
+        f"👥 Keldi: {stats['invited']} · 🎉 Bonus: {stats['rewarded']} · ⏳ Kutilmoqda: {stats['pending']}\n"
+        f"💳 Bonus balansi: {seller.balance:,.0f} so'm\n\n"
+        + ("<i>Referal hozir pauzada. Eski bonuslar o'chmaydi.</i>" if not enabled else
+           "<i>Bonus yangi foydalanuvchi kelganda yoki birinchi tasdiqlangan "
+           "to'lovidan so'ng, admin sozlagan shart bo'yicha beriladi. "
+           "Sanoqchi hisobi alohida.</i>")
     )
 
 
@@ -224,12 +231,13 @@ async def on_catalog(callback: CallbackQuery, session: AsyncSession, state: FSMC
 
 
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "referral"))
-async def on_referral(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+async def on_referral(callback: CallbackQuery, session: AsyncSession, state: FSMContext,
+                      bot: Bot) -> None:
     await _leave_payment(state)
     seller = await _seller_of(callback, session)
     if seller is None:
         return
-    await render(callback, await _referral_text(seller, session), back_to_menu_kb())
+    await render(callback, await _referral_text(seller, session, bot), back_to_menu_kb())
     await alert(callback, "")
 
 

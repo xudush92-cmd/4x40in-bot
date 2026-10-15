@@ -9,7 +9,11 @@ bermaydi (matnda ko'rinib qoladi) — bot hech qachon "yiqilmaydi".
 
 from __future__ import annotations
 
+import re
+import time
 from collections import defaultdict
+from html.parser import HTMLParser
+from string import Formatter
 from typing import Any
 
 from loguru import logger
@@ -17,7 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import session_scope
-from app.db.models import BotText
+from app.db.models import ActionLog, BotText
+from app.redis_client import redis_manager
 
 DEFAULT_LANG = "uz"
 
@@ -129,12 +134,99 @@ DEFAULT_TEXTS: dict[str, str] = {
 }
 
 
+_TEXT_VERSION = "shopbot:texts:version"
+_TEXT_TTL = 15.0
+_ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "pre"}
+_FIELD_RE = re.compile(r"[a-z_]+\Z")
+
+
+class _SafeHTML(HTMLParser):
+    """Telegram qo'llaydigan oddiy HTML; noto'g'ri tag bilan botni yiqitmaslik."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag not in _ALLOWED_TAGS or attrs:
+            raise ValueError("Faqat b/i/u/s/code/pre teglariga ruxsat; atributlar mumkin emas.")
+        self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.stack or self.stack.pop() != tag:
+            raise ValueError("HTML yopilish tegi mos emas.")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        raise ValueError("Yakka HTML teg ishlatmang.")
+
+    def handle_comment(self, data: str) -> None:
+        raise ValueError("HTML kommentariy mumkin emas.")
+
+    def handle_decl(self, decl: str) -> None:
+        raise ValueError("HTML deklaratsiyasi mumkin emas.")
+
+
+def validate_template(key: str, value: str) -> str:
+    """Faqat mavjud shablonlar, ularning xavfsiz placeholder'lari va HTML'i."""
+    if key not in DEFAULT_TEXTS:
+        raise ValueError("Bunday bot matni mavjud emas.")
+    text = value.strip() if isinstance(value, str) else ""
+    if not 1 <= len(text) <= 2800:
+        raise ValueError("Matn 1–2800 belgidan iborat bo'lsin.")
+    try:
+        allowed = {name for _, name, _, _ in Formatter().parse(DEFAULT_TEXTS[key]) if name}
+        for _, name, fmt, conversion in Formatter().parse(text):
+            if name is not None and (not _FIELD_RE.fullmatch(name) or name not in allowed or fmt or conversion):
+                raise ValueError("Faqat shu matnga tegishli oddiy {placeholder} mumkin.")
+    except ValueError as exc:
+        if "placeholder" in str(exc):
+            raise
+        raise ValueError("Qavslar yoki placeholder shakli noto'g'ri.") from exc
+    html = _SafeHTML()
+    html.feed(text)
+    html.close()
+    if html.stack:
+        raise ValueError("HTML teglari yopilmagan.")
+    # HTMLParser noto'g'ri '<' belgilarini ham oddiy matn deb olishi mumkin.
+    # Telegramda xato bermasligi uchun literal < ni faqat &lt; deb yozing.
+    if "<" in re.sub(r"</?(?:" + "|".join(_ALLOWED_TAGS) + r")>", "", text):
+        raise ValueError("HTML xatosi: '<' uchun &lt; yozing.")
+    if re.search(r"&(?!amp;|lt;|gt;|quot;)", text):
+        raise ValueError("HTML xatosi: '&' uchun &amp; yozing.")
+    return text
+
+
+async def update_template(session: AsyncSession, key: str, value: str | None,
+                          actor_id: int) -> BotText:
+    """Saqlash yoki standartga qaytarish; dastlabki xato shu yerda to'siladi."""
+    text = DEFAULT_TEXTS[key] if value is None and key in DEFAULT_TEXTS else validate_template(key, value or "")
+    row = (await session.execute(select(BotText).where(
+        BotText.key == key, BotText.lang == DEFAULT_LANG,
+    ))).scalar_one_or_none()
+    previous = row.text if row else DEFAULT_TEXTS[key]
+    if row is None:
+        row = BotText(key=key, lang=DEFAULT_LANG, text=text, is_custom=value is not None,
+                      updated_by=actor_id)
+        session.add(row)
+    else:
+        row.text, row.is_custom, row.updated_by = text, value is not None, actor_id
+    await session.flush()
+    if previous != text:
+        session.add(ActionLog(actor_id=actor_id, action="bot_text_change", entity="bot_text",
+                              entity_id=row.id, before={"key": key, "text": previous[:500]},
+                              after={"key": key, "text": text[:500]}))
+        await session.flush()
+    return row
+
+
 class TextService:
     """Keshlangan matnlar + xavfsiz render."""
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, str], str] = {}
         self._loaded = False
+        self._last_check = 0.0
+        self._version: int | None = None
 
     async def load(self, session: AsyncSession | None = None) -> None:
         rows: list[BotText]
@@ -145,11 +237,17 @@ class TextService:
                 rows = (await own_session.execute(select(BotText))).scalars().all()
         self._cache = {(row.key, row.lang): row.text for row in rows}
         self._loaded = True
+        self._last_check = time.monotonic()
+        self._version = await redis_manager.get_int(_TEXT_VERSION)
         logger.debug("Bot matnlari yuklandi: {} ta yozuv", len(self._cache))
 
     async def ensure_loaded(self, session: AsyncSession | None = None) -> None:
-        if not self._loaded:
-            await self.load(session)
+        if not self._loaded or time.monotonic() - self._last_check >= _TEXT_TTL:
+            version = await redis_manager.get_int(_TEXT_VERSION)
+            if not self._loaded or version is None or version != self._version:
+                await self.load(session)
+            else:
+                self._last_check = time.monotonic()
 
     def raw(self, key: str, lang: str = DEFAULT_LANG) -> str:
         """Matnni placeholder'larsiz olish."""
@@ -171,6 +269,12 @@ class TextService:
     def invalidate(self) -> None:
         self._loaded = False
         self._cache.clear()
+        self._last_check = 0.0
+
+    async def publish(self) -> None:
+        """Faqat DB commitidan KEYIN: boshqa processlarning keshini yangilatadi."""
+        self.invalidate()
+        await redis_manager.incr(_TEXT_VERSION)
 
 
 def safe_format(template: str, **kwargs: Any) -> str:

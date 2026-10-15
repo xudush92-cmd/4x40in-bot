@@ -18,6 +18,7 @@ Muhim qoidalar (REJA.md 4.4 va 9-bo'lim):
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, time, timedelta
 from math import ceil
 from typing import Any
 
@@ -171,7 +172,7 @@ async def list_seller_ads(
     stmt = (
         select(Ad)
         .where(Ad.seller_id == seller_id, Ad.status.in_(statuses))
-        .order_by(Ad.created_at.desc(), Ad.id.desc())
+        .order_by(Ad.category_id, Ad.created_at.desc(), Ad.id.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -321,6 +322,29 @@ async def ad_stats(session: AsyncSession, ad: Ad) -> dict[str, Any]:
         "photos": await photo_count(session, ad.id),
         "last_posted_at": ad.last_posted_at,
     }
+
+
+async def daily_post_counts(session: AsyncSession, ad_id: int, days: int = 7) -> list[tuple[str, int]]:
+    """E'lonning mahalliy kunlik muvaffaqiyatli postlari (bugun ham kiradi)."""
+    from app.db.models import PostLog
+    from app.services.report_service import report_timezone
+    from app.utils.time import ensure_aware
+
+    if days not in (7, 30):
+        raise ValueError("Grafik davri 7 yoki 30 kun bo'lishi kerak.")
+    tz = await report_timezone(session)
+    end = utcnow().astimezone(tz).date()
+    start = end - timedelta(days=days - 1)
+    utc_start = datetime.combine(start, time.min, tzinfo=tz).astimezone(UTC)
+    times = (await session.execute(select(PostLog.created_at).where(
+        PostLog.ad_id == ad_id, PostLog.status == "ok", PostLog.created_at >= utc_start,
+    ))).scalars().all()
+    counts: dict[str, int] = {}
+    for dt in times:
+        key = ensure_aware(dt).astimezone(tz).date().isoformat()
+        counts[key] = counts.get(key, 0) + 1
+    return [((start + timedelta(days=i)).isoformat(),
+             counts.get((start + timedelta(days=i)).isoformat(), 0)) for i in range(days)]
 
 
 async def category_of(session: AsyncSession, ad: Ad) -> Category | None:
@@ -786,6 +810,7 @@ __all__ = [
     "STATUS_FILTERS",
     "ad_label",
     "ad_stats",
+    "daily_post_counts",
     "add_photo",
     "admin_pause",
     "approve",

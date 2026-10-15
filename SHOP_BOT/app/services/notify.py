@@ -153,10 +153,16 @@ async def notify_payment_admins(bot: Bot, payment_id: int) -> int:
             f"📥 <b>Yangi to'lov cheki #{payment.id}</b>\n"
             f"🛒 Sotuvchi: <b>{escape_html(seller_name)}</b> (ID {payment.seller.user_id if payment.seller else payment.seller_id})\n"
             f"💳 Tarif: <b>{escape_html(tariff_name)}</b>\n"
-            f"💰 Summa: <b>{fmt_amount(payment.amount, payment.currency)}</b>\n"
-            f"🏦 Karta: {escape_html(method.name) if method else '—'} · {mask_card(method.card_number) if method else '—'}\n"
+            f"💰 Bankka: <b>{fmt_amount(payment.amount, payment.currency)}</b>\n"
+            + (f"🎟 Chegirma: {fmt_amount(payment.discount_amount, payment.currency)} · "
+               f"🎁 Balans: {fmt_amount(payment.balance_used, payment.currency)}\n"
+               if payment.discount_amount or payment.balance_used else "")
+            + f"🏦 Karta: {escape_html(method.name) if method else '—'} · {mask_card(method.card_number) if method else '—'}\n"
             + ("🔴 <b>TAKRORIY CHEK — tasdiqlash bloklangan!</b>\n" if payment.is_duplicate_receipt else "")
-            + ("⚠️ Chek rasmi yo'q — bank o'tkazmasini qo'lda tekshiring.\n" if not payment.receipt_file_id else "")
+            + ("🎁 Bonus-only to'lov: bankka pul o'tkazilmaydi; admin tekshiradi.\n"
+               if payment.amount == 0 else
+               "⚠️ Chek rasmi yo'q — bank o'tkazmasini qo'lda tekshiring.\n"
+               if not payment.receipt_file_id else "")
             + "<i>Faqat admin tekshirib tasdiqlashi mumkin.</i>"
         )
         file_id = payment.receipt_file_id

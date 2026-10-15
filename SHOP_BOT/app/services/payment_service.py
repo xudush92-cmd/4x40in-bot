@@ -10,17 +10,21 @@ import hashlib
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import PaymentStatus, SellerStatus
-from app.db.models import ActionLog, Payment, PaymentMethod, Seller, Subscription, Tariff
+from app.db.models import ActionLog, Payment, PaymentMethod, ReferralBonusLog, Seller, Subscription, Tariff
 from app.services import subscription_service
 from app.services.settings_service import settings_service
 from app.utils.text import clean_text
 from app.utils.time import utcnow
+
+if TYPE_CHECKING:
+    from app.services.referral_service import Quote
 
 METHOD_PAGE = 8
 PAYMENT_PAGE = 8
@@ -159,14 +163,16 @@ async def choose_method(session: AsyncSession, currency: str) -> PaymentMethod |
 
 
 async def submit_receipt(
-    session: AsyncSession, *, seller: Seller, tariff: Tariff, method: PaymentMethod,
+    session: AsyncSession, *, seller: Seller, tariff: Tariff, method: PaymentMethod | None,
     file_id: str | None, file_unique_id: str | None,
     quoted_amount: Decimal | None = None, quoted_currency: str | None = None,
+    quote: Quote | None = None,
 ) -> Payment:
-    """Tanlashdagi summa/valyuta (bo'lmasa joriy tarif) saqlanadi; dublikat belgilanadi.
+    """Chekni yozishdan oldin Seller qatori ostida bonus/kuponni BIR MARTA band qilish.
 
-    `receipt_unique_hash` UNIQUE: birinchi chekda hash, keyingi dublikatda NULL.
-    Ikki worker bir xil chekni bir vaqtda olsa savepoint orqali xatoni ushlaymiz.
+    Bonusli 0 so'mlik chek ham faqat admin tomonidan tasdiqlanadi; avto grant yo'q.
+    Rad etilsa rezerv qilingan balans va kupon qaytariladi. Eski Phase 5
+    chaqiruvlari uchun quote=None bo'lsa o'sha to'lov oqimi saqlanadi.
     """
     if seller.status in (SellerStatus.BLOCKED, SellerStatus.DELETED):
         raise ValueError("Sotuvchi bloklangan yoki o'chirilgan.")
@@ -174,22 +180,39 @@ async def submit_receipt(
         raise ValueError("Bu tarifni hozir sotib olib bo'lmaydi.")
     amount = Decimal(str(quoted_amount)) if quoted_amount is not None else tariff.price
     currency = _currency(quoted_currency) if quoted_currency is not None else tariff.currency
-    if not amount.is_finite() or not Decimal("0") < amount <= Decimal("999999999"):
+    if (not amount.is_finite() or amount < 0 or amount > Decimal("999999999")
+            or (amount == 0 and (quote is None or quote.discount + quote.balance <= 0))):
         raise ValueError("Bu tarifni hozir sotib olib bo'lmaydi.")
-    if method.currency != currency:
+    if currency != tariff.currency:
+        raise ValueError("Tarif valyutasi o'zgargan. Katalogdan qayta boshlang.")
+    if amount > 0 and (method is None or method.currency != currency):
         raise ValueError("Tarif va karta valyutasi mos emas.")
-    if not file_id and await settings_service.get("receipt_required", True, session):
+    if amount > 0 and not file_id and await settings_service.get("receipt_required", True, session):
         raise ValueError("Chek rasmini yuborish majburiy.")
     if bool(file_id) != bool(file_unique_id) or (file_id and len(file_id) > 255):
         raise ValueError("Chek rasmi haqiqiy Telegram rasmi bo'lishi kerak.")
 
+    voucher = None
+    if quote is not None:
+        from app.services.referral_service import verify_quote
+
+        # Ikkita parallel chek bitta balans/kuponni ishlatmasligi uchun.
+        seller = (await session.execute(select(Seller).where(Seller.id == seller.id)
+                                        .with_for_update().execution_options(populate_existing=True))).scalar_one()
+        voucher = await verify_quote(session, seller, tariff, quote)
+        if quote.bank != amount:
+            raise ValueError("Summa mos emas. Katalogdan qayta boshlang.")
     digest = None
     if file_unique_id and await settings_service.get("receipt_duplicate_check", True, session):
         digest = hashlib.sha256(file_unique_id.encode("utf-8")).hexdigest()
-    base = dict(
+    values = dict(
         seller_id=seller.id, tariff_id=tariff.id, amount=amount,
-        currency=currency, method_id=method.id, receipt_file_id=file_id,
-        status=PaymentStatus.PENDING,
+        base_amount=quote.base if quote else amount,
+        discount_amount=quote.discount if quote else Decimal("0"),
+        balance_used=quote.balance if quote else Decimal("0"),
+        discount_bonus_id=quote.discount_bonus_id if quote else None,
+        currency=currency, method_id=method.id if method else None,
+        receipt_file_id=file_id, status=PaymentStatus.PENDING,
     )
     existing = (await session.execute(
         select(Payment.id).where(Payment.receipt_unique_hash == digest).limit(1)
@@ -197,16 +220,22 @@ async def submit_receipt(
     if digest and existing is None:
         try:
             async with session.begin_nested():
-                payment = Payment(**base, receipt_unique_hash=digest, is_duplicate_receipt=False)
+                payment = Payment(**values, receipt_unique_hash=digest, is_duplicate_receipt=False)
                 session.add(payment)
                 await session.flush()
-            return payment
         except IntegrityError:
-            # Boshqa worker birinchi hash'ni oldin yozgan: faqat shu savepoint rollback.
-            pass
-    payment = Payment(**base, receipt_unique_hash=None, is_duplicate_receipt=bool(digest))
-    session.add(payment)
-    await session.flush()
+            # Boshqa worker birinchi xesh'ni oldin yozgan.
+            existing = -1
+    if not digest or existing is not None:
+        payment = Payment(**values, receipt_unique_hash=None, is_duplicate_receipt=bool(digest))
+        session.add(payment)
+        await session.flush()
+    if quote is not None:
+        if quote.balance:
+            seller.balance -= quote.balance
+        if voucher:
+            voucher.reserved_payment_id = payment.id
+        await session.flush()
     return payment
 
 
@@ -273,17 +302,32 @@ async def decide(
         tariff = await session.get(Tariff, payment.tariff_id)
         if tariff is None:
             return Decision("missing", payment)
+        coupon = await session.get(ReferralBonusLog, payment.discount_bonus_id) if payment.discount_bonus_id else None
+        if payment.discount_bonus_id and (coupon is None or coupon.reserved_payment_id != payment.id
+                                          or coupon.redeemed_at is not None):
+            return Decision("invalid", payment)  # noaniq chegirma bilan tarif berilmaydi
         subscription = await subscription_service.grant(
             session, seller, tariff, granted_by=admin_id, payment_id=payment.id
         )
         payment.subscription_id = subscription.id
         payment.status = PaymentStatus.APPROVED
+        if coupon:
+            coupon.redeemed_at = utcnow()
+        from app.services.referral_service import first_payment
+
+        await first_payment(session, payment, seller)
     else:
         explanation = clean_text(reason, limit=300)
         if not explanation or len(explanation) < 3:
             return Decision("invalid", payment)
         payment.reason = explanation
         payment.status = PaymentStatus.REJECTED
+        if payment.balance_used and seller:
+            seller.balance += payment.balance_used
+        if payment.discount_bonus_id:
+            coupon = await session.get(ReferralBonusLog, payment.discount_bonus_id)
+            if coupon and coupon.reserved_payment_id == payment.id:
+                coupon.reserved_payment_id = None
 
     payment.admin_id = admin_id
     payment.decided_at = utcnow()

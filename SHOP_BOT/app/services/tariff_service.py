@@ -16,7 +16,7 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Payment, Subscription, Tariff
+from app.db.models import ActionLog, Category, Group, Payment, Subscription, Tariff
 from app.utils.text import clean_text, fmt_amount, truncate
 
 MAX_NAME_LEN = 64
@@ -188,6 +188,40 @@ async def update_tariff(session: AsyncSession, tariff: Tariff, **fields: Any) ->
     return changed
 
 
+async def set_restriction(session: AsyncSession, tariff_id: int, field: str,
+                          item_id: int | None, actor_id: int) -> Tariff:
+    """Bir guruh/toifani yoqish/o'chirish yoki cheklovni to'liq olib tashlash.
+
+    None — barcha guruh/toifalar; [] — hozircha hech biri (xavfsiz pauza).
+    Keraksiz ID'ni saqlamaydi; barcha o'zgarishlar auditda aks etadi.
+    """
+    if field not in {"allowed_category_ids", "allowed_group_ids"}:
+        raise ValueError("Tarif cheklovi noto'g'ri.")
+    row = (await session.execute(select(Tariff).where(Tariff.id == tariff_id)
+                                 .with_for_update())).scalar_one_or_none()
+    if row is None:
+        raise ValueError("Tarif topilmadi.")
+    old = getattr(row, field)
+    if item_id is None:
+        new = None
+    else:
+        model = Category if field == "allowed_category_ids" else Group
+        if item_id <= 0 or await session.get(model, item_id) is None:
+            raise ValueError("Toifa/guruh topilmadi.")
+        current = set(old or [])
+        if item_id in current:
+            current.remove(item_id)
+        else:
+            current.add(item_id)
+        new = sorted(current)
+    if old != new:
+        setattr(row, field, new)
+        session.add(ActionLog(actor_id=actor_id, action="tariff_restriction", entity="tariff",
+                              entity_id=tariff_id, before={field: old}, after={field: new}))
+        await session.flush()
+    return row
+
+
 async def set_active(session: AsyncSession, tariff: Tariff, value: bool) -> bool:
     if tariff.is_active == value:
         return False
@@ -349,6 +383,7 @@ __all__ = [
     "move",
     "parse_price",
     "set_active",
+    "set_restriction",
     "tariffs_label",
     "update_tariff",
     "validate_ads",

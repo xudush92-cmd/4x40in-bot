@@ -15,10 +15,12 @@ from app.filters import PrivateChat
 from app.handlers.seller import seller_status_text
 from app.keyboards import AdminCB, admin_main_kb
 from app.keyboards.seller_panel import seller_menu_kb
-from app.services import seller_service, subscription_service
+from app.services import broadcast_service, referral_service, seller_service, subscription_service
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
 from app.services.text_service import text_service
+from app.utils.text import escape_html
+from app.utils.time import utcnow
 
 router = Router(name="common")
 
@@ -32,14 +34,26 @@ async def cmd_start(
     is_admin: bool,
     role: str | None,
     session: AsyncSession,
+    user_is_new: bool = False,
     command: CommandObject | None = None,
 ) -> None:
-    """Bot bilan tanishish. Deep-link: /start ref_<kod>, /start ad_<id> (keyingi bosqichlarda)."""
-    name = (user.first_name if user else None) or message.from_user.first_name or "do'st"
+    """Bot bilan tanishish. ref_<kod> faqat yangi foydalanuvchiga yoziladi."""
+    name = escape_html((user.first_name if user else None) or message.from_user.first_name or "do'st")
+    first_private_start = user is not None and user.private_started_at is None
+    if first_private_start:
+        user.private_started_at = utcnow()  # guruh a'zolariga avtomatik DM yuborilmaydi
 
     payload = (command.args or "").strip() if command else ""
-    if payload:
-        # ref_ → Phase 8 (referal), ad_ → Phase 3 (e'lon)
+    referral_note = ""
+    if payload.startswith("ref_") and not is_admin:
+        record = await referral_service.register(
+            session, code=payload[4:], referee_id=message.from_user.id,
+            user_is_new=first_private_start and user is not None and not user.referral_legacy,
+        )
+        if record is not None:
+            await session.commit()  # xabar yuborilishidan oldin UNIQUE va bonus yoziladi
+            referral_note = "\n\n🎁 Referal kodingiz qayd qilindi. Bonus admin belgilagan shart bajarilgach beriladi."
+    elif payload:
         logger.debug("/start deep-link: {} (user {})", payload, message.from_user.id)
 
     if is_admin:
@@ -55,7 +69,7 @@ async def cmd_start(
         active = await subscription_service.active_for(session, seller.id)
         stats = await seller_service.get_seller_stats(session, seller)
         await message.answer(
-            text,
+            text + referral_note,
             reply_markup=seller_menu_kb(
                 has_subscription=active is not None, ads_count=stats["ads_active"]
             ),
@@ -63,9 +77,9 @@ async def cmd_start(
         return
 
     support = await settings_service.get("support_contact", "@admin", session)
-    text = await text_service.get("start.user", ism=name, yordam=support)
+    text = await text_service.get("start.user", ism=name, yordam=escape_html(str(support)))
     await message.answer(
-        text,
+        text + referral_note,
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -103,7 +117,8 @@ async def cmd_help(message: Message, is_admin: bool) -> None:
         "/id — Telegram ID'ingizni ko'rish",
         "/ping — bot ishlayotganini tekshirish",
         "/takliflarim — guruh sanoqchisi, obuna holati va shaxsiy havola",
-        f"☎️ Yordam: {support}",
+        "/xabarlar_stop — ommaviy xabarlardan chiqish (qayta /xabarlar_on)",
+        f"☎️ Yordam: {escape_html(str(support))}",
     ]
     if is_admin:
         lines.append("/admin — boshqaruv paneli")
@@ -132,6 +147,18 @@ async def cmd_admin(message: Message, is_admin: bool, role: str | None) -> None:
         "🛠 <b>Boshqaruv paneli</b>\nKerakli bo'limni tanlang:",
         reply_markup=admin_main_kb(role),
     )
+
+
+@router.message(Command("xabarlar_stop"), PrivateChat())
+async def broadcast_stop(message: Message, user: User, session: AsyncSession) -> None:
+    await broadcast_service.opt_out(session, user, enabled=True)
+    await message.answer("🔕 Ommaviy xabarlar o'chirildi. Qayta yoqish: /xabarlar_on")
+
+
+@router.message(Command("xabarlar_on"), PrivateChat())
+async def broadcast_start(message: Message, user: User, session: AsyncSession) -> None:
+    await broadcast_service.opt_out(session, user, enabled=False)
+    await message.answer("🔔 Ommaviy xabarlar yoqildi. Istalgan payt /xabarlar_stop")
 
 
 @router.message(PrivateChat())

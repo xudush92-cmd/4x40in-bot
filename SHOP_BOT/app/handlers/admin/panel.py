@@ -11,7 +11,7 @@ from app.constants import AdminRole
 from app.filters import IsAdmin
 from app.keyboards import SECTION_PHASES, SECTION_TITLES, admin_main_kb
 from app.keyboards.callbacks import AdminCB
-from app.services.stats_service import format_overview, get_menu_counts, get_overview
+from app.services.stats_service import get_menu_counts
 from app.utils.tg import alert, render
 
 router = Router(name="admin:panel")
@@ -46,10 +46,54 @@ async def open_section(
     key = callback_data.value
 
     if key == "stats":
-        data = await get_overview(session)
-        counts = await get_menu_counts(session)
-        await render(callback, format_overview(data), admin_main_kb(role, counts))
+        from app.handlers.admin.stats import render_home
+
+        await render_home(callback, session, role)
         await alert(callback, "Statistika yangilandi")
+        return
+
+    if key == "admins":
+        if role != AdminRole.SUPER:
+            await alert(callback, "⛔️ Adminlarni faqat super admin boshqaradi.", show=True)
+            return
+        from app.handlers.admin.admins import render_home
+
+        await render_home(callback, session)
+        await alert(callback, "")
+        return
+
+    if key == "broadcast":
+        if role not in (AdminRole.ADMIN, AdminRole.SUPER):
+            await alert(callback, "⛔️ Tarqatishni faqat admin boshqaradi.", show=True)
+            return
+        from app.handlers.admin.broadcast import render_home
+
+        await render_home(callback, session)
+        await alert(callback, "")
+        return
+
+    if key == "referral":
+        from app.handlers.admin.referral import render_home
+
+        await render_home(callback, session, role)
+        await alert(callback, "")
+        return
+
+    if key == "texts":
+        from app.handlers.admin.texts import render_list
+
+        await render_list(callback, session)
+        await alert(callback, "")
+        return
+
+    if key == "errors":
+        if role not in (AdminRole.ADMIN, AdminRole.SUPER):
+            await alert(callback, "⛔️ Xatolarni faqat admin ko'radi.", show=True)
+            return
+        from app.handlers.admin.errors import render_list
+
+        await render_list(callback, session)
+        await alert(callback, "")
         return
 
     if key == "settings":

@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from aiogram import Bot
 from loguru import logger
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 
 from app.constants import AdStatus, RedisKey, SubscriptionStatus
 from app.db.base import session_scope
@@ -26,22 +26,27 @@ from app.db.models import (
     Group,
     GroupMessageAction,
     GroupSettings,
-    Payment,
     PostLog,
     Restriction,
-    Seller,
-    StatsDaily,
     Violation,
 )
 from app.handlers.group.counter import process_due, process_restrictions
 from app.handlers.group.policy import process_due_cleanup
 from app.redis_client import redis_manager
 from app.scheduler.poster import post_group
-from app.services import posting_service, seller_service, subscription_service
+from app.services import (
+    broadcast_service,
+    posting_service,
+    referral_service,
+    report_service,
+    seller_service,
+    subscription_service,
+)
 from app.services.group_service import apply_rights_check, check_group_rights
 from app.services.notify import notify_admins, save_error
 from app.services.settings_service import settings_service
 from app.services.text_service import text_service
+from app.utils.text import escape_html
 from app.utils.time import fmt_date, utcnow
 
 
@@ -134,7 +139,9 @@ async def retention_job() -> None:
     cleanup_cutoff = now - timedelta(days=60)
 
     async with session_scope() as session:
-        r1 = await session.execute(delete(ErrorLog).where(ErrorLog.created_at < log_cutoff))
+        r1 = await session.execute(delete(ErrorLog).where(
+            ErrorLog.created_at < log_cutoff, ErrorLog.resolved_at.is_not(None),
+        ))
         r2 = await session.execute(delete(PostLog).where(PostLog.created_at < post_cutoff))
         r3 = await session.execute(delete(CleanupLog).where(CleanupLog.created_at < cleanup_cutoff))
         r4 = await session.execute(delete(GroupMessageAction).where(
@@ -163,66 +170,31 @@ async def retention_job() -> None:
 
 
 async def daily_stats_job() -> None:
-    """Kechagi kun uchun jamlanma statistika (grafiklar tez chiqishi uchun)."""
-    yesterday = (utcnow() - timedelta(days=1)).date()
-    start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-    end = start + timedelta(days=1)
-
+    """Lokal kechagi kun: umumiy + har bir guruh, faqat tasdiqlangan cheklar."""
     async with session_scope() as session:
-        posts = (
-            await session.execute(
-                select(func.count()).select_from(PostLog).where(
-                    PostLog.status == "ok", PostLog.created_at >= start, PostLog.created_at < end
-                )
-            )
-        ).scalar_one()
-        new_sellers = (
-            await session.execute(
-                select(func.count()).select_from(Seller).where(
-                    Seller.created_at >= start, Seller.created_at < end
-                )
-            )
-        ).scalar_one()
-        violations = (
-            await session.execute(
-                select(func.count()).select_from(Violation).where(
-                    Violation.created_at >= start, Violation.created_at < end
-                )
-            )
-        ).scalar_one()
-        amount = (
-            await session.execute(
-                select(func.coalesce(func.sum(Payment.amount), 0)).where(
-                    Payment.decided_at >= start, Payment.decided_at < end
-                )
-            )
-        ).scalar_one()
-        deleted = (
-            await session.execute(
-                select(func.coalesce(func.sum(CleanupLog.deleted_count), 0)).where(
-                    CleanupLog.created_at >= start, CleanupLog.created_at < end
-                )
-            )
-        ).scalar_one()
-        active_ads = (
-            await session.execute(
-                select(func.count()).select_from(Ad).where(Ad.status == AdStatus.ACTIVE)
-            )
-        ).scalar_one()
+        tz = await report_service.report_timezone(session)
+        yesterday = utcnow().astimezone(tz).date() - timedelta(days=1)
+        count = await report_service.rollup_day(session, yesterday, tz)
+    logger.info("Kunlik statistika: {} ({:d} qator)", yesterday, count)
 
-        row = await session.get(StatsDaily, {"day": yesterday, "group_id": 0})
-        if row is None:
-            row = StatsDaily(day=yesterday, group_id=0)
-            session.add(row)
 
-        row.posts = int(posts)
-        row.new_sellers = int(new_sellers)
-        row.violations = int(violations)
-        row.payments_amount = amount or 0
-        row.deleted_msgs = int(deleted or 0)
-        row.active_ads = int(active_ads)
+async def broadcast_tick_job(bot: Bot) -> None:
+    """Yuborishdan oldin manzil holati va global switch qayta tekshiriladi."""
+    try:
+        delivered = await broadcast_service.deliver_tick(bot)
+        if delivered:
+            logger.debug("Broadcast tick: {} ta manzil ishlangan", delivered)
+    except Exception as exc:
+        logger.exception("Broadcast job xatosi: {}", exc)
+        await save_error(None, "broadcast", f"{type(exc).__name__}: {exc}", exc=exc)
 
-    logger.info("Kunlik statistika saqlandi: {} (postlar: {})", yesterday, posts)
+
+async def referral_bonus_job() -> None:
+    """Shart bajarilgan, lekin hali faol obunasi bo'lmagan referallarni yakunlash."""
+    async with session_scope() as session:
+        credited = await referral_service.process_pending(session)
+    if credited:
+        logger.info("Referal bonusi berildi: {}", credited)
 
 
 async def expire_subscriptions_job(bot: Bot) -> None:
@@ -277,7 +249,7 @@ async def subscription_reminders_job(bot: Bot) -> None:
                 kun=max(0, subscription_service.days_left(subscription)),
                 sana=fmt_date(subscription.expires_at),
                 qoldi=subscription.ads_left,
-                yordam=str(support),
+                yordam=escape_html(str(support)),
             )
             if await _send_to_seller(bot, seller.user_id, text):
                 subscription_service.mark_reminded(subscription)
@@ -290,7 +262,7 @@ async def subscription_reminders_job(bot: Bot) -> None:
                 subscription_service.mark_expired_notified(subscription)
                 continue
 
-            text = await text_service.get("seller.subscription_expired", yordam=str(support))
+            text = await text_service.get("seller.subscription_expired", yordam=escape_html(str(support)))
             if await _send_to_seller(bot, seller.user_id, text):
                 subscription_service.mark_expired_notified(subscription)
                 sent_expired += 1

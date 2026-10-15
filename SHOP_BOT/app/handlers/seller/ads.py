@@ -20,11 +20,11 @@ from math import ceil
 from aiogram import Bot, F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import AdStatus
-from app.db.models import Ad, Seller
+from app.db.models import Ad, Seller, Tariff
 from app.filters import IsSeller, PrivateChat
 from app.keyboards.ads import (
     ad_card_kb,
@@ -42,13 +42,20 @@ from app.keyboards.ads import (
 )
 from app.keyboards.callbacks import AdCB
 from app.keyboards.common import PER_PAGE_ADS
-from app.services import ad_service, category_service, notify, seller_service, subscription_service
+from app.services import (
+    ad_service,
+    category_service,
+    notify,
+    report_service,
+    seller_service,
+    subscription_service,
+)
 from app.services.tariff_service import parse_price
 from app.services.text_service import text_service
 from app.states import SellerAdStates
 from app.utils.text import escape_html, truncate
-from app.utils.time import fmt_date
 from app.utils.tg import alert, render
+from app.utils.time import fmt_date
 
 router = Router(name="seller:ads")
 router.callback_query.filter(AdCB.filter(), PrivateChat(), IsSeller())
@@ -145,10 +152,16 @@ async def _own_ad(
     return ad
 
 
-async def _active_categories(session: AsyncSession):
-    """Usta uchun toifalar: faol + guruhga biriktirilgan."""
+async def _active_categories(session: AsyncSession, seller: Seller):
+    """Usta uchun faol, guruhli va sotuvchining tarifi ruxsat bergan toifalar."""
     categories = await category_service.list_categories(session, limit=100)
-    return [c for c in categories if c.is_active and c.group_id is not None]
+    subscription = await subscription_service.active_for(session, seller.id)
+    tariff = await session.get(Tariff, subscription.tariff_id) if subscription else None
+    return [c for c in categories if c.is_active and c.group_id is not None
+            and (tariff is None or tariff.allowed_category_ids is None
+                 or c.id in tariff.allowed_category_ids)
+            and (tariff is None or tariff.allowed_group_ids is None
+                 or c.group_id in tariff.allowed_group_ids)]
 
 
 def _parse_page_status(value: str | None, default_status: str = "all") -> tuple[int, str]:
@@ -322,7 +335,7 @@ async def _start_wizard(
         await alert(callback, reason, show=True)
         return
 
-    categories = await _active_categories(session)
+    categories = await _active_categories(session, seller)
     if not categories:
         await alert(
             callback,
@@ -379,13 +392,16 @@ async def render_ads_list(
     if not ads:
         lines.append("📭 Bu filtrda e'lon yo'q. «➕ Yangi e'lon» tugmasini bosing.")
     else:
+        last_category_id = None
         for ad in ads:
             category = ad.category
+            if ad.category_id != last_category_id:
+                lines.append(f"\n🗂 <b>{escape_html(category.name if category else '—')}</b>")
+                last_category_id = ad.category_id
             lines.append(
                 f"{ad_service.status_badge(ad.status)} "
                 f"<b>{escape_html(truncate(ad.title or '(nomsiz)', 45))}</b>\n"
-                f"   ├ 🗂 {escape_html(category.name if category else '—')}"
-                f"  ·  💰 {ad_service.format_ad_price(ad)}\n"
+                f"   ├ 💰 {ad_service.format_ad_price(ad)}\n"
                 f"   ├ 📌 {ad_service.status_title(ad.status)}  ·  🖼 {len(ad.photos)} ta\n"
                 f"   └ 👁 {ad.post_count} marta joylangan"
             )
@@ -461,7 +477,7 @@ async def on_card(callback: CallbackQuery, callback_data: AdCB, session: AsyncSe
     await alert(callback, "")
 
 
-@router.callback_query(AdCB.filter(F.action == "stats"))
+@router.callback_query(AdCB.filter(F.action.in_({"stats", "stats_30"})))
 async def on_stats(callback: CallbackQuery, callback_data: AdCB, session: AsyncSession) -> None:
     seller = await _seller(callback, session)
     if seller is None:
@@ -483,9 +499,22 @@ async def on_stats(callback: CallbackQuery, callback_data: AdCB, session: AsyncS
         lines.append(f"🕘 Oxirgi joylash: {fmt_date(stats['last_posted_at'])}")
     else:
         lines.append("🕘 Hali joylanmagan — navbati kelganda guruhlarga chiqadi.")
-    lines.append("\n<i>Batafsil statistika (kunlik grafik) Phase 8 da qo'shiladi.</i>")
-
-    await render(callback, "\n".join(lines), ad_card_kb(ad, page=page, status=status))
+    days = 30 if callback_data.action == "stats_30" else 7
+    timeline = await ad_service.daily_post_counts(session, ad.id, days)
+    lines += [f"\n📈 <b>{days} kunlik joylash grafigi (bugun ham kiradi)</b>",
+              report_service.sparkline([count for _, count in timeline]),
+              f"Jami davrda: <b>{sum(count for _, count in timeline)}</b> post"]
+    if days == 7:
+        lines += [f"{day[5:]}: {count}" for day, count in timeline]
+    buttons = [
+        [InlineKeyboardButton(text="📅 7 kun", callback_data=AdCB(
+            action="stats", ad_id=ad.id, value=callback_data.value).pack()),
+         InlineKeyboardButton(text="📈 30 kun", callback_data=AdCB(
+             action="stats_30", ad_id=ad.id, value=callback_data.value).pack())],
+        [InlineKeyboardButton(text="◀️ E'lon", callback_data=AdCB(
+            action="card", ad_id=ad.id, value=f"{page}|{status}").pack())],
+    ]
+    await render(callback, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons))
     await alert(callback, "")
 
 
@@ -515,8 +544,10 @@ async def on_wizard_category(
         return
 
     category = await category_service.get_category(session, category_id)
-    if category is None or not category.is_active or category.group_id is None:
-        await alert(callback, "⚠️ Bu toifa faol emas yoki guruhga biriktirilmagan.", show=True)
+    if category is None or category.id not in {
+        item.id for item in await _active_categories(session, seller)
+    }:
+        await alert(callback, "⚠️ Bu toifa faol emas yoki tarifingiz unga ruxsat bermaydi.", show=True)
         return
 
     data = await state.get_data()
@@ -1009,7 +1040,7 @@ async def on_edit_category(
     if ad is None:
         return
 
-    categories = await _active_categories(session)
+    categories = await _active_categories(session, seller)
     if not categories:
         await alert(callback, "🗂 Faol toifa yo'q.", show=True)
         return

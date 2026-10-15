@@ -10,12 +10,12 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–7 ✅ · Keyingisi: Phase 8 (yangi alohida ruxsat kutilmoqda)**
+## 📌 Hozirgi holat: **Phase 0–8 ✅ · Keyingisi: Phase 9 (alohida ruxsat kutilmoqda)**
 
 | Ish | Holat |
 |---|---|
 | Docker Compose (bot + poster + PostgreSQL 16 + Redis 7 + Caddy) | ✅ |
-| 45 jadvalli baza sxemasi + Alembic migratsiyalar (Phase 7: sanoqchi navbati/cheklovlari) | ✅ |
+| 45 jadvalli baza sxemasi + Alembic (Phase 8: referal/chek/broadcast kengaytmalari) | ✅ |
 | Konfiguratsiya (.env, pydantic-settings, validatsiya) | ✅ |
 | Loglar (loguru, kunlik aylanish), xato jurnali (`error_log`) | ✅ |
 | Middleware'lar (DB sessiya, foydalanuvchi konteksti, anti-flood, texnik rejim) | ✅ |
@@ -23,7 +23,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 | Bot guruhga qo'shilganda: baza'ga yozish, admin huquqlarini tekshirish, adminga xabar | ✅ |
 | Rejalashtiruvchi: heartbeat, huquq tekshiruvi, log tozalash, kunlik statistika | ✅ |
 | `/health` va `/stats` (HTTP), webhook va polling rejimi | ✅ |
-| Seed skript, backup/restore skriptlar, 319 offline test | ✅ |
+| Seed skript, backup/restore skriptlar, 341 offline test | ✅ |
 
 ### Phase 1 — guruhlar va toifalar ✅
 
@@ -100,9 +100,9 @@ jonli rejimni tasdiqlash kerak. Global switch va guruh pauzasi barcha tegishli
 amallarni to'xtatadi, ammo guruh qoidalarini o'chirmaydi.
 
 **Chegara:** real Telegram, bank va PostgreSQL/Redis deploy sinovlari o'tkazilmagan;
-offline testlar ularning o'rnini bosmaydi. Phase 7 sanoqchi/kanal shartlari endi
-shu siyosat bilan bitta xabar bo'yicha birlashtirilgan. **Phase 8 faqat yangi
-alohida ruxsat bilan.**
+offline testlar ularning o'rnini bosmaydi. Phase 7 sanoqchi/kanal shartlari
+Phase 6 siyosati bilan bitta xabar bo'yicha birlashtirilgan. Phase 8 tayyor;
+**Phase 9 faqat yangi alohida ruxsat bilan.**
 
 ### Phase 7 — sanoqchi va majburiy kanal ✅
 
@@ -138,6 +138,51 @@ PostgreSQL/Redis parallel worker sinovi deploydan oldin shart. Eski dublikat
 shaxsiy linklar migratsiyada DB'da faolsizlantirilsa, ularni Telegramda
 alohida revoke qilish kerak. Bot huquqini yo'qotsa avvalgi hard mute'ni ochish
 uchun admin huquqlarini tiklash yoki qo'lda aralashish zarur bo'lishi mumkin.
+
+---
+
+### ✅ Phase 8 — Referal, hisobotlar va panellar
+
+1. **Referal:** sotuvchi «🎁 Referal»dan kod/havola oladi. Yangi do'st
+   `https://t.me/<bot_username>?start=ref_<kod>` bilan botga **birinchi marta
+   shaxsiy** kiradi. Migratsiyadan KEYIN guruhda ko'ringan akkaunt ham
+   shaxsiy `/start`gacha yangi hisoblanadi; migratsiyadan oldin ko'rilgan
+   akkauntning shaxsiy tarixi noma'lum, u ehtiyotkorlik uchun bonusga yaroqsiz.
+   Admin «🤝 Referal»da trigger (`signup` yoki **admin tasdiqlagan birinchi UZS
+   to'lovi**), bonus turi (`days`, `balance`, `discount`), miqdor/kunlik limitni
+   sozlab, yoqishni **alohida tasdiqlaydi**. Standart: **o'chiq**, birinchi chek,
+   7 kun, kuniga 5 taklif, chek kamida 50 000 UZS. `days` uchun taklifchida
+   faol obuna yo'q bo'lsa bonus keyinroq beriladi. Chegirma/balans bankka
+   o'tkaziladigan summani kamaytiradi; 0 so'mlik chek ham admin tasdig'isiz
+   obuna bermaydi. Bank cheki tasdig'ini aslo avtomatlashtirmang.
+2. **Hisobotlar:** «📊 Statistika»dan kechagi kun, 7 va 30 kun, shuningdek
+   har guruh bo'yicha grafikni ko'rish. Admin/super-admin CSV eksport qiladi.
+   Job har kuni **00:10**da mahalliy (`timezone` sozlamasi) **kechagi** kunni
+   jamlaydi; yangi deploydan oldingi kunlar avtomatik to'ldirilmaydi.
+   Bank daromadi faqat **umumiy** satrda: chekda guruh identifikatori yo'q.
+3. **Matn/xato/rollar:** «✍️ Bot matnlari»da shablonni ko'rish, preview,
+   tahrirlash/reset; «⚠️ Xatolar jurnali»da filtr/tafsilot/hal qilingan
+   belgisi; «🛠 Adminlar»da super-admin boshqa admin rolini/auditini
+   boshqaradi. Moderator guruh/toifa/sozlamalarni o'zgartira olmaydi.
+4. **Tarif va e'lonlar:** «💳 Tariflar» kartasida ruxsatli toifa/guruhlar
+   alohida belgilanadi (`cheklovsiz` yoki aniq ro'yxat); sotuvchi e'lonlari
+   toifa nomi ostida chiqadi, har e'londa 7/30 kunlik joylash grafigi bor.
+5. **Broadcast:** «📣 Broadcast» → auditoriya (shaxsiy chatdagilar,
+   sotuvchilar yoki adminlar) → matn/rasm → preview → faqat o'zingizga sinov →
+   qabul qiluvchilarni **tasdiqlash**. Poster yuboradi (eng ko'pi **25/s**);
+   faol jarayonni pauza/bekor qilish mumkin. Foydalanuvchi shaxsiy chatda
+   `/xabarlar_stop` va `/xabarlar_on` bilan chiqadi/qaytadi. Botni bloklaganlar
+   hamda **migratsiyadan avval shaxsiy `/start` qilgan, lekin bu haqda bazada
+   ishonchli tarixiy belgi yo'q foydalanuvchilar** yangi `/start` qilmaguncha
+   auditoriyaga kirmaydi (ammo referal bonusiga yaroqsiz bo'lib qoladi).
+   Redis ishlab chiqarish muhitida majburiy: yo'qolsa broadcast xavfsizlik
+   uchun to'xtaydi. Telegram noaniq javob bergan xabar
+   qayta yuborilmaydi; admin tekshirib yopadi.
+
+**Deploydan oldin:** `alembic upgrade head` (`8d93a17e623c`) va
+`python -m scripts.seed` (26 sozlama, 30 matn, 3 namuna tarif) bajaring.
+SQLite offline tekshiruvi PostgreSQL/Redis va haqiqiy Telegram/bank sinovini
+almashtirmaydi. Phase 9 hali **boshlanmagan**, unga alohida ruxsat kerak.
 
 ---
 
@@ -222,7 +267,7 @@ python -m app.main            # ishga tushirish
 Testlar:
 
 ```bash
-python -m pytest              # 319 test (SQLite + soxta Telegram API, tarmoqsiz)
+python -m pytest              # 341 test (SQLite + soxta Telegram API, tarmoqsiz)
 python -m pytest -v --tb=short # batafsil
 ```
 
@@ -256,7 +301,7 @@ SHOP_BOT/
 │   ├── redis_client.py      # Redis + FSM storage (ixtiyoriy komponent)
 │   ├── db/
 │   │   ├── base.py          # engine, sessiya, JSONB varianti
-│   │   └── models.py        # 45 jadval (REJA.md 4-bo'lim + Phase 6–7)
+│   │   └── models.py        # 45 jadval (REJA.md 4-bo'lim + Phase 6–8)
 │   ├── handlers/
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
 │   │   ├── admin/           # panel + guruh siyosati, counter.py, to'lovlar
@@ -267,12 +312,13 @@ SHOP_BOT/
 │   ├── filters/             # IsAdmin, IsSuperAdmin, IsSeller, HasPermission
 │   ├── services/            # settings, text, group, category, seller, tariff,
 │   │                        # subscription, ad, posting, posting_limiter, payment,
-│   │                        # group_policy_service, counter_service, notify, stats
-│   ├── scheduler/           # jobs.py (sanoqchi navbati), poster.py, runner.py
+│   │                        # group_policy_service, counter_service, referral,
+│   │                        # report, broadcast, error, admin, notify, stats
+│   ├── scheduler/           # jobs.py (sanoqchi/referal/broadcast/stats), poster.py, runner.py
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh
-├── tests/                   # 319 test (offline E2E + servis testlari)
+├── tests/                   # 341 test (offline E2E + servis testlari)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile
@@ -290,12 +336,13 @@ yangi qiymatni ko'radi. Xavfsizlikka oid global pauzalar esa Telegram amali
 oldidan DB'dan qayta tekshiriladi. Botni qayta yoqish **shart emas**.
 
 **Keshlangan matnlar.** Standart shablonlar `bot_texts` jadvalida; ularni admin
-panelidan tahrirlash Phase 8ga qoldirilgan. Noma'lum placeholder botni yiqitmaydi
-(matnda `{nom}` ko'rinishida qoladi va logga yoziladi).
+panelidan ko'rish, preview, tahrirlash va standartga qaytarish mumkin. Noma'lum
+placeholder botni yiqitmaydi (matnda `{nom}` ko'rinishida qoladi va logga yoziladi).
 
-**Xatoga chidamlilik.** Redis bo'lmasa bot xotira rejimida ishlaydi;
-xatolar `error_log` jadvaliga tushadi va adminlarga (daqiqada 1 martadan ko'p
-bo'lmagan holda) xabar ketadi.
+**Xatoga chidamlilik.** Ba'zi eski oqimlar Redis bo'lmasa lokal rejimda ishlaydi;
+**production broadcast esa Redis'siz xavfsizlik uchun to'xtaydi** (ko'p posterda
+25 xabar/s limitini yo'qotmaslik uchun). Xatolar `error_log` jadvaliga tushadi va
+adminlarga (daqiqada 1 martadan ko'p bo'lmagan holda) xabar ketadi.
 
 **Guruh hayoti.** Bot guruhga qo'shilganda/guruhdan chiqarilganda: yozuv yangilanadi,
 huquqlar tekshiriladi, muammolar (admin emas / oddiy guruh / huquq yetishmaydi)

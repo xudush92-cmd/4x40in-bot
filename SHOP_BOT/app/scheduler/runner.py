@@ -14,12 +14,14 @@ from loguru import logger
 
 from app.config import Settings
 from app.scheduler.jobs import (
+    broadcast_tick_job,
     counter_job,
     daily_stats_job,
     expire_subscriptions_job,
     group_cleanup_job,
     heartbeat_job,
     posting_tick_job,
+    referral_bonus_job,
     retention_job,
     rights_check_job,
     subscription_reminders_job,
@@ -53,6 +55,13 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             args=[bot],
             id="posting_tick",
             name="Aylanma joylash",
+        )
+        scheduler.add_job(
+            broadcast_tick_job,
+            IntervalTrigger(seconds=1),
+            args=[bot],
+            id="broadcast_tick",
+            name="25/s gacha tasdiqlangan ommaviy xabarlar",
         )
         scheduler.add_job(
             group_cleanup_job,
@@ -96,6 +105,13 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             id="subscription_reminders",
             name="Tarif eslatmalari",
         )
+
+    scheduler.add_job(
+        referral_bonus_job,
+        IntervalTrigger(hours=1),
+        id="referral_bonus",
+        name="Sharti bajarilgan referal bonuslari",
+    )
 
     # ── Kunlik: loglarni tozalash ─────────────────────────────
     scheduler.add_job(

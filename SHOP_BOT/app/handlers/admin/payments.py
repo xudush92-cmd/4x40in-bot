@@ -94,8 +94,12 @@ def payment_detail(payment: Payment, method: PaymentMethod | None) -> str:
         f"🧾 <b>Chek #{payment.id}</b>\n━━━━━━━━━━━━━━━━━━━━\n"
         f"🛒 Sotuvchi: <b>{escape_html(seller_name)}</b> (ID {payment.seller.user_id if payment.seller else payment.seller_id})\n"
         f"💳 Tarif: <b>{escape_html(tariff_name)}</b>\n"
-        f"💰 To'lanishi kerak: <b>{fmt_amount(payment.amount, payment.currency)}</b>\n"
-        f"🏦 Rekvizit: {escape_html(method.name) if method else '—'}"
+        f"💰 Bankka: <b>{fmt_amount(payment.amount, payment.currency)}</b>\n"
+        + (f"💸 Narx: {fmt_amount(payment.base_amount, payment.currency)} · "
+           f"🎟 Chegirma: {fmt_amount(payment.discount_amount, payment.currency)} · "
+           f"🎁 Balans: {fmt_amount(payment.balance_used, payment.currency)}\n"
+           if payment.discount_amount or payment.balance_used else "")
+        + f"🏦 Rekvizit: {escape_html(method.name) if method else '—'}"
         f" · {payment_service.mask_card(method.card_number) if method else '—'}\n"
         f"📅 Kelgan: {fmt_dt(payment.created_at)}\n"
         f"📌 Holat: <b>{label}</b>"
@@ -103,7 +107,9 @@ def payment_detail(payment: Payment, method: PaymentMethod | None) -> str:
     if payment.is_duplicate_receipt:
         text += "\n🔴 <b>Takroriy chek! Avtomatik tasdiqlash bloklangan.</b>"
     if payment.receipt_file_id is None:
-        text += "\n⚠️ Rasm yuborilmagan; bank o'tkazmasini qo'lda tekshiring."
+        text += ("\n🎁 Bonus bilan 0 UZS: bankka to'lov yo'q; "
+                 "bonus haqiqiyligini va sotuvchini tekshiring." if payment.amount == 0
+                 else "\n⚠️ Rasm yuborilmagan; bank o'tkazmasini qo'lda tekshiring.")
     if payment.reason:
         text += f"\n❌ Sabab: {escape_html(truncate(payment.reason, 300))}"
     if payment.subscription_id:

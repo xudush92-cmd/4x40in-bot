@@ -122,6 +122,26 @@ class AdminCounterStates(StatesGroup):
     waiting_adjust = State()
 
 
+class AdminReferralStates(StatesGroup):
+    """Referal bonus qiymati, minimal chek va kunlik limitni kiritish."""
+
+    waiting_value = State()
+
+
+class AdminOpsStates(StatesGroup):
+    """Super admin tomonidan Telegram ID va rol tanlash."""
+
+    waiting_user_id = State()
+    waiting_role = State()
+
+
+class AdminBroadcastStates(StatesGroup):
+    """Broadcast qoralamasi: matn yoki rasm, ixtiyoriy caption; tezlik soni."""
+
+    waiting_payload = State()
+    waiting_rate = State()
+
+
 class AdminTextStates(StatesGroup):
     """Bot matnini tahrirlash (Phase 8)."""
 

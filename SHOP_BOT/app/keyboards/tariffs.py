@@ -78,6 +78,16 @@ def tariff_card_kb(tariff: Tariff, *, subs: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                text="🗂 Toifalar cheklovi",
+                callback_data=TariffCB(action="restr", tariff_id=tariff.id, value="c|0").pack(),
+            ),
+            InlineKeyboardButton(
+                text="👥 Guruhlar cheklovi",
+                callback_data=TariffCB(action="restr", tariff_id=tariff.id, value="g|0").pack(),
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 text="⏸ To'xtatish" if tariff.is_active else "▶️ Yoqish",
                 callback_data=TariffCB(action="active", tariff_id=tariff.id).pack(),
             ),

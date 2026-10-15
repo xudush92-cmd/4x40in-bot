@@ -60,6 +60,56 @@ class CounterAdminCB(CallbackData, prefix="acnt"):
     value: str = "-"
 
 
+class ReferralAdminCB(CallbackData, prefix="ref"):
+    """Phase 8: referal siyosati va statistika."""
+
+    action: str
+    value: str = "-"
+
+
+class TextCB(CallbackData, prefix="txt"):
+    """Phase 8: matnlar ro'yxati, preview, tahrir va reset."""
+
+    action: str
+    key: str = "-"
+    page: int = 0
+
+
+class ErrorCB(CallbackData, prefix="err"):
+    """Phase 8: xato jurnali; value=holat/filtr, error_id=yozuv."""
+
+    action: str
+    error_id: int = 0
+    value: str = "open"
+    page: int = 0
+
+
+class AdminOpsCB(CallbackData, prefix="aops"):
+    """Super admin: qo'shish, rol, o'chirish va amallar tarixi."""
+
+    action: str
+    admin_id: int = 0
+    value: str = "-"
+    page: int = 0
+
+
+class StatsCB(CallbackData, prefix="st8"):
+    """Kunlik/haftalik/oylik grafiklar va guruh CSV hisobotlari."""
+
+    action: str
+    group_id: int = 0
+    days: int = 7
+    page: int = 0
+
+
+class BroadcastCB(CallbackData, prefix="bcast"):
+    """Phase 8: tarqatish qoralamasi, preview, tasdiq, pauza va audit."""
+
+    action: str
+    broadcast_id: int = 0
+    target: str = "all"
+
+
 class FeatureCB(CallbackData, prefix="feat"):
     """Funksiya tumbleri: `feat:<group_id>:<feature>:<enabled>:<origin>:<page>`.
 

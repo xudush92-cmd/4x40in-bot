@@ -50,6 +50,11 @@ READY_SECTIONS = {
     "guard",
     "cleaner",
     "counter",
+    "referral",
+    "texts",
+    "errors",
+    "broadcast",
+    "admins",
     "permissions",
     "users",
 }
@@ -122,7 +127,9 @@ def back_kb(target: str = "menu") -> InlineKeyboardMarkup:
 
 
 def settings_kb(values: dict[str, object], role: str | None = None) -> InlineKeyboardMarkup:
-    """Sozlamalar ekrani; moliyaviy tumblerlar moderatorga yopiq."""
+    """Sozlamalar ekrani; moderator faqat ko'radi, yozish serverda ham yopiq."""
+    if role == AdminRole.MODERATOR:
+        return back_kb()
 
     def toggle(key: str, label: str) -> InlineKeyboardButton:
         on = bool(values.get(key))
@@ -134,13 +141,13 @@ def settings_kb(values: dict[str, object], role: str | None = None) -> InlineKey
     rows = [
         [toggle("kill_switch", "🛑 HAMMASINI TO'XTATISH")],
         [toggle("maintenance_mode", "🔧 Texnik rejim (faqat adminlar)")],
-        [toggle("referral_enabled", "🤝 Referal tizimi")],
     ]
     if role != AdminRole.MODERATOR:
         rows.extend([
             [toggle("counter_enabled_global", "🧮 Sanoqchi global")],
             [toggle("guard_enabled_global", "🛡 Posbon global")],
             [toggle("cleaner_enabled_global", "🧹 Tozalovchi global")],
+            [toggle("broadcast_enabled_global", "📣 Broadcast global pauza")],
             [toggle("receipt_required", "🧾 Chek rasmi majburiy")],
             [toggle("receipt_duplicate_check", "🔍 Takroriy chekni ushlash")],
         ])

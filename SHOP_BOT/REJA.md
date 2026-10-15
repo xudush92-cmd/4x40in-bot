@@ -1,8 +1,8 @@
 # SHOP-BOT — Onlayn do'kon uslubidagi e'lonlar boti
 ## To'liq texnik reja (v1.0) — kelishilgan bosqichlar va qamrov
 
-> **Amaldagi holat (2026-10-15):** Phase 0–7 bajarildi (319 offline test). Keyingisi
-> Phase 8 — faqat yangi alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
+> **Amaldagi holat (2026-10-15):** Phase 0–8 bajarildi (341 offline test). Keyingisi
+> Phase 9 — faqat yangi alohida ruxsatdan so'ng. Bu fayl dastlabki reja; amalga oshirilgan
 > ishlar va sinov cheklovlari uchun [HOLAT.md](HOLAT.md) ga qarang.
 > **Ish qoidasi:** ruxsatsiz yangi bosqich boshlanmaydi, yangi branch/PR ochilmaydi.
 
@@ -29,7 +29,7 @@
 
 Bir muhim ogohlantirish: rejangizda **5-8 ta joyda Texnologiya cheklovlari** bor, ular kod yozishdan oldin hal qilinishi kerak (1.2-bo'limga qarang) — aks holda keyinchalik qayta yozishga to'g'ri keladi. Masalan, **albomga (media group) inline tugma biriktirib bo'lmaydi** — bu Telegram Bot API'ning cheklovi, Aiogram'ning emas.
 
-**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–7 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
+**Dastlabki auditda:** g'oya tahlil qilinib, arxitektura + DB sxemasi + bosqichma-bosqich reja yozilgan; o'sha paytda kod yozilmagan edi. Hozir Phase 0–8 kodi `SHOP_BOT/`da bor (joriy holat: `HOLAT.md`).
 
 ---
 
@@ -99,7 +99,7 @@ Bular **kod yozishdan oldin** hal qilinishi shart.
 | 5 | **Sinov (dry-run) rejimi** — posbon/tozalovchi faqat log yozadi, jazo qo'llamaydi | Yangi guruhda qo'rqmasdan sozlash |
 | 6 | **Moderatsiya: so'z/kanal blacklist** | Avtomatik filtr + admin tasdig'i |
 | 7 | **Hisobot eksporti (CSV/XLSX)** | Hisob-kitob, soliq, investor hisoboti |
-| 8 | **Broadcast (ommaviy xabar)** — 30 msg/s limit bilan navbat orqali | Sotuvchilarga aksiya/xabar yuborish |
+| 8 | **Broadcast (ommaviy xabar)** — eng ko'pi 25 msg/s limit bilan navbat orqali | Sotuvchilarga aksiya/xabar yuborish |
 | 9 | **FSM holatini Redis'da saqlash** | Server qayta yonsa ham "e'lon qo'shish" jarayoni yo'qolmaydi |
 | 10 | **Zaxira nusxa** (kunlik avtomatik `pg_dump`) | Ma'lumot yo'qolmasligi |
 | 11 | **Bepul sinov / promo davri** (masalan 3 kun) | Yangi sotuvchilarni jalb qilish |
@@ -274,7 +274,7 @@ Bular **kod yozishdan oldin** hal qilinishi shart.
 | Jadval | Ustunlar | Izoh |
 |---|---|---|
 | `stats_daily` | `date, group_id, posts, active_ads, joins, leaves, violations, deleted_msgs, payments_amount, new_sellers` PK`(date, group_id)` | Har kecha jamlanadi; grafiklar tez chiqadi |
-| `broadcasts` | `id, admin_id, text, total, sent, failed, status, created_at, finished_at` | Ommaviy xabar navbati (30 msg/s hurmat qilinadi) |
+| `broadcasts` | `id, admin_id, text, total, sent, failed, status, created_at, finished_at` | Ommaviy xabar navbati (25 msg/s limit; Phase 8 da kengaygan) |
 | `broadcast_targets` | `id, broadcast_id, user_id, status, error, sent_at` | Har qabul qiluvchi holati |
 
 **Kritik indekslar:** `ads(category_id, status, position)`, `ads(seller_id, status)`, `subscriptions(seller_id, status, expires_at)`, `invite_events(group_id, invitee_id)`, `payments(status, created_at)`, `posted_messages(group_id, sent_at)`, `violations(group_id, user_id, created_at)`.
@@ -455,7 +455,7 @@ shart emas, lekin admin tekshiruvi shart. Bot bank/API orqali pul tushganini
 avtomatik tekshirmaydi. Haqiqiy Telegram/PostgreSQL/Redis sinovi hali kerak.
 Avvalgi rejaning ixtiyoriy «1 klik» va Stars/Click g'oyalari **joriy MVPga kirmaydi**.
 
-### 8.3. Referal
+### 8.3. Referal — Phase 8 ✅
 
 ```
 Yangi odam ?start=ref_<code> bilan kiradi → referrals(registratsiya)
@@ -464,6 +464,18 @@ Shart bajarildi → bonus: kunlar (obunaga qo'shiladi) | chegirma (%) | balans
    ├─ Anti-firibgarlik: o'zini taklif qilish yo'q, referee UNIQUE, kunlik limit
    └─ Statistika: kim nechta taklif qildi, qancha bonus berildi
 ```
+
+**Amalda (Phase 8):** faqat yangi **shaxsiy** `/start ref_<kod>`; migratsiyadan
+keyin guruhda ko'rilgan foydalanuvchi birinchi shaxsiy startda yangi hisoblanadi.
+Migratsiyadan oldingi userlarning shaxsiy tarixi noma'lum — ularga referal
+bonusi berilmaydi (`referral_legacy=true`). Standart
+`referral_enabled=false`, trigger `first_payment`, 7 kun, kunlik limit 5,
+birinchi tasdiqlangan chek kamida 50 000 UZS. `signup` adminning alohida
+ogohlantirilgan tanlovi. `days` faol tarif bo'lmasa keyinga qoladi;
+`balance`/`discount` chek miqdorini kamaytiradi, rad etilsa rezerv qaytariladi.
+Chekni baribir faqat admin bank bilan solishtirib tasdiqlaydi. Guruh sanoqchisining
+shaxsiy invite linki va `/takliflarim` bu referaldan mutlaqo alohida. Batafsil
+xavfsizlik cheklovlari va real muhit sinovlari `HOLAT.md` §4/9 da.
 
 ### 8.4. Sanoqchi (har guruhda alohida) — Phase 7 ✅
 
@@ -610,7 +622,7 @@ Bu loyihaning eng muhim qismi, shuning uchun alohida bo'lim.
 |---|---|---|
 | Bitta chatga | ~1 xabar/sekund | Guruhga min 1 xabar/2 sekund (limiter) |
 | Bitta guruhga | **20 xabar/daqiqa** | Guruh bo'yicha token bucket + kunlik limit + bir guruhga bir necha toifa biriktirilsa jami hisob |
-| Umumiy bulk | **~30 xabar/sekund** | Global limiter; broadcast navbat orqali (Docker/log) |
+| Umumiy bulk | **25 xabar/sekund (loyiha limiti)** | Redis global limiter; broadcast navbat orqali (Docker/log) |
 | 429 FloodWait | `retry_after` | Har doim hurmat qilinadi; guruhga xos kechiktirish (boshqa guruhlar ishlashda davom etadi) |
 | Albom | 2-10 element | 10 dan ko'p rasm → bir necha albom |
 | Xabar o'chirish | 48 soat / admin huquqi | Qayta post oldidan o'chirish + xatoga chidamli |
@@ -715,7 +727,7 @@ Har bosqich oxirida **sizga ko'rsataman → tasdiqlaysiz → keyingisiga o'taman
 | **5** | To'lovlar | Rekvizitlar, chek qabul qilish, tasdiq/rad, avtomatik obuna, tarix | To'liq pul sikli ishlaydi 💰 | 8-10 soat |
 | **6** ✅ | Posbon + tozalovchi + ruxsatlar | Har guruhda mustaqil filtr/jazo, dry-run, tozalash, muddatli ruxsatlar (obuna/sanoqchi sharti Phase 7da) | Guruh "o'zini tozalaydi" | 14-18 soat |
 | **7** ✅ | Sanoqchi | Shaxsiy invite linklar, attributsiya, `/takliflarim`, admin qo'lda tuzatishi, majburiy kanal | "N odam qo'shish" tizimi ishlaydi (offline; deploy sinovi qolgan) | 12-16 soat |
-| **8** | Referal + statistika + matnlar + xato jurnali | Referal sikli, grafik/hisobot, eksport, matn tahriri, xato paneli, broadcast | To'liq panel | 12-16 soat |
+| **8** ✅ | Referal + statistika + matnlar + xato jurnali | Referal sikli, grafik/hisobot, eksport, matn tahriri, xato paneli, broadcast | To'liq panel (341 offline test) | 12-16 soat |
 | **9** | Sayqal | Testlar, yuklama testi, deploy skripti, backup/restore, README, video-qo'llanma | Ishlab chiqarishga tayyor | 10-14 soat |
 
 ### ✅ Phase 0 — BAJARILDI (2026-10-15)
@@ -913,4 +925,9 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
    SQLite Alembic diff, seed va regressiya tekshirildi. Tafsilot `HOLAT.md`.
 10. ✅ **Phase 7** (har guruh sanoqchisi/majburiy kanal) — **319 offline test**;
     SQLite Alembic upgrade/check/downgrade, seed ×2 va PostgreSQL offline SQL tekshirildi.
-11. ⏳ **Phase 8** (referal/statistika/matn/broadcast) uchun **yangi alohida ruxsat** kutilmoqda.
+11. ✅ **Phase 8** (referal/statistika/matn/xato/broadcast + tarif cheklovi,
+    e'lon grafigi, admin rollari) foydalanuvchining alohida «ha» ruxsati bilan
+    bajarildi — **341 offline test**. SQLite Alembic upgrade/check/downgrade,
+    eski chek migratsiyasi, seed ×2 va PostgreSQL offline SQL tekshirildi.
+12. ⏳ **Phase 9** (sayqal/deploy sinovi) uchun **yangi alohida ruxsat** kutilmoqda;
+    ruxsatsiz boshlanmaydi. Qolgan real muhit sinovlari: `HOLAT.md` §9.

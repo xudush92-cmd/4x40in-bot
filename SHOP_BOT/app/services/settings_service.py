@@ -55,6 +55,7 @@ DEFAULTS: dict[str, Any] = {
     "receipt_duplicate_check": True,
     # Referal
     "referral_enabled": False,
+    "broadcast_enabled_global": True,  # tasdiqsiz hech bir qoralama yuborilmaydi
     # Xizmat
     "log_retention_days": 90,
     "broadcast_rate_per_sec": 25,
@@ -152,7 +153,7 @@ class SettingsService:
             row.updated_by = updated_by
             if comment is not None:
                 row.comment = comment
-        if key in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global", "kill_switch", "maintenance_mode"} and before != value:
+        if key in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global", "broadcast_enabled_global", "kill_switch", "maintenance_mode"} and before != value:
             session.add(ActionLog(actor_id=updated_by, action="global_policy_switch",
                                   entity="setting", before={key: before}, after={key: value}))
         await session.flush()

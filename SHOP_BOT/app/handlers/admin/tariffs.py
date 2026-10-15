@@ -20,11 +20,12 @@ from typing import Any
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import AdminRole
-from app.db.models import Tariff
+from app.db.models import Category, Group, Tariff
 from app.filters import IsAdmin
 from app.keyboards.callbacks import TariffCB
 from app.keyboards.common import PER_PAGE_TARIFFS
@@ -82,11 +83,6 @@ FIELD_PROMPTS: dict[str, tuple[str, Any, str]] = {
     ),
 }
 
-ALLOWED_GROUP_TEXT = (
-    "🎯 Cheklov: <b>hammasi</b>\n"
-    "<i>Aniq guruh/toifani tanlash e'lon joylash (Phase 3) bilan birga qo'shiladi.</i>"
-)
-
 RANGES = {
     "duration_days": (1, 3650, "1–3650"),
     "max_ads": (1, 1000, "1–1000"),
@@ -127,7 +123,10 @@ def _card_text(tariff: Tariff, stats: dict[str, int]) -> str:
         f"📢 E'lon limiti: <b>{tariff.max_ads}</b> ta",
         f"🖼 Rasm limiti: <b>{tariff.max_photos}</b> ta",
         f"🔢 Tartib: <b>#{tariff.position}</b>",
-        ALLOWED_GROUP_TEXT,
+        ("🎯 Toifalar: <b>" + ("hammasi" if tariff.allowed_category_ids is None else
+                               truncate(", ".join(map(str, tariff.allowed_category_ids)), 160) if tariff.allowed_category_ids else "hech biri") + "</b>"),
+        ("👥 Guruhlar: <b>" + ("hammasi" if tariff.allowed_group_ids is None else
+                               truncate(", ".join(map(str, tariff.allowed_group_ids)), 160) if tariff.allowed_group_ids else "hech biri") + "</b>"),
     ]
     if tariff.description:
         lines.append(f"\n📝 {escape_html(truncate(tariff.description, 300))}")
@@ -185,6 +184,84 @@ async def on_list(callback: CallbackQuery, callback_data: TariffCB, session: Asy
 async def on_card(callback: CallbackQuery, callback_data: TariffCB, session: AsyncSession) -> None:
     ok = await render_card(callback, session, callback_data.tariff_id)
     await alert(callback, "" if ok else "Tarif topilmadi")
+
+
+async def render_restrictions(target: CallbackQuery, session: AsyncSession,
+                              tariff_id: int, scope: str = "c", page: int = 0) -> None:
+    tariff = await tariff_service.get_tariff(session, tariff_id)
+    if tariff is None or scope not in {"c", "g"}:
+        await alert(target, "Tarif yoki cheklov topilmadi.", show=True)
+        return
+    model = Category if scope == "c" else Group
+    field = "allowed_category_ids" if scope == "c" else "allowed_group_ids"
+    label = "toifa" if scope == "c" else "guruh"
+    total = int((await session.execute(select(func.count(model.id)))).scalar_one())
+    pages = max(1, ceil(total / 8))
+    page = min(max(0, page), pages - 1)
+    items = (await session.execute(select(model).order_by(model.id).offset(page * 8).limit(8))).scalars().all()
+    selected = getattr(tariff, field)
+    selected_text = "hammasi (cheklovsiz)" if selected is None else f"{len(selected)} ta ruxsat etilgan"
+    text = (f"🎯 <b>{escape_html(tariff.name)}</b> · {label}lar cheklovi\n"
+            f"Holat: <b>{selected_text}</b> · {page + 1}/{pages}\n"
+            "Tugmani bosish bilan sozlama darhol kuchga kiradi. "
+            "Tanlanganlar soni 0 bo'lsa, shu turdagi joylash to'xtaydi. "
+            "Mavjud guruh siyosati va oldingi postlar o'zgarmaydi.")
+    buttons = [[InlineKeyboardButton(
+        text=f"{'☑️' if selected is not None and item.id in selected else '▫️'} "
+             f"{truncate(item.name if scope == 'c' else item.display, 39)} (#{item.id})",
+        callback_data=TariffCB(action="pick", tariff_id=tariff.id,
+                               value=f"{scope}|{item.id}|{page}").pack(),
+    )] for item in items]
+    buttons.append([InlineKeyboardButton(
+        text="♾ Barchasiga ruxsat (cheklovsiz)",
+        callback_data=TariffCB(action="unlimit", tariff_id=tariff.id,
+                               value=f"{scope}|{page}").pack(),
+    )])
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=TariffCB(
+            action="restr", tariff_id=tariff.id, value=f"{scope}|{page - 1}").pack()))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=TariffCB(
+            action="restr", tariff_id=tariff.id, value=f"{scope}|{page + 1}").pack()))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="◀️ Tarif", callback_data=TariffCB(
+        action="card", tariff_id=tariff.id).pack())])
+    await render(target, text, InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(TariffCB.filter(F.action == "restr"))
+async def show_restrictions(callback: CallbackQuery, callback_data: TariffCB,
+                            session: AsyncSession) -> None:
+    try:
+        scope, page = callback_data.value.split("|")
+        page = max(0, int(page))
+    except ValueError:
+        await alert(callback, "Noto'g'ri sahifa.", show=True)
+        return
+    await render_restrictions(callback, session, callback_data.tariff_id, scope, page)
+    await alert(callback, "")
+
+
+@router.callback_query(TariffCB.filter(F.action.in_({"pick", "unlimit"})))
+async def update_restrictions(callback: CallbackQuery, callback_data: TariffCB,
+                              session: AsyncSession) -> None:
+    parts = callback_data.value.split("|")
+    if len(parts) != (3 if callback_data.action == "pick" else 2) or parts[0] not in {"c", "g"}:
+        await alert(callback, "Noto'g'ri tugma.", show=True)
+        return
+    try:
+        item_id = int(parts[1]) if callback_data.action == "pick" else None
+        page = max(0, int(parts[-1]))
+        field = "allowed_category_ids" if parts[0] == "c" else "allowed_group_ids"
+        await tariff_service.set_restriction(session, callback_data.tariff_id, field,
+                                             item_id, callback.from_user.id)
+    except ValueError as exc:
+        await alert(callback, str(exc), show=True)
+        return
+    await render_restrictions(callback, session, callback_data.tariff_id, parts[0], page)
+    await alert(callback, "Tarif cheklovi saqlandi.")
 
 
 # ══════════════ FSM: yaratish va tahrirlash (birlashtirilgan) ══════

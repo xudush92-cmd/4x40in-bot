@@ -24,7 +24,8 @@ from app.utils.tg import render
 router = Router(name="admin:settings")
 
 # Tumbler (on/off) ko'rinishidagi sozlamalar
-TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "referral_enabled", "receipt_required", "receipt_duplicate_check", "counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"}
+# Referalni faqat alohida panelda admin ikki bosqichda tasdiqlab yoqadi.
+TOGGLE_KEYS = {"kill_switch", "maintenance_mode", "receipt_required", "receipt_duplicate_check", "counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global", "broadcast_enabled_global"}
 
 LABELS = {
     "kill_switch": "🛑 Hammani to'xtatish",
@@ -35,6 +36,7 @@ LABELS = {
     "counter_enabled_global": "🧮 Sanoqchi global switch",
     "guard_enabled_global": "🛡 Posbon global switch",
     "cleaner_enabled_global": "🧹 Tozalovchi global switch",
+    "broadcast_enabled_global": "📣 Broadcast global switch",
     "support_contact": "☎️ Yordam kontakti",
     "default_interval_sec": "⏱ Joylash intervali",
 }
@@ -53,11 +55,13 @@ def _format_settings(values: dict[str, object]) -> str:
         f"🧮 Sanoqchi global: <b>{'YOQILGAN' if values.get('counter_enabled_global') else 'PAUZA'}</b>\n"
         f"🛡 Posbon global: <b>{'YOQILGAN' if values.get('guard_enabled_global') else 'PAUZA'}</b>\n"
         f"🧹 Tozalovchi global: <b>{'YOQILGAN' if values.get('cleaner_enabled_global') else 'PAUZA'}</b>\n"
+        f"📣 Broadcast global: <b>{'YOQILGAN' if values.get('broadcast_enabled_global') else 'PAUZA'}</b>\n"
         f"⏱ Default joylash intervali: <b>{interval} daqiqa</b>\n"
         f"☎️ Yordam kontakti: <b>{values.get('support_contact') or '—'}</b>\n"
         f"🗄 Loglarni saqlash: <b>{values.get('log_retention_days')} kun</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>O'zgarishlar botni qayta yoqmasdan darhol kuchga kiradi.</i>"
+        "<i>Referalni faqat 🤝 Referal panelida ikki bosqichda yoqish mumkin. "
+        "Boshqa o'zgarishlar botni qayta yoqmasdan kuchga kiradi.</i>"
     )
 
 
@@ -85,19 +89,19 @@ async def toggle_setting(
     if key not in TOGGLE_KEYS:
         await callback.answer("⚠️ Bu sozlamani o'zgartirib bo'lmaydi.", show_alert=True)
         return
-    if key in {"receipt_required", "receipt_duplicate_check", "counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"} and role not in (
-        AdminRole.ADMIN, AdminRole.SUPER
-    ):
-        await callback.answer("⛔️ Bu switch'ni faqat admin boshqaradi.", show_alert=True)
+    if role not in (AdminRole.ADMIN, AdminRole.SUPER):
+        await callback.answer("⛔️ Global sozlamalarni faqat admin boshqaradi.", show_alert=True)
         return
 
     current = bool(await settings_service.get(key, DEFAULTS.get(key, False), session))
     new_value = not current
-    if key in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"} and new_value:
+    if key in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global", "broadcast_enabled_global"} and new_value:
+        warning = ("Navbatdagi xabarlar yana yuboriladi; avval tarqatishlar ro'yxatini tekshiring."
+                   if key == "broadcast_enabled_global" else
+                   "Jonli guruhlarda avvalgi qoidalar yana ishlaydi. Har guruhning individual "
+                   "qoidalari o'zgarmaydi. Avval ularni tekshiring.")
         await render(callback, f"⚠️ <b>GLOBAL QAYTA YOQISH</b>\n\n"
-                     f"{LABELS[key]} qayta yoqilsa, jonli rejimdagi guruhlarda "
-                     "avvalgi qoidalar darhol ishlaydi. Guruhning individual qoidalari "
-                     "o'zgarmaydi. Avval ularni tekshiring.",
+                     f"{LABELS[key]} qayta yoqiladi. {warning}",
                      InlineKeyboardMarkup(inline_keyboard=[
                          [InlineKeyboardButton(text="✅ Ha, qayta yoqilsin",
                                              callback_data=AdminCB(action="resume_policy", value=key).pack())],
@@ -122,7 +126,7 @@ async def toggle_setting(
 async def resume_policy(callback: CallbackQuery, callback_data: AdminCB,
                         session: AsyncSession, role: str | None) -> None:
     key = callback_data.value
-    if key not in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global"}:
+    if key not in {"counter_enabled_global", "guard_enabled_global", "cleaner_enabled_global", "broadcast_enabled_global"}:
         await callback.answer("⚠️ Noto'g'ri switch.", show_alert=True)
         return
     if not bool(await settings_service.get(key, False, session)):
@@ -131,7 +135,7 @@ async def resume_policy(callback: CallbackQuery, callback_data: AdminCB,
     await callback.answer("✅ Global switch qayta yoqildi. Guruh qoidalari o'zgarmadi.", show_alert=True)
 
 
-@router.callback_query(IsAdmin(), AdminCB.filter(F.action == "edit"))
+@router.callback_query(IsAdmin(AdminRole.ADMIN), AdminCB.filter(F.action == "edit"))
 async def start_edit(
     callback: CallbackQuery,
     callback_data: AdminCB,
@@ -165,14 +169,14 @@ async def start_edit(
     await callback.answer()
 
 
-@router.message(IsAdmin(), Command("cancel"), StateFilter(AdminSettingsStates))
+@router.message(IsAdmin(AdminRole.ADMIN), Command("cancel"), StateFilter(AdminSettingsStates))
 async def cancel_edit(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
     await state.clear()
     values = await settings_service.get_all(session)
     await message.answer(_format_settings(values), reply_markup=settings_kb(values, role))
 
 
-@router.message(IsAdmin(), StateFilter(AdminSettingsStates.waiting_support_contact), F.text)
+@router.message(IsAdmin(AdminRole.ADMIN), StateFilter(AdminSettingsStates.waiting_support_contact), F.text)
 async def apply_support_contact(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
     value = (message.text or "").strip()
     if not value or len(value) > 64:
@@ -188,7 +192,7 @@ async def apply_support_contact(message: Message, state: FSMContext, session: As
     )
 
 
-@router.message(IsAdmin(), StateFilter(AdminSettingsStates.waiting_interval), F.text)
+@router.message(IsAdmin(AdminRole.ADMIN), StateFilter(AdminSettingsStates.waiting_interval), F.text)
 async def apply_interval(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
     raw = (message.text or "").strip()
     if not raw.isdigit():

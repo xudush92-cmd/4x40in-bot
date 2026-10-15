@@ -14,7 +14,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject, User as TgUser
+from aiogram.types import TelegramObject
+from aiogram.types import User as TgUser
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,8 +41,9 @@ class UserContextMiddleware(BaseMiddleware):
         tg_user: TgUser | None = data.get("event_from_user")
 
         if session is not None and tg_user is not None and not tg_user.is_bot:
-            user = await self._ensure_user(session, tg_user)
+            user, is_new = await self._ensure_user(session, tg_user)
             data["user"] = user
+            data["user_is_new"] = is_new
 
             is_admin, role, admin_row = await self._resolve_admin(session, tg_user.id)
             data["is_admin"] = is_admin
@@ -52,7 +54,7 @@ class UserContextMiddleware(BaseMiddleware):
 
     # ── Ichki ─────────────────────────────────────────────────
     @staticmethod
-    async def _ensure_user(session: AsyncSession, tg_user: TgUser) -> User:
+    async def _ensure_user(session: AsyncSession, tg_user: TgUser) -> tuple[User, bool]:
         user = await session.get(User, tg_user.id)
         now = utcnow()
 
@@ -66,7 +68,7 @@ class UserContextMiddleware(BaseMiddleware):
             )
             session.add(user)
             await session.flush()
-            return user
+            return user, True
 
         # Profil ma'lumotlari o'zgargan bo'lsa — yangilash
         changed = (
@@ -84,7 +86,7 @@ class UserContextMiddleware(BaseMiddleware):
         if changed or last is None or (now - last).total_seconds() > _LAST_SEEN_WRITE_INTERVAL:
             user.last_seen_at = now
 
-        return user
+        return user, False
 
     @staticmethod
     async def _resolve_admin(

@@ -68,6 +68,11 @@ class User(Base, TimestampMixin):
     language: Mapped[str] = mapped_column(String(8), default="uz")
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     blocked_reason: Mapped[Optional[str]] = mapped_column(Text)
+    private_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Migratsiyadan oldin shaxsiy/guruh start tarixini ajratib bo'lmaydi.
+    # Eski foydalanuvchilar bonus olmasin; yangi yaratilganlar uchun false.
+    referral_legacy: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    broadcast_opt_out: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Eslatma: `Seller` bilan ORM relationship ATAYLAB yo'q.
@@ -598,7 +603,16 @@ class Payment(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id", ondelete="CASCADE"), index=True)
     tariff_id: Mapped[int] = mapped_column(ForeignKey("tariffs.id", ondelete="RESTRICT"))
-    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # bankka to'lanadigan qism
+    base_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"),
+                                                 server_default=text("0"))
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"),
+                                                     server_default=text("0"))
+    balance_used: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"),
+                                                  server_default=text("0"))
+    discount_bonus_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("referral_bonus_log.id", ondelete="RESTRICT")
+    )
     currency: Mapped[str] = mapped_column(String(8), default="UZS")
     method_id: Mapped[Optional[int]] = mapped_column(ForeignKey("payment_methods.id", ondelete="SET NULL"))
     receipt_file_id: Mapped[Optional[str]] = mapped_column(String(255))
@@ -652,9 +666,10 @@ class Referral(Base, TimestampMixin):
 
 
 class ReferralBonusLog(Base, TimestampMixin):
-    """Berilgan bonuslar tarixi."""
+    """Berilgan bonuslar tarixi: har referal bir martagina bonus oladi."""
 
     __tablename__ = "referral_bonus_log"
+    __table_args__ = (UniqueConstraint("referral_id", name="uq_referral_bonus_once"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     referral_id: Mapped[int] = mapped_column(ForeignKey("referrals.id", ondelete="CASCADE"))
@@ -663,6 +678,8 @@ class ReferralBonusLog(Base, TimestampMixin):
     value: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     admin_id: Mapped[Optional[int]] = mapped_column(BigInteger)  # qo'lda berilgan bo'lsa
+    reserved_payment_id: Mapped[Optional[int]] = mapped_column(Integer)  # chegirma uchun chek (qaytariladi)
+    redeemed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -956,7 +973,7 @@ class StatsDaily(Base, TimestampMixin):
 
 
 class Broadcast(Base, TimestampMixin):
-    """Ommaviy xabarlar (30 msg/s limiti hurmat qilinadi)."""
+    """Tasdiqlangandan keyin manzillari muzlatilgan ommaviy xabar."""
 
     __tablename__ = "broadcasts"
 
@@ -969,23 +986,28 @@ class Broadcast(Base, TimestampMixin):
     sent: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default="draft")
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class BroadcastTarget(Base, TimestampMixin):
-    """Har qabul qiluvchi holati."""
+    """Har qabul qiluvchi holati: tarmoq uzilganda noma'lum natija qayta yuborilmaydi."""
 
     __tablename__ = "broadcast_targets"
     __table_args__ = (
         Index("ix_broadcast_targets_broadcast_status", "broadcast_id", "status"),
+        UniqueConstraint("broadcast_id", "user_id", name="uq_broadcast_targets_user"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     broadcast_id: Mapped[int] = mapped_column(ForeignKey("broadcasts.id", ondelete="CASCADE"))
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|sent|failed
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|running|sent|failed|uncertain
     error: Mapped[Optional[str]] = mapped_column(String(255))
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    telegram_message_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
