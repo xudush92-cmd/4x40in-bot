@@ -27,8 +27,9 @@ from app.utils.time import ensure_aware, utcnow
 CHAT_ID = -1002003004000
 
 
-async def setup(session, *, count: int = 3, interval: int = 1800):
-    now = utcnow()
+async def setup(session, *, count: int = 3, interval: int = 1800,
+                now: datetime | None = None):
+    now = now or utcnow()
     group = Group(
         tg_chat_id=CHAT_ID, title="Telefonlar", is_supergroup=True, bot_is_admin=True,
         is_active=True,
@@ -226,10 +227,10 @@ async def test_three_known_send_errors_trigger_auto_pause(session) -> None:
 
 
 async def test_quiet_hours_and_daily_cap_defer_without_claim(session) -> None:
-    group, _, _, _, _, _ = await setup(session)
+    now = datetime(2026, 10, 15, 18, 30, tzinfo=UTC)
+    group, _, _, _, _, _ = await setup(session, now=now)
     group.settings.quiet_start = "23:00"
     group.settings.quiet_end = "08:00"
-    now = datetime(2026, 10, 15, 18, 30, tzinfo=UTC)
     claim, result = await p.claim_post(session, group.id, now)
     assert claim is None and result.status == "deferred"
     assert ensure_aware(group.rotation.next_post_at) == datetime(2026, 10, 16, 3, tzinfo=UTC)

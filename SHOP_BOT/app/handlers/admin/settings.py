@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import AdminRole
+from app.constants import MAX_INTERVAL_SEC, MIN_INTERVAL_SEC, AdminRole
 from app.filters import IsAdmin
 from app.keyboards import settings_kb
 from app.keyboards.callbacks import AdminCB
@@ -159,7 +159,7 @@ async def start_edit(
         await callback.message.answer(
             "⏱ <b>Yangi interval</b>\n"
             f"Hozirgi qiymat: <b>{current} daqiqa</b>\n\n"
-            "1 dan 1440 gacha daqiqa yuboring (raqam bilan).\n"
+            f"{MIN_INTERVAL_SEC // 60} dan {MAX_INTERVAL_SEC // 60} gacha daqiqa yuboring (raqam bilan).\n"
             "Bekor qilish uchun /cancel"
         )
     else:
@@ -200,8 +200,10 @@ async def apply_interval(message: Message, state: FSMContext, session: AsyncSess
         return
 
     minutes = int(raw)
-    if not 1 <= minutes <= 1440:
-        await message.answer("⚠️ Qiymat 1 dan 1440 daqiqagacha bo'lishi kerak.")
+    if not MIN_INTERVAL_SEC // 60 <= minutes <= MAX_INTERVAL_SEC // 60:
+        await message.answer(
+            f"⚠️ Qiymat {MIN_INTERVAL_SEC // 60} dan {MAX_INTERVAL_SEC // 60} daqiqagacha bo'lishi kerak."
+        )
         return
 
     await settings_service.set(

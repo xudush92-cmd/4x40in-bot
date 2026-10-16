@@ -148,8 +148,11 @@ async def ask_number(callback: CallbackQuery, callback_data: ReferralAdminCB,
     await state.set_state(AdminReferralStates.waiting_value)
     await state.update_data(ref_field=callback_data.value)
     await render(callback, f"✍️ <b>{escape_html(callback_data.value)}</b> uchun raqam yuboring.\n"
-                 "Kun: 1–365, balans UZS: 1000–1000000, chegirma: 1–50%, "
-                 "kunlik limit: 1–50, minimal chek: 0–1000000000 UZS.\n"
+                 f"Kun: 1–{referral_service.MAX_BONUS_DAYS:.0f}, "
+                 f"balans UZS: 1000–{referral_service.MAX_BONUS_BALANCE:.0f}, "
+                 f"chegirma: 1–{referral_service.MAX_DISCOUNT_PERCENT:.0f}% (xavfsizlik chegarasi), "
+                 f"kunlik limit: 1–{referral_service.MAX_DAILY_REFERRALS}, "
+                 f"minimal chek: 0–{referral_service.MAX_MIN_PAYMENT:.0f} UZS.\n"
                  "/cancel — bekor qilish.")
     await alert(callback, "")
 

@@ -145,7 +145,7 @@ async def grant_kind(callback: CallbackQuery, callback_data: PolicyCB, state: FS
     await state.update_data(policy_kind=callback_data.value)
     await state.set_state(AdminPolicyStates.waiting_permission_days)
     await render(callback, "📅 <b>Ruxsat muddati</b>\n"
-                 "1–365 kun yuboring. <code>0</code> = doimiy.\n"
+                 f"1–{policy.MAX_PERMISSION_DAYS} kun yuboring. <code>0</code> = doimiy.\n"
                  "Masalan: <code>7</code>\nBekor qilish: /cancel")
     await alert(callback, "")
 
@@ -160,8 +160,8 @@ async def grant_days(message: Message, state: FSMContext, session: AsyncSession,
         await state.clear()
         return
     raw = (message.text or "").strip()
-    if not raw.isascii() or not raw.isdigit() or not 0 <= int(raw) <= 365:
-        await message.answer("⚠️ 0–365 kun raqam kiriting. /cancel")
+    if not raw.isascii() or not raw.isdigit() or not 0 <= int(raw) <= policy.MAX_PERMISSION_DAYS:
+        await message.answer(f"⚠️ 0–{policy.MAX_PERMISSION_DAYS} kun raqam kiriting. /cancel")
         return
     await state.update_data(policy_days=int(raw))
     await state.set_state(AdminPolicyStates.waiting_permission_reason)

@@ -26,11 +26,17 @@ from app.db.models import (
     Seller,
     Tariff,
 )
-from app.services import seller_service, subscription_service
+from app.services import seller_service, subscription_service, tariff_service
 from app.services.settings_service import settings_service
 from app.utils.time import ensure_aware, utcnow
 
 BONUS_DEFAULT = {BonusType.DAYS: "7", BonusType.BALANCE: "50000", BonusType.DISCOUNT: "10"}
+MAX_DAILY_REFERRALS = 500
+MAX_BONUS_DAYS = Decimal("3650")
+MAX_BONUS_BALANCE = Decimal("10000000")
+MAX_DISCOUNT_PERCENT = Decimal("50")  # 500% manfiy chek chiqaradi — oshirilmaydi
+# Minimal chek hech qachon sotib olinadigan maksimal tarifdan oshmasin.
+MAX_MIN_PAYMENT = tariff_service.MAX_PRICE
 DEFAULTS = {
     "trigger": ReferralTrigger.FIRST_PAYMENT,
     "bonus_type": BonusType.DAYS,
@@ -61,16 +67,18 @@ def validate(key: str, value: object, *, bonus_type: str = BonusType.DAYS) -> st
         return str(value)
     if key == "daily_limit":
         raw = str(value).strip()
-        if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= 50:
-            raise ValueError("Kunlik limit 1–50 orasida bo'lsin.")
+        if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= MAX_DAILY_REFERRALS:
+            raise ValueError(f"Kunlik limit 1–{MAX_DAILY_REFERRALS} orasida bo'lsin.")
         return int(raw)
     if key in {"bonus_value", "min_payment"}:
         number = _decimal(value)
-        if key == "min_payment" and 0 <= number <= 1_000_000_000 and number == number.quantize(Decimal("0.01")):
-            return str(number)
-        ranges = {BonusType.DAYS: (Decimal("1"), Decimal("365")),
-                  BonusType.BALANCE: (Decimal("1000"), Decimal("1000000")),
-                  BonusType.DISCOUNT: (Decimal("1"), Decimal("50"))}
+        if key == "min_payment":
+            if 0 <= number <= MAX_MIN_PAYMENT and number == number.quantize(Decimal("0.01")):
+                return str(number)
+            raise ValueError(f"Minimal chek 0–{MAX_MIN_PAYMENT:.0f} UZS orasida bo'lsin.")
+        ranges = {BonusType.DAYS: (Decimal("1"), MAX_BONUS_DAYS),
+                  BonusType.BALANCE: (Decimal("1000"), MAX_BONUS_BALANCE),
+                  BonusType.DISCOUNT: (Decimal("1"), MAX_DISCOUNT_PERCENT)}
         low, high = ranges.get(bonus_type, (Decimal("1"), Decimal("365")))
         if (key == "bonus_value" and low <= number <= high and number == number.quantize(Decimal("0.01"))
                 and (bonus_type != BonusType.DAYS or number == number.to_integral_value())):
@@ -279,7 +287,7 @@ async def verify_quote(session: AsyncSession, seller: Seller, tariff: Tariff, qu
     """Chek paytida row-lock ostida quote'ni tasdiqlash: bir kupon/balans ikki marta emas."""
     # Phase 5 narx snapshotini saqlaymiz: katalogdan keyin tarif narxi
     # o'zgarsa ham foydalanuvchi ko'rgan summa (FSM'dagi quote) amal qiladi.
-    if not 0 < quote.base <= Decimal("999999999") or quote.discount < 0 or quote.balance < 0:
+    if not 0 < quote.base <= tariff_service.MAX_PRICE or quote.discount < 0 or quote.balance < 0:
         raise ValueError("To'lov narxi noto'g'ri, katalogdan qayta tanlang.")
     voucher = None
     if quote.discount_bonus_id is not None:

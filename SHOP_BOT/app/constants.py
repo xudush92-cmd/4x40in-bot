@@ -188,10 +188,10 @@ class CB:
 # ──────────────────────────── Standart qiymatlar ───────────────────────
 DEFAULT_INTERVAL_SEC = 1800          # 30 daqiqa
 MIN_INTERVAL_SEC = 60                # Telegram limiti: 1 guruhga 20 xabar/daqiqa
-MAX_INTERVAL_SEC = 86400             # 24 soat
+MAX_INTERVAL_SEC = 864000            # 10 kun: admin tanlaydigan intervalning yuqori chegarasi
 MIN_JITTER_PERCENT = 0
-MAX_JITTER_PERCENT = 30
-MAX_DAILY_POST_LIMIT = 500
+MAX_JITTER_PERCENT = 30                # foiz/vaqt matematikasi: 10x oshirilmaydi
+MAX_DAILY_POST_LIMIT = 5000
 MAX_PHOTOS_PER_ALBUM = 10            # Telegram bir albomda maksimal 10 rasm
 MAX_TEXT_LEN = 4096
 MAX_CAPTION_LEN = 1024

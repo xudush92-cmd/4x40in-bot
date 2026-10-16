@@ -38,13 +38,13 @@ router.callback_query.filter(IsAdmin())
 
 _EDITABLE = {AdminRole.ADMIN, AdminRole.SUPER}
 _PROMPTS = {
-    "allowed_domains": "Faqat domenlar, masalan: <code>t.me, example.uz</code> (bo'shatish: <code>-</code>).",
-    "banned_words": "So'z/ibora ro'yxati, vergul yoki yangi qatordan ajrating (bo'shatish: <code>-</code>).",
-    "warn_limit": "1–20 oralig'ida chegara kiriting. Bosqich: limitgacha DM, undan keyin mute.",
-    "mute_minutes": "1–10080 daqiqa kiriting (maksimal 7 kun).",
-    "warn_window_hours": "1–720 soat kiriting: shu muddatdan eski warninglar noldan boshlanadi.",
-    "keep_last_ads": "Har bir e'londan 1–20 ta oxirgi nusxa saqlansin (0 ta ruxsat etilmaydi).",
-    "delete_after_seconds": "0–3600 sekund: 0 darhol, >0 xabar shu vaqtdan keyin o'chadi.",
+    "allowed_domains": f"Ko'pi bilan {policies.MAX_POLICY_LIST_ITEMS} domen, masalan: <code>t.me, example.uz</code> (bo'shatish: <code>-</code>).",
+    "banned_words": f"Ko'pi bilan {policies.MAX_POLICY_LIST_ITEMS} so'z/ibora, vergul yoki yangi qatordan ajrating (bo'shatish: <code>-</code>).",
+    "warn_limit": f"1–{policies.MAX_WARN_LIMIT} oralig'ida chegara kiriting. Bosqich: limitgacha DM, undan keyin mute.",
+    "mute_minutes": f"1–{policies.MAX_MUTE_MINUTES} daqiqa kiriting (maksimal 70 kun).",
+    "warn_window_hours": f"1–{policies.MAX_WARN_WINDOW_HOURS} soat kiriting: shu muddatdan eski warninglar noldan boshlanadi.",
+    "keep_last_ads": f"Har bir e'londan 1–{policies.MAX_KEEP_LAST_ADS} ta oxirgi nusxa saqlansin (0 ta ruxsat etilmaydi).",
+    "delete_after_seconds": f"0–{policies.MAX_DELETE_AFTER_SECONDS} sekund: 0 darhol, >0 xabar shu vaqtdan keyin o'chadi.",
 }
 
 
@@ -99,7 +99,7 @@ async def render_policy(
             f"· mute: <b>{row.mute_minutes} min</b>\n"
             f"🕒 Hisob oynasi: <b>{(row.escalate or {}).get('warn_window_hours', 24)} soat</b> "
             f"· Adminlar istisno: {'ha' if row.exemption_for_admins else 'yo‘q'}\n\n"
-            "ℹ️ Sanoqchi/majburiy kanal Phase 7gacha jazo qoidasiga kirmaydi. "
+            "ℹ️ Sanoqchi/N va majburiy kanal alohida shartlar; posbonning ogohlantirish soniga qo‘shilmaydi. "
             "Bot Privacy Mode o‘chirilgan bo‘lishi kerak."
         )
         kb = guard_kb(group, row, can_edit=_can_edit(role))

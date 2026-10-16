@@ -8,7 +8,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.db.models import Tariff
-from app.keyboards.callbacks import SellerPanelCB
+from app.keyboards.callbacks import GuideCB, SellerPanelCB
 from app.utils.text import truncate
 
 
@@ -59,6 +59,9 @@ def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0) -> Inl
             ),
         ]
     )
+    rows.append([InlineKeyboardButton(
+        text="📖 Foydalanish yo'riqnomasi", callback_data=GuideCB().pack()
+    )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

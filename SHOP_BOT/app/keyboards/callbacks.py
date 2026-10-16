@@ -22,6 +22,12 @@ class NavCB(CallbackData, prefix="nav"):
     to: str = "menu"
 
 
+class GuideCB(CallbackData, prefix="guide"):
+    """Shaxsiy chat yo'riqnomasi; sahifa rolga qarab serverda tanlanadi."""
+
+    page: str = "home"
+
+
 class GroupCB(CallbackData, prefix="grp"):
     """Guruhlar bo'limi.
 

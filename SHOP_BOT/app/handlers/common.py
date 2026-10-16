@@ -4,22 +4,24 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
-from app.constants import SellerStatus
+from app.constants import AdminRole, SellerStatus
 from app.db.models import User
 from app.filters import PrivateChat
 from app.handlers.seller import seller_status_text
-from app.keyboards import AdminCB, admin_main_kb
+from app.keyboards import AdminCB, GuideCB, admin_main_kb
+from app.keyboards.guide import GUIDES, guide_kb, user_start_kb
 from app.keyboards.seller_panel import seller_menu_kb
 from app.services import broadcast_service, referral_service, seller_service, subscription_service
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
 from app.services.text_service import text_service
 from app.utils.text import escape_html
+from app.utils.tg import alert, render
 from app.utils.time import utcnow
 
 router = Router(name="common")
@@ -62,7 +64,7 @@ async def cmd_start(
         return
 
     seller = await get_seller(session, message.from_user.id)
-    if seller is not None and seller.status != SellerStatus.BLOCKED:
+    if seller is not None and seller.status in {SellerStatus.PENDING, SellerStatus.ACTIVE}:
         text = await text_service.get(
             "start.seller", ism=name, tarif_holati=await seller_status_text(seller, session)
         )
@@ -80,16 +82,7 @@ async def cmd_start(
     text = await text_service.get("start.user", ism=name, yordam=escape_html(str(support)))
     await message.answer(
         text + referral_note,
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="☎️ Yordam",
-                        url=f"https://t.me/{str(support).lstrip('@')}",
-                    )
-                ]
-            ]
-        ),
+        reply_markup=user_start_kb(str(support)),
         disable_web_page_preview=True,
     )
 
@@ -123,6 +116,30 @@ async def cmd_help(message: Message, is_admin: bool) -> None:
     if is_admin:
         lines.append("/admin — boshqaruv paneli")
     await message.answer("\n".join(lines))
+
+
+@router.callback_query(GuideCB.filter(), PrivateChat())
+async def open_guide(
+    callback: CallbackQuery, callback_data: GuideCB, session: AsyncSession,
+    user: User | None, is_admin: bool, role: str | None,
+) -> None:
+    """Faqat haqiqiy rolning yo'riqnomasi; callback'dagi sahifaga ishonilmaydi."""
+    if is_admin:
+        profile = "moderator" if role == AdminRole.MODERATOR else "admin"
+    else:
+        seller = await get_seller(session, callback.from_user.id)
+        profile = "seller" if seller and seller.status in {SellerStatus.PENDING, SellerStatus.ACTIVE} else "user"
+
+    if callback_data.page == "back" and profile == "user":
+        support = str(await settings_service.get("support_contact", "@admin", session))
+        name = escape_html((user.first_name if user else None) or callback.from_user.first_name or "do'st")
+        await render(callback, await text_service.get("start.user", ism=name, yordam=escape_html(support)),
+                     user_start_kb(support))
+    else:
+        pages = GUIDES[profile]
+        page = callback_data.page if callback_data.page in pages else "home"
+        await render(callback, pages[page][1], guide_kb(profile, page))
+    await alert(callback, "")
 
 
 @router.message(Command("id"))

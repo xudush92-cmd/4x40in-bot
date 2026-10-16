@@ -518,7 +518,7 @@ async def ask_adjust(callback: CallbackQuery, callback_data: CounterAdminCB, sta
                             counter_sign=1 if raw[0] == "p" else -1)
     await render(callback, f"👤 <code>{user_id}</code>: "
                  f"<b>{'qo‘shish' if raw[0] == 'p' else 'kamaytirish'}</b>\n"
-                 "<code>2 sababi</code> ko'rinishida miqdor (1–1000) va "
+                 f"<code>2 sababi</code> ko'rinishida miqdor (1–{counters.MAX_MANUAL_ADJUST}) va "
                  "3–255 belgili sabab yuboring. /cancel — bekor qilish.")
     await alert(callback, "")
 

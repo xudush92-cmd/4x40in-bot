@@ -175,7 +175,7 @@ async def test_admin_tariff_validation_and_edit(session, tg) -> None:
     await _feed(session, dp, bot, 2, text_update("Test tarif"))
     await _feed(session, dp, bot, 3, text_update("100000"))
     await _feed(session, dp, bot, 4, text_update("99999"))   # muddat chegaradan tashqari
-    assert "1–3650" in fake.sent_texts()[-1]
+    assert "1–36500" in fake.sent_texts()[-1]
 
     await _feed(session, dp, bot, 5, text_update("30"))
     await _feed(session, dp, bot, 6, text_update("5"))

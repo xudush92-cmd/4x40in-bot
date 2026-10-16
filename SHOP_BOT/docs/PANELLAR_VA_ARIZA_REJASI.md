@@ -1,6 +1,6 @@
 # Boshqaruv panellari, limitlar va sotuvchilik arizasi — loyiha rejasi
 
-**Holat:** tasdiqqa taqdim etilgan UX va texnik reja; **hozircha bot kodiga kiritilmagan**.
+**Holat:** UX-0 admin navigatsiyasi, sotuvchilik arizasi va kabinet **hali bot kodiga kiritilmagan reja**. Keyinroq alohida ruxsat bilan so‘ralgan **limitlar ×10 va botdagi rolli yo‘riqnoma tugmalari amalga oshirildi** (quyidagi 3- va 6-bo‘limlar); bu qolgan UX bosqichlarini boshlashga ruxsat bermaydi.
 
 **Doira:** `SHOP_BOT/`; `AVTO_BOT/`, `main` va jonli Replit muhitiga tegilmaydi.
 
@@ -9,9 +9,9 @@
 ## 1. Mavjud holat va asosiy chalkashliklar
 
 - `app/keyboards/admin.py`da 19 ta bo‘lim bir darajada turadi: guruhlar, posbon, tozalovchi, sanoqchi va sozlamalar turli joyda. Global funksiya o‘chirgichi, bir guruh o‘chirgichi va o‘sha guruhning «sinov/jonli» rejimi o‘rtasidagi farqni topish qiyin.
-- `app/middlewares/user_context.py` yangi Telegram foydalanuvchisini `users`ga avtomatik yozadi; bu **sotuvchi sifatida tasdiqlanish emas**. `app/handlers/common.py`dagi `/start` oddiy foydalanuvchiga faqat yordamni taklif qiladi. Sotuvchini admin hozir `app/handlers/admin/sellers.py` orqali ID va kontakt ma’lumotlari bilan qo‘lda qo‘shadi.
+- `app/middlewares/user_context.py` yangi Telegram foydalanuvchisini `users`ga avtomatik yozadi; bu **sotuvchi sifatida tasdiqlanish emas**. `app/handlers/common.py`dagi `/start` oddiy foydalanuvchiga yordam va qisqa foydalanish yo‘riqnomasini taklif qiladi. Sotuvchini admin hozir `app/handlers/admin/sellers.py` orqali ID va kontakt ma’lumotlari bilan qo‘lda qo‘shadi.
 - `SellerStatus.PENDING` (`app/constants.py`) **admin arizasi kutilmoqda** degani emas: sotuvchi yozuvi bor, lekin hali tarifi yo‘q. To‘lovning `PENDING`i va e’lonning `PENDING`i ham boshqa oqimlardir. Ariza uchun alohida holat zarur.
-- Sotuvchi panelida e’lonlar, tarif, to‘lov allaqachon bor (`app/handlers/seller/`, `app/keyboards/seller_panel.py`), biroq har biriga alohida kiriladi: birinchi ekranda «nima qoldi / nima kutilyapti / keyin nima qilish kerak» aniq jamlanmagan. `/start`dagi sotuvchi holatini tekshirishda `BLOCKED` va `DELETED` kabi holatlar izchil ko‘rilishi kerak; bu ushbu rejada tuzatish taklifi, hozirgi kod o‘zgartirilmaydi.
+- Sotuvchi panelida e’lonlar, tarif, to‘lov allaqachon bor (`app/handlers/seller/`, `app/keyboards/seller_panel.py`), biroq har biriga alohida kiriladi: birinchi ekranda «nima qoldi / nima kutilyapti / keyin nima qilish kerak» aniq jamlanmagan. `/start`dagi sotuvchi holatini tekshirishda `BLOCKED` va `DELETED` kabi holatlar izchil ko‘rilishi kerak; bu hali amalga oshirilmagan UX taklifi; limit/yo‘riqnoma bosqichi sotuvchilik arizasi oqimini o‘zgartirmaydi.
 - Majburiy **N kishi qo‘shish** (`sanoqchi`) va majburiy **kanalga a’zo bo‘lish** (`RequiredChannel`) alohida shart. Ular sotuvchi referal bonusidan ham, posbonning spam qoidasidan ham mustaqil bo‘lishi kerak.
 
 ## 2. Yangi admin navigatsiyasi (ekran sxemasi)
@@ -73,34 +73,33 @@ Diagnostika sababni aniq yozishi kerak: «global o‘chiq», «shu guruh o‘chi
 
 ## 3. Limitlar auditi va ekranda joylashuvi
 
-Quyidagilar **hozir kod qo‘llaydigan chegaralar**, yangi qiymatlar emas. «Panel» degani hozir tahrirlanadigan joy; «taklif» — kelajakdagi ko‘rinish. Raqamlar biznes kelishuvisiz oshirilmaydi, ayniqsa Telegram va spam/xavfsizlik chegaralari.
+UX-0 tuzilgan paytdagi sonlar keyingi **alohida ruxsat** bilan o‘zgardi. Quyidagi **joriy kod** ustuni botdagi amaldagi yuqori chegaralar: faqat **maksimumlar** ko‘tarildi, bazadagi saqlangan qiymatlar, defaultlar, qoidalar, guruh konteksti va oldingi ariza/menyu oqimlari ko‘chirilmadi. «Taklif» ustuni — hali amalga oshirilmagan kelajak UX joylashuvi.
 
-| Soha / maydon | Hozirgi oraliq yoki default | Kelajakdagi aniq joy va eslatma |
+| Soha / maydon | Joriy koddagi oraliq / izoh (qavsda UX-0dagi eski maksimum) | Kelajakdagi aniq joy |
 |---|---|---|
-| Guruh post intervali; toifa intervali | 1–1440 daqiqa; default guruh 30 daq | `Guruh → Joylash`, toifa uchun shu ekran ichidagi override; toifa override guruhdan mustaqil |
-| Guruh kunlik post limiti; jitter | 1–500 xabar/kun (default 50); 0–30% (default 10%) | `Guruh → Joylash`; kiritishda birlik va amaldagi qiymat ko‘rsatiladi |
-| Tinch soatlar / e’lon oqimi | Vaqt oralig‘i; guruh bo‘yicha | `Guruh → Joylash`; kunlik limit bilan aralashtirmaslik |
-| Posbon ogohlantirish / mute / oyna | 1–20 ta; 1–10080 daqiqa; 1–720 soat | `Guruh → Posbon`; jazo, sinov/jonli va global ta’sir alohida |
-| Posbon taqiqlangan so‘zlari | ko‘pi bilan 30 so‘z, har biri 2–50 belgi | `Guruh → Posbon → So‘zlar`; ro‘yxat uzunligi xavfsizlik chegarasi, e’lon limitiga aloqasi yo‘q |
-| Tozalovchi nechta e’lon qoldiradi / qachon o‘chiradi | 1–20 ta; 0–3600 soniya | `Guruh → Tozalovchi`; 0 «darhol» degani ekanini yozish |
-| N kishi / minimal qolish | 0–100 kishi; 0–10080 daqiqa (yangi guruhda N=3, qolish=10 daq) | `Guruh → N kishi`; N=0 faqat taklif shartini o‘chiradi, kanal sharti alohida qolishi mumkin; eski hisoblar N o‘zgarsa qayta baholanadi |
-| Sanoqchi kunlik hisob / bitta havola limiti | 1–100 / 1–100 (yangi guruhda ikkalasi 20) | `Guruh → N kishi`; kunlik hisob bilan post kunlik limitini farqlash |
-| Sanoqchi hisobini admin qo‘lda tuzatishi | bir amal uchun −1000…+1000, sabab 3–255 belgi | `Guruh → N kishi → A’zo hisobi`; amal auditga yoziladi, N cheklovi bilan adashtirmaslik |
-| Majburiy kanal | global va guruh kanallari, shart on/off | `Guruh → Kanal a’zoligi`; global ro‘yxat `Tizim → Umumiy kanallar`; kanalga admin huquqi va tekshirish talabi |
-| Istisno muddati | 1–365 kun yoki muddatsiz | `Guruh → Istisnolar`; global ruxsat bilan guruh ruxsatini ajratish |
-| Tarif muddati / e’lon kvotasi | 1–3650 kun / 1–1000 e’lon | `Savdo → Tariflar`; sotuvchi panelida obuna «ishlatilgan / jami / qolgan» |
-| Tarif rasm limiti | 1–10 rasm/e’lon; default 3 | `Savdo → Tariflar`; **10 Telegram albomi chegarasi**, oshirish boshqa yuborish mexanizmini talab qiladi |
-| Tarif narxi; e’lon narxi | 0–999 999 999 so‘m; 0–1 000 000 000 000 so‘m | `Savdo → Tariflar` va sotuvchining e’lon ustasi; DB va to‘lov chegaralari bilan tekshirmay oshirmaslik |
-| E’lon sarlavhasi/tavsifi; sotuvchi profil maydonlari | sarlavha 3–120 belgi, tavsif ko‘pi bilan 800; sotuvchi nomi 64, telefon 32, kontakt 64 belgi | sotuvchi arizasi/profili va e’lon ustasidagi yordam matni; servisda kesilishi va DB maydoni mosligi tekshirilsin |
-| Obunaga qo‘lda beriladigan e’lon limiti | 0–100000 | `Savdo → Sotuvchilar → Obuna`; tarif kvotasi va qo‘lda o‘zgarishni farqlash |
-| Referal kunlik bonus, bonus qiymati | 1–50/kun; kun bonusi 1–365, balans 1000–1000000 so‘m, chegirma 1–50%; min. to‘lov 0–1 mlrd so‘m | `Savdo → Referal`; sotuvchi referali **guruh sanoqchisidan alohida**; default o‘chiq, ikki bosqichli yoqish |
-| Broadcast yuborish tezligi | 1–25 xabar/soniya (default 25) | `Kontent → Broadcast`; global kalit va yuborish tasdig‘i saqlanadi; Telegram tezlik chegarasidan yuqoriga oshirilmaydi |
-| Post rate-limiterining guruh oralig‘i | eng kam 2 soniya (koddagi xavfsizlik chegarasi) | `Guruh → Joylash`dagi 1 daqiqalik minimumdan boshqa qoida; panelda «sozlanadigan kunlik limit» deb ko‘rsatilmaydi |
-| Oddiy ro‘yxat sahifasi | guruh/sotuvchi/e’lon 6 tadan; toifa/tarif 8 tadan | navigatsiya/pagination, **biznes limiti emas**; keyin qulay sahifalash bilan sinash |
+| Guruh va toifa post intervali | 1–14400 daq (1440); default guruh 30 daq | `Guruh → Joylash`; toifaning alohida override'i saqlanadi |
+| Guruh kunlik post / jitter | 1–5000 xabar/kun (500), default 50; jitter **0–30% o‘zgarmadi** | `Guruh → Joylash`; tezlikni oshirish emas, admin belgilaydigan kvota |
+| Tinch soatlar | Vaqt oralig‘i; guruh bo‘yicha, o‘zgarmadi | `Guruh → Joylash` |
+| Posbon ogohlantirish / mute / oyna | 1–200 ta (20); 1–100800 daq (10080); 1–7200 soat (720) | `Guruh → Posbon`, har guruhning sinov/jonli holati saqlanadi |
+| Posbon so‘z/domen ro‘yxati | ko‘pi bilan **300 tadan** (30); so‘z 2–50 belgi o‘zgarmadi | `Guruh → Posbon → Ro‘yxat` |
+| Tozalovchi nusxalar / kechikish | 1–200 ta (20); 0–36000 soniya (3600) | `Guruh → Tozalovchi`, 0 — darhol |
+| N kishi / minimal qolish | 0–1000 (100) / 0–100800 daq (10080); yangi guruh default N=3, 10 daq | `Guruh → N kishi`; N=0 kanal shartini o‘chirmaydi |
+| Sanoqchi kunlik hisob / bitta havola limiti | 1–1000 / 1–1000 (100 / 100); default har ikkisida 20 | `Guruh → N kishi`, post kvotasidan alohida |
+| Sanoqchi qo‘lda hisob tuzatish | har amal −10000…+10000 (±1000), sabab 3–255 belgi | `Guruh → N kishi → A’zo hisobi`, audit yoziladi |
+| Majburiy kanal | global va guruh kanallari, har guruh switchi, o‘zgarmadi | `Guruh → Kanal a’zoligi`; kanal admin huquqi zarur |
+| Istisno muddati | 1–3650 kun (365), yoki muddatsiz | `Guruh → Istisnolar`, global/guruh alohida |
+| Tarif muddati / e’lon kvotasi | 1–36500 kun (3650) / 1–10000 e’lon (1000) | `Savdo → Tariflar` |
+| Tarif rasm limiti | **1–10 rasm/e’lon, o‘zgarmadi**; Telegram albom limiti | `Savdo → Tariflar`; boshqa yuborish mexanizmisiz oshirib bo‘lmaydi |
+| Tarif narxi; e’lon narxi | 0–9 999 999 990 so‘m (999 999 999); e’lon narxi 0–1 000 000 000 000 so‘m o‘zgarmadi | `Savdo → Tariflar` va e’lon ustasi; narx `Numeric(12,2)` va chek/referal bilan sinxron |
+| E’lon/profil matn uzunliklari | sarlavha 3–120, tavsif 800, sotuvchi nomi 64, telefon 32, kontakt 64 belgi; **texnik DB/Telegram chegarasi, o‘zgarmadi** | Sotuvchi arizasi va e’lon ustasi |
+| Qo‘lda beriladigan obuna e’lon limiti | 0–1000000 (100000); ishlatilgan son saqlanadi | `Savdo → Sotuvchilar → Obuna`, tarif kvotasidan boshqa amal |
+| Referal kunlik bonus / qiymati | 1–500/kun (50); kun 1–3650 (365); balans 1000–10000000 so‘m (1 mln); **chegirma 1–50% o‘zgarmadi** | `Savdo → Referal`; sanoqchidan mustaqil va boshlanishida o‘chiq |
+| Referal minimal chek | 0–9 999 999 990 so‘m (1 mlrd); sotib olinadigan eng katta tarifdan oshmasin | `Savdo → Referal` |
+| Broadcast tezligi | **1–25 xabar/soniya o‘zgarmadi**, xavfsizlik/Telegram cheklovi | `Kontent → Broadcast`, tasdiq saqlanadi |
+| Guruh post rate-limiteri | eng kam **2 soniya o‘zgarmadi**; paneldagi interval bilan bir xil emas | `Guruh → Joylash`da tizim cheklovi sifatida tushuntiriladi |
+| Oddiy ro‘yxat sahifasi | guruh/sotuvchi/e’lon 6 tadan; toifa/tarif 8 tadan; **biznes limiti emas** | UXda pagination qayta ko‘rib chiqilishi mumkin |
 
-Kodda default sifatida saqlanadigan, lekin bugun paneldan bevosita tahrirlanmaydigan qiymatlar ham bor: `settings_service.DEFAULTS`da `min_interval_sec=60`, `default_max_ads=5`, `default_max_photos=3`, `subscription_reminder_days=3`, `subscription_grace_days=0`, `log_retention_days=90` (oxirgisi panelda faqat ko‘rinadi). `posting_enabled_global` va `welcome_enabled_global` ham mavjud, lekin hozirgi umumiy toggle ro‘yxatida yo‘q: yangi menyuda ularni «hozir sozlanadigan» tugma deb ko‘rsatmaslik; zarur bo‘lsa alohida ruxsat, ekran va validatsiya bilan qo‘shish. Matn/miqdor chegaralarini oshirishdan oldin Telegram format, to‘lov va DB turlariga ta’siri tekshiriladi.
-
-**Limit o‘zgartirish qoidasi (keyingi bosqichda):** har maydon uchun `amaldagi → so‘ralgan yangi → hard cheklov → xavf → migratsiya kerakmi` jadvali tasdiqlanadi. Handler va servisdagi tekshiruvlar, ekran matni, mavjud DB qiymatlari va test chegaralari birga yangilanadi; servisning qiymatni sezdirmasdan qisqartirishi o‘rniga xato va ruxsat etilgan oraliq ravshan ko‘rsatiladi. *Hozir hech bir limit qiymati o‘zgarmaydi.*
+Saqlanadigan, lekin paneldan bevosita tahrirlanmaydigan defaultlar (`settings_service.DEFAULTS`): `min_interval_sec=60`, `default_max_ads=5`, `default_max_photos=3`, `subscription_reminder_days=3`, `subscription_grace_days=0`, `log_retention_days=90` (oxirgisi panelda faqat ko‘rinadi). `posting_enabled_global` va `welcome_enabled_global` uchun yangi toggle qo‘shilmagan. Chegirma 50%dan oshsa manfiy chek xavfi bor; broadcast tezligi/rasm limiti esa Telegram bilan cheklangan. Tarif narxining ×10 chegarasi va referal minimal cheki DB sig‘imi va foydali chek qiymati hisobga olinib xavfsiz yaqinlashtirilgan; shuning uchun 10 000 000 000 emas, **9 999 999 990**. Baza sxemasi o‘zgarmagan, migratsiya kerak emas; shaxsiy `/start` va referal birinchi kirish qoidasi saqlangan.
 
 Manbalar: `app/constants.py`, `app/services/group_service.py`, `group_policy_service.py`, `counter_service.py`, `tariff_service.py`, `subscription_service.py`, `referral_service.py`, `ad_service.py`, `app/handlers/admin/{groups,policy,counter,tariffs,settings,broadcast}.py`, `app/keyboards/common.py`.
 
@@ -163,16 +162,18 @@ Bu **Phase 0–9ni qayta boshlash emas**, keyingi UX ishlari uchun alohida kichi
 2. **UX-1 — admin navigatsiyasi va guruh diagnostikasi:** mavjud xizmatlarga yangi kirish joyi, orqaga/yangilash, global–guruh–sinov holatlarini alohida ko‘rsatish; mavjud har guruhning mustaqil qoidalari saqlanadi. Qabul: admin oldingi amallarni yangi menyudan topadi, moderator ruxsatsiz sozlamani o‘zgartira olmaydi, eski callbacklar buzilmaydi.
 3. **UX-2 — sotuvchilik arizasi:** DB migratsiyasi, xususiy chat ustasi, admin navbati/qarori, bildirishnoma, dublikat/race nazorati. Qabul: oddiy `/start` to‘siqsiz; tasdiqsiz sotuvchi paneliga/e’lon/to‘lovga o‘tolmaydi; tasdiq tarif yoki chekni tasdiqlamaydi; qo‘lda qo‘shilgan sotuvchilar saqlanadi.
 4. **UX-3 — sotuvchi kabineti:** mavjud e’lon/tarif/to‘lov holatini jamlash va tez yo‘llar. Qabul: har holat uchun to‘g‘ri keyingi qadam, limit va to‘lov holati amaldagi servisga mos; mavjud e’lon/tarif/chek oqimlari buzilmaydi.
-5. **UX-4 — limit chegaralarini qayta ko‘rib chiqish:** faqat foydalanuvchi aniq sonlarni tasdiqlasa; imkon bo‘lsa maydon kesimida. Qabul: UI, servis, xavfsizlik, test va mavjud ma’lumotlar mos; Telegram hard cheklovlari saqlangan.
+5. **UX-4 — keyingi alohida limit ko‘rib chiqish:** hozirgi ×10 bosqichidan boshqa o‘zgarish bo‘lsa, alohida ruxsat va maydon kesimidagi xavfsizlik tekshiruvi kerak. Qabul: UI, servis, test va mavjud ma’lumotlar mos; Telegram hard cheklovlari saqlanadi.
+
+**Alohida bajarilgan limit/yo‘riqnoma bosqichi (2026-10-16):** foydalanuvchining ×10 so‘rovi doirasida admin belgilaydigan maksimumlar oshirildi (3-bo‘lim), admin/moderator/sotuvchi/oddiy foydalanuvchining shaxsiy ekranlarida «📖 Foydalanish yo‘riqnomasi» tugmasi qo‘shildi. Rol callbackda berilmaydi, DBdagi haqiqiy rolga qarab serverda aniqlanadi. Ariza yaratish, admin navbatlari, 5 bo‘limli menyu va sotuvchi kabinetini qayta qurish **bajarilmadi**; UX-1/2/3 uchun yangi ruxsat kerak.
 
 Har bir **kod bosqichi** yakunida: to‘liq `pytest`, `compileall`, vaqtinchalik DBda Alembic `upgrade head` + `check` (yangi migratsiya bo‘lsa eski holatdan o‘tish), seedni ikki marta bajarib dublikat tekshiruvi, boundary/ruxsat/oqim testlari, diff va hisobot; so‘ng **faqat joriy branchga** commit/push. Oflayn testlar jonli Telegram/Redis/PostgreSQL yoki Replit qabul sinovi o‘rnini bosmaydi; jonli sinov/deploy alohida ruxsat va xavfsiz muhit bilan qilinadi.
 
-**UX-0 tekshiruv eslatmasi (2026-10-16):** real joriy vaqt bilan to‘liq `pytest`da 354 ta test o‘tdi, 1 tasi vaqtga bog‘liq bo‘lib qoldi: `tests/test_posting_service.py::test_quiet_hours_and_daily_cap_defer_without_claim`. Test `setup()`da navbat vaqtini bugungi `utcnow()`dan oladi, keyin esa `2026-10-15 18:30 UTC` sanasini qat’iy beradi; 16-oktabrda xabar «hali vaqti kelmadi» deb qaytadi. Faqat ushbu testni 15-oktabr nazoratli `utcnow()` bilan ishga tushirganda o‘tdi. `compileall`, Alembic `upgrade/check` va ikki martalik seed tekshiruvi muvaffaqiyatli. Hozirgi faqat-hujjat bosqichida test yoki bot kodi o‘zgartirilmadi; keyingi kod bosqichida test vaqtini barqaror qilish alohida ruxsat bilan ko‘riladi. **To‘liq testlar yashil deb e’lon qilinmaydi.**
+**UX-0 tarixiy tekshiruv eslatmasi (2026-10-16, limit bosqichidan oldin):** real joriy vaqt bilan to‘liq `pytest`da 354 ta test o‘tdi, 1 tasi vaqtga bog‘liq bo‘lib qoldi: `tests/test_posting_service.py::test_quiet_hours_and_daily_cap_defer_without_claim`. Test `setup()`da navbat vaqtini bugungi `utcnow()`dan oladi, keyin esa `2026-10-15 18:30 UTC` sanasini qat’iy beradi; 16-oktabrda xabar «hali vaqti kelmadi» deb qaytadi. Faqat ushbu testni 15-oktabr nazoratli `utcnow()` bilan ishga tushirganda o‘tdi. `compileall`, Alembic `upgrade/check` va ikki martalik seed tekshiruvi muvaffaqiyatli. Hozirgi faqat-hujjat bosqichida test yoki bot kodi o‘zgartirilmadi; keyingi kod bosqichida test vaqtini barqaror qilish alohida ruxsat bilan ko‘riladi. **O‘sha UX-0 bosqichida to‘liq testlar yashil deb e’lon qilinmaydi.** Keyingi limit/yo‘riqnoma bosqichida `setup(now=...)` bilan bu test vaqtga bog‘liqlikdan xalos qilindi; joriy test natijalari `HOLAT.md`da.
 
 ## 7. Keyingi ruxsatdan oldin tasdiqlanishi kerak bo‘lganlar
 
 - Ushbu **5 bo‘limli admin menyusi** va guruh ichidagi «N kishi» / «kanal a’zoligi» bo‘linishi sizga mosmi?
 - Ariza minimal maydonlari sifatida **ism/do‘kon nomi + @username yoki telefon** yetarlimi? Rad etilgach qayta ariza uchun kutish muddati va kunlik urinish limitini keyingi bosqichda aniqlaymiz.
-- Qaysi **aniq** limitlar kichik tuyulyapti va ularning yangi oraliqlari qancha bo‘lsin? Hozirgi 10 rasm/albom va 25 xabar/soniya kabi xavfsizlik chegaralari oshirilmaydi.
+- ×10 limit so‘rovi 3-bo‘limdagi xavfsiz chegaralar bilan bajarildi; 10 rasm/albom, 25 xabar/soniya, 30% jitter va 50% chegirma **oshirilmagan**. Boshqa limit kerak bo‘lsa alohida ruxsat bilan ko‘rib chiqiladi.
 
-**Reja tasdig‘i kodlashga avtomatik ruxsat emas.** Avval UX-1 uchun alohida ruxsat so‘raladi; undan keyin har bir bosqich alohida kelishiladi.
+**Reja tasdig‘i kodlashga avtomatik ruxsat emas.** UX-1, UX-2 yoki UX-3 kabi yangi ishlar uchun alohida ruxsat so‘raladi; har bosqich yakunida hisobot beriladi.

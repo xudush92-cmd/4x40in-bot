@@ -140,7 +140,7 @@ async def test_safe_defaults_validation_audit_and_group_isolation(session) -> No
                          ("banned_words", "x" * 51)]:
         with pytest.raises(ValueError):
             await policy.edit_guard(session, g1, field, value, ADMIN_ID)
-    for field, value in [("keep_last_ads", 0), ("delete_after_seconds", 3601)]:
+    for field, value in [("keep_last_ads", 0), ("delete_after_seconds", 36001)]:
         with pytest.raises(ValueError):
             await policy.edit_cleaner(session, g1, field, value, ADMIN_ID)
     assert (await session.execute(select(ActionLog).where(ActionLog.group_id == one))).scalars().all()

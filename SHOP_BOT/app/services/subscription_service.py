@@ -13,7 +13,7 @@ Qoidalar (REJA.md 4.3, 8.2):
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from loguru import logger
@@ -24,7 +24,7 @@ from app.constants import SellerStatus, SubscriptionStatus
 from app.db.models import Ad, Seller, Subscription, Tariff
 from app.utils.time import ensure_aware, utcnow
 
-MAX_ADS_LIMIT = 100000
+MAX_ADS_LIMIT = 1000000  # qo'lda beriladigan obuna kvotasining yuqori chegarasi
 ACTIVE_STATUSES = (SubscriptionStatus.ACTIVE, SubscriptionStatus.GRACE)
 
 

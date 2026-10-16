@@ -34,8 +34,9 @@ from app.utils.time import ensure_aware, utcnow
 
 SOURCES = (InviteSource.LINK, InviteSource.ADDED_BY)
 BOOLEANS = frozenset({"enabled", "dry_run", "require_subscription", "notify_inviter"})
-NUMBERS = {"required_n": (0, 100), "min_stay_minutes": (0, 10080),
-           "max_per_day": (1, 100), "link_member_limit": (1, 100)}
+NUMBERS = {"required_n": (0, 1000), "min_stay_minutes": (0, 100800),
+           "max_per_day": (1, 1000), "link_member_limit": (1, 1000)}
+MAX_MANUAL_ADJUST = 10000  # faqat admin, sabab va audit bilan
 
 
 def safe_counter(group_id: int) -> CounterSetting:
@@ -274,8 +275,8 @@ async def _total_locked(session: AsyncSession, group_id: int, user_id: int) -> C
 
 async def adjust(session: AsyncSession, *, group_id: int, user_id: int, delta: int,
                  actor_id: int, reason: str) -> int:
-    if user_id <= 0 or delta == 0 or not -1000 <= delta <= 1000:
-        raise ValueError("ID yoki tuzatish qiymati noto'g'ri.")
+    if user_id <= 0 or delta == 0 or not -MAX_MANUAL_ADJUST <= delta <= MAX_MANUAL_ADJUST:
+        raise ValueError(f"ID yoki tuzatish qiymati noto'g'ri (1–{MAX_MANUAL_ADJUST}).")
     explanation = clean_text(reason)
     if not explanation or not 3 <= len(explanation) <= 255:
         raise ValueError("Sabab 3–255 belgidan iborat bo'lsin.")

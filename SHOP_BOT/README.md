@@ -9,17 +9,23 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > **[HOLAT.md](HOLAT.md)** — nima bajarilgan, nima qolgan, muhim shartnomalar.
 > Administrator uchun tugma-baqadam amaliy yo‘riqnoma:
 > **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
-> Panel, limit va sotuvchilik arizasi bo‘yicha **taklif (hali botda yo‘q)**:
-> **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**.
+> Admin menyusini qayta tartiblash va sotuvchilik arizasi bo‘yicha **taklif (hali botda yo‘q)**:
+> **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**. Uning limit auditi
+> yangilandi: admin belgilaydigan chegaralar ×10, rollarga mos bot yo‘riqnomasi esa joriy qilingan.
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–9 kod va oflayn sinovlar ✅ · Jonli qabul sinovlari qolgan**
+## 📌 Hozirgi holat: **Phase 0–9 + limit/yo‘riqnoma bosqichi oflayn ✅ · Jonli qabul sinovlari qolgan**
 
 Phase 9da olingan ruxsat doirasida yuklama smoke, deploy/backup/restore
 xavfsizligi va qo‘llanmalar qo‘shildi. **Bu ishlab chiqarishda sinovdan o‘tgan
 degani emas:** real PostgreSQL/Redis, Telegram, TLS, bank va restore drill
-uchun alohida test serveri kerak. [Deploy va tiklash](docs/DEPLOY.md) ·
+uchun alohida test serveri kerak. Admin belgilaydigan maksimal interval, post,
+qoida, sanoqchi, tarif/obuna va referal chegaralari ×10 oshirildi; **mavjud/default
+qiymatlar o‘zgarmadi**. Telegram albomi (10 rasm), 25 xabar/s, jitter (30%) va
+chegirma (50%) xavfsizlik/texnik cheklovlari saqlandi. `/start`, admin va sotuvchi
+panelida «📖 Foydalanish yo‘riqnomasi» tugmasi bor; bu ariza yoki yangi menyu
+emas. [Deploy va tiklash](docs/DEPLOY.md) ·
 [Video-qo‘llanma ssenariysi](docs/VIDEO_SENARIY.md) (**video hali yozilmagan**).
 
 | Ish | Holat |
@@ -41,7 +47,7 @@ uchun alohida test serveri kerak. [Deploy va tiklash](docs/DEPLOY.md) ·
 |---|---|
 | 👥 Guruhlar: ro'yxat, kartochka, admin huquqlari tekshiruvi, pauza/yoqish, o'chirish (tasdiq bilan) | ✅ |
 | 🎛 Funksiyalar matritsasi — barcha guruhlar × 5 funksiya bir ekranda yoqiladi/o'chiriladi | ✅ |
-| ⚙️ Guruh sozlamalari: interval (1–1440 daq), jitter, kunlik limit, tinch soatlar — panel orqali, **restart kerak emas** | ✅ |
+| ⚙️ Guruh sozlamalari: interval (1–14400 daq), jitter, kunlik limit (1–5000), tinch soatlar — panel orqali, **restart kerak emas** | ✅ |
 | 🗂 Toifalar: yaratish (emoji bilan), qayta nomlash, guruhga biriktirish, alohida interval, moderatsiya, tartib, o'chirish | ✅ |
 | 🔢 Panel tugmalarida jonli hisoblagichlar (guruhlar, toifalar, to'lovlar, xatolar) | ✅ |
 | 🧪 Offline E2E testlar: haqiqiy Dispatcher + soxta Bot API (tarmoq/Redis talab qilmaydi) — **jami 104 test** | ✅ |
@@ -96,8 +102,8 @@ uchun alohida test serveri kerak. [Deploy va tiklash](docs/DEPLOY.md) ·
 | Ish | Holat |
 |---|---|
 | 🛡 **Har guruh uchun posbon:** havola/forward/@mention/taqiqlangan so'zlar, domenlar oq ro'yxati, ogohlantirish oynasi/chegarasi, mute muddati va faqat alohida tasdiqdan keyingi ban rejimi | ✅ |
-| 🧹 **Har guruh uchun tozalovchi:** kirdi-chiqdi, xizmat, havola va qoidabuzar xabarlar; kechiktirish (0–3600 s), pinlanganlarni saqlash, eski e'londan 1–20 nusxani qoldirish | ✅ |
-| 🔑 **Istisnolar:** bitta guruh yoki global, turi/sababi, 1–365 kun yoki doimiy, ko'rish va qaytarib olish; takroriy aktiv ruxsatni DB darajasida to'sish | ✅ |
+| 🧹 **Har guruh uchun tozalovchi:** kirdi-chiqdi, xizmat, havola va qoidabuzar xabarlar; kechiktirish (0–36000 s), pinlanganlarni saqlash, eski e'londan 1–200 nusxani qoldirish | ✅ |
+| 🔑 **Istisnolar:** bitta guruh yoki global, turi/sababi, 1–3650 kun yoki doimiy, ko'rish va qaytarib olish; takroriy aktiv ruxsatni DB darajasida to'sish | ✅ |
 | 🔴 Jonli o'chirishdan avval har bir guruh uchun **dry-run → alohida tasdiq**; yangi siyosatda avtomatik ban yo'q. Global pauza guruh qoidasini o'zgartirmaydi | ✅ |
 | 📋 Xabar/amallar tarixi, Telegram dublikatidan himoya, kutilayotgan amalni bekor qilish, favqulodda guruh pauzasi; post/tozalashga ham guruh + global switch | ✅ |
 | 🧪 **302 offline test**; SQLite Alembic `upgrade/check/downgrade`, eski ruxsat dublikatini migratsiya qilish, seed 2 marta bir xil natija | ✅ |

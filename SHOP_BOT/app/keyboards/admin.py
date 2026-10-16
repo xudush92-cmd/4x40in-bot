@@ -9,7 +9,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import AdminRole
-from app.keyboards.callbacks import AdminCB
+from app.keyboards.callbacks import AdminCB, GuideCB
 
 # (kalit, tugma matni, tayyor bo'ladigan bosqich)
 ADMIN_SECTIONS: list[tuple[str, str, int]] = [
@@ -108,6 +108,9 @@ def admin_main_kb(
     if row:
         rows.append(row)
 
+    rows.append([InlineKeyboardButton(
+        text="📖 Foydalanish yo'riqnomasi", callback_data=GuideCB().pack()
+    )])
     rows.append(
         [
             InlineKeyboardButton(

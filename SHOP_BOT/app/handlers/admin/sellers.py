@@ -36,8 +36,8 @@ from app.keyboards.sellers import (
 from app.services import seller_service, subscription_service, tariff_service
 from app.states import AdminSellerStates
 from app.utils.text import escape_html, fmt_amount, human_int, truncate
-from app.utils.time import fmt_date, human_delta, utcnow
 from app.utils.tg import alert, render
+from app.utils.time import fmt_date, human_delta, utcnow
 
 router = Router(name="admin:sellers")
 # Sotuvchilar bo'limi — admin va super admin uchun (moderatorlarsiz)
@@ -585,7 +585,7 @@ async def start_days(callback: CallbackQuery, callback_data: SellerCB, state: FS
     await render(
         callback,
         "⏱ <b>Muddatni qo'lda o'zgartirish</b>\n\n"
-        "Necha kun qo'shilishini yuboring (masalan <code>15</code>).\n"
+        f"Necha kun qo'shilishini yuboring (1–{tariff_service.MAX_DURATION_DAYS}, masalan <code>15</code>).\n"
         "Bekor qilish uchun /cancel",
         cancel_kb(seller.id),
     )
@@ -595,8 +595,10 @@ async def start_days(callback: CallbackQuery, callback_data: SellerCB, state: FS
 @router.message(StateFilter(AdminSellerStates.waiting_days), F.text)
 async def apply_days(message: Message, state: FSMContext, session: AsyncSession, bot) -> None:
     raw = (message.text or "").strip()
-    if not raw.isdigit() or int(raw) < 1 or int(raw) > 3650:
-        await message.answer("⚠️ 1–3650 orasida kun yuboring. Bekor qilish: /cancel")
+    if not raw.isdigit() or int(raw) < 1 or int(raw) > tariff_service.MAX_DURATION_DAYS:
+        await message.answer(
+            f"⚠️ 1–{tariff_service.MAX_DURATION_DAYS} orasida kun yuboring. Bekor qilish: /cancel"
+        )
         return
 
     data = await state.get_data()
@@ -635,7 +637,7 @@ async def start_limit(callback: CallbackQuery, callback_data: SellerCB, state: F
         callback,
         "📢 <b>E'lon limiti</b>\n\n"
         f"Hozirgi: <b>{subscription.ads_used}/{subscription.ads_limit}</b>\n"
-        "Yangi limitni yuboring (foydalanilgan hisob saqlanadi).\n"
+        f"Yangi limitni yuboring (0–{subscription_service.MAX_ADS_LIMIT}; foydalanilgan hisob saqlanadi).\n"
         "Bekor qilish uchun /cancel",
         cancel_kb(seller.id),
     )
@@ -645,8 +647,10 @@ async def start_limit(callback: CallbackQuery, callback_data: SellerCB, state: F
 @router.message(StateFilter(AdminSellerStates.waiting_ads_limit), F.text)
 async def apply_limit(message: Message, state: FSMContext, session: AsyncSession) -> None:
     raw = (message.text or "").strip()
-    if not raw.isdigit() or int(raw) < 0 or int(raw) > 100000:
-        await message.answer("⚠️ 0–100000 orasida son yuboring. Bekor qilish: /cancel")
+    if not raw.isdigit() or int(raw) < 0 or int(raw) > subscription_service.MAX_ADS_LIMIT:
+        await message.answer(
+            f"⚠️ 0–{subscription_service.MAX_ADS_LIMIT} orasida son yuboring. Bekor qilish: /cancel"
+        )
         return
 
     data = await state.get_data()

@@ -39,6 +39,16 @@ CLEANER_BOOLEANS = frozenset({
     "delete_violations", "delete_old_ads", "keep_pinned",
 })
 PERMISSION_KINDS = frozenset(item.value for item in PermissionKind)
+
+# Admin kiritadigan yuqori chegaralar; mavjud guruh qiymatlari o'zgarmaydi.
+MAX_POLICY_LIST_ITEMS = 300
+MAX_WARN_LIMIT = 200
+MAX_MUTE_MINUTES = 100800
+MAX_WARN_WINDOW_HOURS = 7200
+MAX_KEEP_LAST_ADS = 200
+MAX_DELETE_AFTER_SECONDS = 36000
+MAX_PERMISSION_DAYS = 3650
+
 _LINK_RE = re.compile(r"(?i)(?:https?://|tg://|www\.|t\.me/)[^\s<>]+")
 _MENTION_RE = re.compile(r"(?<![\w@])@[a-zA-Z0-9_]{5,32}\b")
 _MENTION_TYPES = frozenset({"mention", "text_mention"})
@@ -110,8 +120,8 @@ def _number(value: object, low: int, high: int) -> int:
 def parse_domains(value: str) -> list[str]:
     """Aniq domen + subdomen uchun ruxsat; `evil-example.com` o'xshash emas."""
     raw = [token.strip().lower() for token in re.split(r"[\s,;]+", value) if token.strip()]
-    if len(raw) > 30:
-        raise ValueError("Ko'pi bilan 30 ta domen kiriting.")
+    if len(raw) > MAX_POLICY_LIST_ITEMS:
+        raise ValueError(f"Ko'pi bilan {MAX_POLICY_LIST_ITEMS} ta domen kiriting.")
     result: list[str] = []
     for token in raw:
         if token.startswith("*."):
@@ -133,8 +143,8 @@ def parse_domains(value: str) -> list[str]:
 def parse_words(value: str) -> list[str]:
     raw = [clean_text(word) for word in re.split(r"[,\n;]+", value)]
     words = [word.casefold() for word in raw if word]
-    if len(words) > 30 or any(not 2 <= len(word) <= 50 for word in words):
-        raise ValueError("2–50 belgili, ko'pi bilan 30 ta so'z/ibora kiriting.")
+    if len(words) > MAX_POLICY_LIST_ITEMS or any(not 2 <= len(word) <= 50 for word in words):
+        raise ValueError(f"2–50 belgili, ko'pi bilan {MAX_POLICY_LIST_ITEMS} ta so'z/ibora kiriting.")
     return list(dict.fromkeys(words))
 
 
@@ -156,10 +166,11 @@ async def edit_guard(
                 policy.dry_run = True  # tezkor yoqish hech qachon darhol jazo bermasin
     elif field in {"warn_limit", "mute_minutes"}:
         before = getattr(policy, field)
-        setattr(policy, field, _number(value, 1, 20 if field == "warn_limit" else 10080))
+        maximum = MAX_WARN_LIMIT if field == "warn_limit" else MAX_MUTE_MINUTES
+        setattr(policy, field, _number(value, 1, maximum))
     elif field == "warn_window_hours":
         before = int((policy.escalate or {}).get("warn_window_hours", 24))
-        policy.escalate = {**(policy.escalate or {}), "warn_window_hours": _number(value, 1, 720)}
+        policy.escalate = {**(policy.escalate or {}), "warn_window_hours": _number(value, 1, MAX_WARN_WINDOW_HOURS)}
     elif field == "penalty":
         if value not in (Penalty.WARN, Penalty.MUTE, Penalty.BAN):
             raise ValueError("Jazo turi noto'g'ri.")
@@ -206,7 +217,9 @@ async def edit_cleaner(
                 policy.dry_run = True
     elif field in {"keep_last_ads", "delete_after_seconds"}:
         before = getattr(policy, field)
-        setattr(policy, field, _number(value, 1, 20) if field == "keep_last_ads" else _number(value, 0, 3600))
+        maximum = MAX_KEEP_LAST_ADS if field == "keep_last_ads" else MAX_DELETE_AFTER_SECONDS
+        minimum = 1 if field == "keep_last_ads" else 0
+        setattr(policy, field, _number(value, minimum, maximum))
     else:
         raise ValueError("Bu tozalovchi sozlamasi mavjud emas.")
     after = getattr(policy, field)
@@ -230,7 +243,7 @@ async def grant_permission(
     if user_id <= 0 or kind not in PERMISSION_KINDS:
         raise ValueError("Foydalanuvchi ID yoki ruxsat turi noto'g'ri.")
     if days is not None:
-        days = _number(days, 1, 365)
+        days = _number(days, 1, MAX_PERMISSION_DAYS)
     explanation = clean_text(reason)
     if not explanation or not 3 <= len(explanation) <= 255:
         raise ValueError("Sabab 3–255 ta belgi bo'lsin.")

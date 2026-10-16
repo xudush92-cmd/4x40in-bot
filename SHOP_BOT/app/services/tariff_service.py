@@ -23,10 +23,11 @@ MAX_NAME_LEN = 64
 MAX_DESC_LEN = 500
 
 # Validatsiya chegaralari
-MIN_DURATION_DAYS, MAX_DURATION_DAYS = 1, 3650
-MIN_ADS, MAX_ADS = 1, 1000
-MIN_PHOTOS, MAX_PHOTOS = 1, 10
-MAX_PRICE = Decimal("999999999")
+MIN_DURATION_DAYS, MAX_DURATION_DAYS = 1, 36500
+MIN_ADS, MAX_ADS = 1, 10000
+MIN_PHOTOS, MAX_PHOTOS = 1, 10  # Telegram albomi: oshirilmaydi
+# Numeric(12, 2) maydonining 10 xonali butun qismiga sig'adi.
+MAX_PRICE = Decimal("9999999990")
 
 
 # ─────────────────────────── O'qish ────────────────────────────────

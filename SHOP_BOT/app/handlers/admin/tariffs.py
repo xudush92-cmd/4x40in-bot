@@ -62,17 +62,18 @@ FIELD_PROMPTS: dict[str, tuple[str, Any, str]] = {
         "description",
     ),
     "price": (
-        "💰 <b>Narx</b> (so'm)\nMasalan: <code>150000</code>",
+        f"💰 <b>Narx</b> (so'm) — 0–{tariff_service.MAX_PRICE:.0f}\n"
+        "Masalan: <code>150000</code>",
         AdminTariffStates.waiting_price,
         "price",
     ),
     "days": (
-        "📅 <b>Muddat</b> — necha kun?\n1–3650 (masalan <code>30</code>)",
+        f"📅 <b>Muddat</b> — necha kun?\n1–{tariff_service.MAX_DURATION_DAYS} (masalan <code>30</code>)",
         AdminTariffStates.waiting_days,
         "duration_days",
     ),
     "ads": (
-        "📢 <b>E'lon limiti</b> — sotuvchi nechta e'lon joylay oladi?\n1–1000",
+        f"📢 <b>E'lon limiti</b> — sotuvchi nechta e'lon joylay oladi?\n1–{tariff_service.MAX_ADS}",
         AdminTariffStates.waiting_ads,
         "max_ads",
     ),
@@ -84,9 +85,9 @@ FIELD_PROMPTS: dict[str, tuple[str, Any, str]] = {
 }
 
 RANGES = {
-    "duration_days": (1, 3650, "1–3650"),
-    "max_ads": (1, 1000, "1–1000"),
-    "max_photos": (1, 10, "1–10"),
+    "duration_days": (1, tariff_service.MAX_DURATION_DAYS, f"1–{tariff_service.MAX_DURATION_DAYS}"),
+    "max_ads": (1, tariff_service.MAX_ADS, f"1–{tariff_service.MAX_ADS}"),
+    "max_photos": (1, tariff_service.MAX_PHOTOS, "1–10"),
 }
 
 
@@ -330,7 +331,8 @@ async def step_name(message: Message, state: FSMContext, session: AsyncSession) 
     await state.update_data(name=name)
     await state.set_state(AdminTariffStates.waiting_price)
     await message.answer(
-        "2️⃣ Narxni yuboring (so'm).\nMasalan: <code>150000</code> — bepul bo'lsa <code>0</code>\n"
+        f"2️⃣ Narxni yuboring (so'm, 0–{tariff_service.MAX_PRICE:.0f}).\n"
+        "Masalan: <code>150000</code> — bepul bo'lsa <code>0</code>\n"
         "Bekor qilish uchun /cancel"
     )
 
@@ -343,7 +345,9 @@ async def step_price(message: Message, state: FSMContext, session: AsyncSession)
     if data.get("flow") == "edit":
         tariff = await tariff_service.get_tariff(session, int(data.get("tariff_id") or 0))
         if price is None:
-            await message.answer("⚠️ Narxni raqamda yuboring (masalan 150000). Bekor qilish: /cancel")
+            await message.answer(
+                f"⚠️ Narxni 0–{tariff_service.MAX_PRICE:.0f} so'm oralig'ida yuboring. /cancel"
+            )
             return
         await state.clear()
         if tariff is None:
@@ -353,11 +357,16 @@ async def step_price(message: Message, state: FSMContext, session: AsyncSession)
         return
 
     if price is None:
-        await message.answer("⚠️ Narxni raqamda yuboring (masalan 150000). Bekor qilish: /cancel")
+        await message.answer(
+            f"⚠️ Narxni 0–{tariff_service.MAX_PRICE:.0f} so'm oralig'ida yuboring. /cancel"
+        )
         return
     await state.update_data(price=str(price))
     await state.set_state(AdminTariffStates.waiting_days)
-    await message.answer("3️⃣ Muddat — necha kun? (masalan <code>30</code>)\nBekor qilish uchun /cancel")
+    await message.answer(
+        f"3️⃣ Muddat — necha kun? (1–{tariff_service.MAX_DURATION_DAYS}, masalan <code>30</code>)\n"
+        "Bekor qilish uchun /cancel"
+    )
 
 
 async def _numeric_step(
@@ -404,7 +413,8 @@ async def step_days(message: Message, state: FSMContext, session: AsyncSession) 
         session,
         field="duration_days",
         next_state=AdminTariffStates.waiting_ads,
-        next_prompt="4️⃣ Nechta e'lon joylashi mumkin? (masalan <code>10</code>)\nBekor qilish uchun /cancel",
+        next_prompt=(f"4️⃣ Nechta e'lon joylashi mumkin? (1–{tariff_service.MAX_ADS}, "
+                     "masalan <code>10</code>)\nBekor qilish uchun /cancel"),
     )
 
 

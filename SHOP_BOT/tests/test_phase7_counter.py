@@ -172,7 +172,7 @@ async def test_settings_are_scoped_safe_and_audited(session):
     await group_service.set_feature(session, group1, "counter", False, actor_id=ADMIN_ID)
     await group_service.set_feature(session, group1, "counter", True, actor_id=ADMIN_ID)
     assert policy.dry_run and policy.enabled and not group2.settings.counter_enabled
-    for field, value in [("required_n", 101), ("min_stay_minutes", "-1"),
+    for field, value in [("required_n", 1001), ("min_stay_minutes", "-1"),
                          ("mode", "ban"), ("dry_run", "false"), ("source", "fake")]:
         with pytest.raises(ValueError):
             await counters.edit_counter(session, group1, field, value, ADMIN_ID)
@@ -500,7 +500,7 @@ async def test_admin_ui_live_confirmation_channels_adjust_and_global_scope(sessi
     await send(session, dp, bot, callback_update(CounterAdminCB(
         action="number", group_id=gid, value="required_n",
     ).pack(), update_id=906))
-    await send(session, dp, bot, text_update("105", update_id=907))
+    await send(session, dp, bot, text_update("1005", update_id=907))
     assert (await session.get(CounterSetting, gid)).required_n == 3
     await send(session, dp, bot, text_update("2", update_id=908))
     assert (await session.get(CounterSetting, gid)).required_n == 2

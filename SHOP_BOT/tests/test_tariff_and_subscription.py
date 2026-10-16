@@ -47,7 +47,7 @@ def test_parse_price_formats() -> None:
 
 def test_validators_clamp() -> None:
     assert tariff_service.validate_days(0) == 1
-    assert tariff_service.validate_days(99999) == 3650
+    assert tariff_service.validate_days(99999) == 36500
     assert tariff_service.validate_ads(0) == 1
     assert tariff_service.validate_photos(99) == 10
 

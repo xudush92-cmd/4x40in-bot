@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import PaymentStatus, SellerStatus
 from app.db.models import ActionLog, Payment, PaymentMethod, ReferralBonusLog, Seller, Subscription, Tariff
-from app.services import subscription_service
+from app.services import subscription_service, tariff_service
 from app.services.settings_service import settings_service
 from app.utils.text import clean_text
 from app.utils.time import utcnow
@@ -180,7 +180,7 @@ async def submit_receipt(
         raise ValueError("Bu tarifni hozir sotib olib bo'lmaydi.")
     amount = Decimal(str(quoted_amount)) if quoted_amount is not None else tariff.price
     currency = _currency(quoted_currency) if quoted_currency is not None else tariff.currency
-    if (not amount.is_finite() or amount < 0 or amount > Decimal("999999999")
+    if (not amount.is_finite() or amount < 0 or amount > tariff_service.MAX_PRICE
             or (amount == 0 and (quote is None or quote.discount + quote.balance <= 0))):
         raise ValueError("Bu tarifni hozir sotib olib bo'lmaydi.")
     if currency != tariff.currency:
