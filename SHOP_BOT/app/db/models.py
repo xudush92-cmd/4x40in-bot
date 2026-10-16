@@ -39,6 +39,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.constants import (
     AdminRole,
     AdStatus,
+    ApplicationStatus,
     BonusType,
     CleanupKind,
     CounterMode,
@@ -362,6 +363,39 @@ class Seller(Base, TimestampMixin):
             if sub.status == SubscriptionStatus.ACTIVE and expires is not None and expires > now:
                 return sub
         return None
+
+
+class SellerApplication(Base, TimestampMixin):
+    """Shaxsiy chatdan berilgan sotuvchilik arizasi (tarifdan mustaqil).
+
+    Tarix saqlanadi, lekin bir foydalanuvchida faqat bitta ochiq ariza bo'lishi
+    qisman UNIQUE indeks bilan bazaning o'zida ham kafolatlanadi.
+    """
+
+    __tablename__ = "seller_applications"
+    __table_args__ = (
+        Index("ix_seller_applications_user_created", "user_id", "created_at"),
+        Index("ix_seller_applications_status_created", "status", "created_at"),
+        Index(
+            "uq_seller_applications_pending_user", "user_id", unique=True,
+            postgresql_where=text("status = 'pending'"),
+            sqlite_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Seller kabi users ga FK yo'q: tarixni/sotuvchini user yozuviga bog'lamaymiz.
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    contact_type: Mapped[str] = mapped_column(String(16), nullable=False)  # username | phone
+    contact_value: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default=ApplicationStatus.PENDING, nullable=False)
+    seller_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("sellers.id", ondelete="SET NULL"), index=True
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[Optional[int]] = mapped_column(BigInteger)
+    reject_reason: Mapped[Optional[str]] = mapped_column(String(500))
 
 
 class Tariff(Base, TimestampMixin):

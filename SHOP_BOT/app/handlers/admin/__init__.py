@@ -28,6 +28,7 @@ from app.handlers.admin import (
     tariffs,
     texts,
 )
+from app.handlers.applications import admin_router as applications_router
 
 # Faqat shaxsiy chatdagi admin amallari (guruh ichida panel ishlamaydi)
 admin_router = Router(name="admin")
@@ -47,6 +48,7 @@ admin_router.include_router(policy.router)       # 🛡 guruh siyosati (FSM)
 admin_router.include_router(permissions.router)  # 🔑 istisnolar va foydalanuvchi
 admin_router.include_router(categories.router)   # 🗂 toifalar (FSM)
 admin_router.include_router(sellers.router)      # 🛒 sotuvchilar (FSM)
+admin_router.include_router(applications_router)  # 📥 sotuvchilik arizalari (FSM)
 admin_router.include_router(tariffs.router)      # 💳 tariflar (FSM)
 admin_router.include_router(mods.router)         # ✅ moderatsiya + 📢 e'lonlar
 admin_router.include_router(posting.router)      # 📋 navbat / 🚀 qo'lda joylash (Phase 4)

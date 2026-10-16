@@ -17,6 +17,14 @@ class AdminRole(StrEnum):
 
 
 # ─────────────────────────── Sotuvchi / tarif ──────────────────────────
+class ApplicationStatus(StrEnum):
+    """Sotuvchilik arizasi; SellerStatus.PENDING (tarifsiz)dan mustaqil."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class SellerStatus(StrEnum):
     PENDING = "pending"      # admin qo'shdi, tarif tanlamagan
     ACTIVE = "active"        # faol tarifga ega

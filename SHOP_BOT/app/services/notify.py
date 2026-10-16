@@ -189,6 +189,87 @@ async def notify_payment_admins(bot: Bot, payment_id: int) -> int:
     return sent
 
 
+async def notify_application_admins(bot: Bot, application_id: int) -> int:
+    """Commitdan keyin faqat faol admin/super-adminlarga ariza va navbat tugmasi."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from app.db.base import session_scope
+    from app.db.models import SellerApplication
+    from app.keyboards.callbacks import ApplicationCB
+    from app.utils.text import escape_html
+    from app.utils.time import fmt_dt
+
+    async with session_scope() as session:
+        application = await session.get(SellerApplication, application_id)
+        if application is None:
+            return 0
+        admin_ids = (await session.execute(select(Admin.user_id).where(
+            Admin.is_active.is_(True), Admin.role.in_((AdminRole.ADMIN, AdminRole.SUPER)),
+        ))).scalars().all()
+        text = (
+            f"📥 <b>Yangi sotuvchilik arizasi #{application.id}</b>\n"
+            f"🆔 Telegram ID: <code>{application.user_id}</code>\n"
+            f"👤 Ism/do'kon: {escape_html(application.display_name)}\n"
+            f"☎️ Aloqa: {escape_html(application.contact_value)}\n"
+            f"🕒 Yuborildi: {fmt_dt(application.created_at)}\n"
+            "<i>Faqat admin qaror qiladi; tarif, chek va e'lon alohida.</i>"
+        )
+        markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📋 Arizani ko'rish", callback_data=ApplicationCB(
+                action="card", application_id=application.id,
+            ).pack())
+        ]])
+
+    sent = 0
+    for admin_id in admin_ids:
+        try:
+            await bot.send_message(admin_id, text, reply_markup=markup)
+            sent += 1
+        except TelegramRetryAfter as exc:
+            logger.warning("Ariza #{} admin xabari FloodWait: {}s", application_id, exc.retry_after)
+            break
+        except TelegramAPIError as exc:
+            logger.warning("Ariza #{} admin {} ga yuborilmadi: {}", application_id, admin_id, type(exc).__name__)
+    return sent
+
+
+async def notify_application_result(bot: Bot, application_id: int) -> bool:
+    """Qaror commit qilingach foydalanuvchiga shaxsiy DM; xato qarorni bekor qilmaydi."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    from app.constants import ApplicationStatus
+    from app.db.base import session_scope
+    from app.db.models import SellerApplication
+    from app.keyboards.callbacks import ApplicationCB, SellerPanelCB
+    from app.utils.text import escape_html
+
+    async with session_scope() as session:
+        application = await session.get(SellerApplication, application_id)
+        if application is None or application.status == ApplicationStatus.PENDING:
+            return False
+        if application.status == ApplicationStatus.APPROVED:
+            text = (
+                f"✅ <b>Sotuvchilik arizangiz #{application.id} tasdiqlandi.</b>\n"
+                "Sotuvchi paneli ochildi. Tarif hali berilmagan bo'lsa, uni alohida tanlang. "
+                "To'lov cheki va e'lonlar alohida tasdiqlanadi."
+            )
+            button = InlineKeyboardButton(text="🛒 Sotuvchi paneli", callback_data=SellerPanelCB().pack())
+        else:
+            text = (
+                f"❌ <b>Sotuvchilik arizangiz #{application.id} rad etildi.</b>\n"
+                f"Sabab: {escape_html(application.reject_reason or 'Admin bilan bog‘laning.')}\n"
+                "Sababni tuzatib qayta ariza yuborishingiz mumkin (1 soatdan keyin; 24 soatda 3 marta)."
+            )
+            button = InlineKeyboardButton(text="📋 Arizam holati", callback_data=ApplicationCB(action="status").pack())
+        user_id = application.user_id
+    try:
+        await bot.send_message(user_id, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[button]]))
+        return True
+    except TelegramAPIError as exc:
+        logger.warning("Ariza #{} qaror xabari yuborilmadi: {}", application_id, type(exc).__name__)
+        return False
+
+
 async def ensure_super_admins(session: AsyncSession) -> int:
     """`.env` dagi ADMIN_IDS ni `admins` jadvaliga super admin sifatida yozish."""
     created = 0

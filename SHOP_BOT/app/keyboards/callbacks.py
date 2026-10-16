@@ -143,6 +143,14 @@ class CategoryCB(CallbackData, prefix="cat"):
     category_id: int = 0
     value: str = "0"
 
+class ApplicationCB(CallbackData, prefix="appx"):
+    """UX-2 ariza: action, ID (0=user), navbat sahifasi."""
+
+    action: str
+    application_id: int = 0
+    page: int = 0
+
+
 class SellerCB(CallbackData, prefix="slr"):
     """Sotuvchilar bo'limi (admin).
 

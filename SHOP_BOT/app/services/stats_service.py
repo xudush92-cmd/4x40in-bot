@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import AdStatus, PaymentStatus, SellerStatus, SubscriptionStatus
+from app.constants import AdStatus, ApplicationStatus, PaymentStatus, SellerStatus, SubscriptionStatus
 from app.db.models import (
     Ad,
     Category,
@@ -17,6 +17,7 @@ from app.db.models import (
     Payment,
     PostLog,
     Seller,
+    SellerApplication,
     Subscription,
     User,
     Violation,
@@ -81,6 +82,7 @@ async def get_menu_counts(session: AsyncSession) -> dict[str, int]:
         "groups": await _count(session, Group),
         "categories": await _count(session, Category),
         "sellers": await _count(session, Seller),
+        "applications": await _count(session, SellerApplication, SellerApplication.status == ApplicationStatus.PENDING),
         "ads": await _count(session, Ad),
         "moderation": await _count(session, Ad, Ad.status == AdStatus.PENDING),
         "payments": await _count(session, Payment, Payment.status == PaymentStatus.PENDING),

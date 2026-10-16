@@ -33,7 +33,8 @@ from app.keyboards.sellers import (
     seller_card_kb,
     sellers_list_kb,
 )
-from app.services import seller_service, subscription_service, tariff_service
+from app.services import application_service, seller_service, subscription_service, tariff_service
+from app.services.notify import notify_application_result
 from app.states import AdminSellerStates
 from app.utils.text import escape_html, fmt_amount, human_int, truncate
 from app.utils.tg import alert, render
@@ -522,19 +523,34 @@ async def apply_phone(message: Message, state: FSMContext) -> None:
 
 
 @router.message(StateFilter(AdminSellerStates.waiting_contact), F.text)
-async def apply_contact(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def apply_contact(message: Message, state: FSMContext, session: AsyncSession, bot) -> None:
     contact = seller_service.normalize_contact(message.text)
     data = await state.get_data()
     await state.clear()
 
+    target_id = int(data.get("user_id") or 0)
+    # PG: ariza yuborish bilan bir xil user qatorini, so'ng ochiq arizani
+    # qulflaymiz. Qaror servisi ham avval ariza, keyin seller ni yozadi.
+    await application_service.lock_user(session, target_id)
+    await application_service.pending_for(session, target_id, lock=True)
     seller, created = await seller_service.get_or_create_seller(
         session,
-        int(data.get("user_id") or 0),
+        target_id,
         display_name=data.get("display_name"),
         phone=data.get("phone"),
         contact=contact,
         added_by=message.from_user.id,
     )
+
+    # Qo'lda ID bilan qo'shish ochiq arizani qoldirmaydi; seller, ariza va audit
+    # birga saqlanadi. Foydalanuvchiga DM faqat commitdan keyin yuboriladi.
+    application = await application_service.approve_manually(session, seller, message.from_user.id)
+    await session.commit()
+    if application is not None:
+        try:
+            await notify_application_result(bot, application.id)
+        except Exception:
+            logger.exception("Ariza #{} (qo'lda) xabari yuborilmadi", application.id)
 
     verb = "qo'shildi" if created else "yangilandi"
     await message.answer(

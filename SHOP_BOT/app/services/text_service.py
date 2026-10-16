@@ -47,7 +47,7 @@ DEFAULT_TEXTS: dict[str, str] = {
         "👋 Assalomu alaykum, <b>{ism}</b>!\n\n"
         "Bu bot — guruhlar uchun onlayn do'kon uslubidagi e'lonlar tizimi.\n\n"
         "📌 Guruhlarda toifa bo'yicha e'lonlarni ko'rishingiz mumkin.\n"
-        "📌 Sotuvchi bo'lish uchun administrator bilan bog'laning.\n\n"
+        "📌 Sotuvchi bo'lish uchun pastdagi arizani yuboring; admin ko'rib chiqadi.\n\n"
         "☎️ Yordam: {yordam}"
     ),
     # /start (admin)

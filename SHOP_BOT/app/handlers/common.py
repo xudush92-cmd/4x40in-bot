@@ -4,30 +4,74 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
-from app.constants import AdminRole, SellerStatus
-from app.db.models import User
+from app.constants import AdminRole, ApplicationStatus, SellerStatus
+from app.db.models import Seller, User
 from app.filters import PrivateChat
 from app.handlers.seller import seller_status_text
 from app.keyboards import AdminCB, GuideCB, admin_main_kb
 from app.keyboards.guide import GUIDES, guide_kb, user_start_kb
 from app.keyboards.seller_panel import seller_menu_kb
-from app.services import broadcast_service, referral_service, seller_service, subscription_service
+from app.services import (
+    application_service,
+    broadcast_service,
+    referral_service,
+    seller_service,
+    subscription_service,
+)
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
 from app.services.stats_service import get_menu_counts
 from app.services.text_service import text_service
+from app.states import AdminApplicationStates, SellerApplicationStates
 from app.utils.text import escape_html
 from app.utils.tg import alert, render
-from app.utils.time import utcnow
+from app.utils.time import ensure_aware, utcnow
 
 router = Router(name="common")
 
 UNKNOWN_CB_TEXT = "⚠️ Bu tugma eskirgan. /start ni bosing."
+
+
+async def user_home(
+    session: AsyncSession, user_id: int, name: str, seller: Seller | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Oddiy /start va yo'riqnoma «bosh sahifa»si bir xil ariza holatiga ega."""
+    support = str(await settings_service.get("support_contact", "@admin", session))
+    text = await text_service.get("start.user", ism=name, yordam=escape_html(support))
+    # Oldingi seed bazaga standart matnni saqlagan bo'lishi mumkin; faqat o'sha
+    # iborani yangilaymiz, adminning boshqa matni va qolgan ma'lumotlar qoladi.
+    old_hint = "📌 Sotuvchi bo'lish uchun administrator bilan bog'laning."
+    new_hint = "📌 Sotuvchi bo'lish uchun pastdagi arizani yuboring; admin ko'rib chiqadi."
+    if seller is not None:  # BLOCKED yoki DELETED; yangi ariza bilan aylanib o'tolmaydi
+        text = text.replace(old_hint, "").replace(new_hint, "")
+        reason = f" Sabab: {escape_html(seller.blocked_reason)}" if seller.blocked_reason else ""
+        text += f"\n\n🚫 Sotuvchi hisobingiz cheklangan.{reason} Tiklash uchun adminga yozing."
+        return text, user_start_kb(support, can_apply=False)
+    text = text.replace(old_hint, new_hint)
+    application = await application_service.latest_for(session, user_id)
+    if application is None:
+        text += "\n\n🛒 Sotuvchi bo'lishni istasangiz, shaxsiy ariza yuboring; /start ochiq qoladi."
+    elif application.status == ApplicationStatus.PENDING:
+        text += f"\n\n📋 Ariza #{application.id} admin qarorini kutmoqda."
+    elif application.status == ApplicationStatus.REJECTED:
+        text += (f"\n\n❌ Ariza #{application.id} rad etildi. "
+                 f"Sabab: {escape_html(application.reject_reason or 'Admin bilan bog‘laning.')}. "
+                 "Sababni tuzatib, 1 soatdan keyin qayta yuborishingiz mumkin.")
+    else:
+        text += "\n\n✅ Oldingi ariza tasdiqlangan, ammo sotuvchi yozuvi topilmadi. Adminga yozing."
+    can_apply = application is None or (
+        application.status == ApplicationStatus.REJECTED
+        and (application.decided_at is None or
+             ensure_aware(application.decided_at) + application_service.RETRY_AFTER <= utcnow())
+    )
+    return text, user_start_kb(support, application_status=application.status if application else None,
+                               can_apply=can_apply)
 
 
 @router.message(CommandStart(), PrivateChat())
@@ -39,8 +83,12 @@ async def cmd_start(
     session: AsyncSession,
     user_is_new: bool = False,
     command: CommandObject | None = None,
+    state: FSMContext | None = None,
 ) -> None:
     """Bot bilan tanishish. ref_<kod> faqat yangi foydalanuvchiga yoziladi."""
+    application_steps = (*SellerApplicationStates.__all_states__, AdminApplicationStates.waiting_reason)
+    if state and await state.get_state() in {step.state for step in application_steps}:
+        await state.clear()  # eski ariza matni keyingi xabarni yutib yubormasin
     name = escape_html((user.first_name if user else None) or message.from_user.first_name or "do'st")
     first_private_start = user is not None and user.private_started_at is None
     if first_private_start:
@@ -83,13 +131,8 @@ async def cmd_start(
         )
         return
 
-    support = await settings_service.get("support_contact", "@admin", session)
-    text = await text_service.get("start.user", ism=name, yordam=escape_html(str(support)))
-    await message.answer(
-        text + referral_note,
-        reply_markup=user_start_kb(str(support)),
-        disable_web_page_preview=True,
-    )
+    text, markup = await user_home(session, message.from_user.id, name, seller)
+    await message.answer(text + referral_note, reply_markup=markup, disable_web_page_preview=True)
 
 
 @router.message(CommandStart())
@@ -136,10 +179,10 @@ async def open_guide(
         profile = "seller" if seller and seller.status in {SellerStatus.PENDING, SellerStatus.ACTIVE} else "user"
 
     if callback_data.page == "back" and profile == "user":
-        support = str(await settings_service.get("support_contact", "@admin", session))
         name = escape_html((user.first_name if user else None) or callback.from_user.first_name or "do'st")
-        await render(callback, await text_service.get("start.user", ism=name, yordam=escape_html(support)),
-                     user_start_kb(support))
+        seller = await get_seller(session, callback.from_user.id)
+        text, markup = await user_home(session, callback.from_user.id, name, seller)
+        await render(callback, text, markup)
     else:
         pages = GUIDES[profile]
         page = callback_data.page if callback_data.page in pages else "home"

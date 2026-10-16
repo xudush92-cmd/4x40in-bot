@@ -1,14 +1,15 @@
 """Shaxsiy chatdagi rollarga mos, qisqa foydalanish yo'riqnomalari.
 
-Bu matnlar faqat ishlayotgan imkoniyatlarni tushuntiradi. Yangi sotuvchilik
-arizasi va qayta tartiblangan admin menyusi hali amalga oshirilmagan.
+Bu matnlar faqat ishlayotgan imkoniyatlarni tushuntiradi. Oddiy /start
+ariza tasdig'ini talab qilmaydi; sotuvchi paneli talab qiladi.
 """
 
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.keyboards.callbacks import AdminCB, GuideCB, SellerPanelCB
+from app.constants import ApplicationStatus
+from app.keyboards.callbacks import AdminCB, ApplicationCB, GuideCB, SellerPanelCB
 
 # Kalit → (tugma, qisqa Telegram HTML matni). Mavjud amallar bilan mos saqlang.
 GUIDES: dict[str, dict[str, tuple[str, str]]] = {
@@ -19,8 +20,9 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "2️⃣ E'lonlarni bot ulangan guruhlarda toifalar bo'yicha ko'ring.\n"
             "3️⃣ Guruh N kishi yoki kanal a'zoligi shartini qo'ysa, "
             "/takliflarim orqali holat va shaxsiy havolani ko'ring.\n"
-            "4️⃣ Sotuvchi bo'lish uchun hozircha administratorga murojaat qiling; "
-            "oddiy /start sotuvchilikni avtomatik bermaydi.\n\n"
+            "4️⃣ Sotuvchi bo'lish uchun «🛒 Sotuvchi bo'lish» arizasini shaxsiy chatda "
+            "yuboring. Admin tasdiqlasa sotuvchi paneli ochiladi; tarif, chek va "
+            "e'lonlar alohida tekshiriladi. Oddiy /start cheklanmagan.\n\n"
             "/help — buyruqlar · /id — Telegram ID · /xabarlar_stop — ommaviy DMni to'xtatish."
         )),
         "counter": ("🧮 Taklif va kanal", (
@@ -102,8 +104,8 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
         "sales": ("🛒 Sotuvchi va chek", (
             "🛒 <b>Tarif · sotuvchi · moderatsiya · to'lov</b>\n\n"
             "«💳 Tariflar»da narx, muddat, e'lon va 10 tagacha rasmni belgilang. "
-            "«🛒 Sotuvchilar»da hozircha odamning Telegram IDsi bilan qo'shing "
-            "va tarif bering; sotuvchilik arizasi hali ishga tushmagan.\n"
+            "«🛒 Savdo → Arizalar»da ism/aloqani tekshirib, sotuvchilikka qaror bering. "
+            "Qo'lda Telegram ID bilan qo'shish ham saqlangan; tarif alohida beriladi.\n"
             "«✅ Moderatsiya»da e'lonni tekshirib tasdiqlang yoki sabab bilan rad eting. "
             "«💰 To'lovlar»da chek va <b>haqiqiy bank kirimini</b> solishtirib tasdiqlang; "
             "chek kelishi o'zi tarif bermaydi.\n"
@@ -132,12 +134,25 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 
-def user_start_kb(support: str) -> InlineKeyboardMarkup:
-    """Oddiy /start va yo'riqnomadan qaytish bir xil tugmalarni ko'rsatsin."""
-    return InlineKeyboardMarkup(inline_keyboard=[
+def user_start_kb(
+    support: str, *, application_status: str | None = None, can_apply: bool = True,
+) -> InlineKeyboardMarkup:
+    """Oddiy /start va yo'riqnomadan qaytish bir xil, haqiqiy holatga mos."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if can_apply and application_status in (None, ApplicationStatus.REJECTED):
+        rows.append([InlineKeyboardButton(
+            text="🛒 Qayta ariza" if application_status else "🛒 Sotuvchi bo'lish",
+            callback_data=ApplicationCB(action="new").pack(),
+        )])
+    if application_status:
+        rows.append([InlineKeyboardButton(
+            text="📋 Arizam holati", callback_data=ApplicationCB(action="status").pack(),
+        )])
+    rows += [
         [InlineKeyboardButton(text="📖 Foydalanish yo'riqnomasi", callback_data=GuideCB().pack())],
         [InlineKeyboardButton(text="☎️ Yordam", url=f"https://t.me/{str(support).lstrip('@')}")],
-    ])
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def guide_kb(profile: str, page: str) -> InlineKeyboardMarkup:

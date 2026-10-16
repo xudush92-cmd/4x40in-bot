@@ -16,6 +16,7 @@ ADMIN_SECTIONS: list[tuple[str, str, int]] = [
     ("stats", "📊 Statistika", 0),
     ("groups", "👥 Guruhlar", 1),
     ("categories", "🗂 Toifalar", 1),
+    ("applications", "📥 Arizalar", 2),
     ("sellers", "🛒 Sotuvchilar", 2),
     ("tariffs", "💳 Tariflar", 2),
     ("ads", "📢 E'lonlar", 3),
@@ -43,6 +44,7 @@ READY_SECTIONS = {
     "groups",
     "categories",
     "sellers",
+    "applications",
     "tariffs",
     "ads",
     "moderation",
@@ -63,7 +65,7 @@ READY_SECTIONS = {
 # Yangi menyu eski `adm:section` callback'larini o'chirmaydi: barcha tayyor
 # bo'limlar faqat bitta qo'shimcha bosqich orqali ochiladi.
 HUB_SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "sales": ("🛒 Savdo", ("sellers", "tariffs", "payments", "referral")),
+    "sales": ("🛒 Savdo", ("applications", "sellers", "tariffs", "payments", "referral")),
     "content": ("📢 Kontent", ("ads", "moderation", "categories", "broadcast")),
     "control": ("📊 Nazorat", ("stats", "users", "errors")),
     "system": ("⚙️ Tizim", ("settings", "texts", "admins")),
@@ -72,6 +74,7 @@ HUB_SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
 
 # Qaysi bo'limlarga raqamli hisoblagich qo'shiladi
 COUNTABLE_SECTIONS = {
+    "applications",
     "groups",
     "categories",
     "sellers",
@@ -94,7 +97,7 @@ def _section_button(key: str, counts: dict[str, int] | None = None) -> InlineKey
 def _visible(key: str, role: str | None) -> bool:
     if key == "admins":
         return role == AdminRole.SUPER
-    if role == AdminRole.MODERATOR and key in {"payments", "broadcast", "sellers", "tariffs", "referral", "errors"}:
+    if role == AdminRole.MODERATOR and key in {"applications", "payments", "broadcast", "sellers", "tariffs", "referral", "errors"}:
         return False
     return True
 
@@ -104,9 +107,10 @@ def admin_main_kb(
 ) -> InlineKeyboardMarkup:
     """Navbatlar avval; beshta asosiy yo'nalish, eski callback'lar saqlanadi."""
     counts = counts or {}
-    queues = [
-        _section_button("moderation", counts),
-    ]
+    queues = []
+    if _visible("applications", role):
+        queues.append(_section_button("applications", counts))
+    queues.append(_section_button("moderation", counts))
     if _visible("payments", role):
         queues.append(_section_button("payments", counts))
     rows: list[list[InlineKeyboardButton]] = [queues]

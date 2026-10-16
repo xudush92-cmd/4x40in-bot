@@ -11,12 +11,12 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
 > Admin navigatsiyasi va sotuvchilik arizasi bo‘yicha bosqichlar:
 > **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**. UX-1 navigatsiyasi,
-> admin belgilaydigan ×10 chegaralar va rollarga mos bot yo‘riqnomasi joriy qilindi;
-> ariza/kabinet bo‘yicha UX-2/3 ishlari navbatdagi bosqichda.
+> UX-2 shaxsiy sotuvchilik arizasi + admin navbati/qarori, ×10 chegaralar va rolli
+> yo‘riqnoma oflayn tekshirildi. UX-3 sotuvchi kabinetini jamlash keyingi ish.
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–9 + limit/yo‘riqnoma bosqichi oflayn ✅ · Jonli qabul sinovlari qolgan**
+## 📌 Hozirgi holat: **Phase 0–9 + limit/yo‘riqnoma + UX-1/2 oflayn ✅ · UX-3 va jonli qabul qolgan**
 
 Phase 9da olingan ruxsat doirasida yuklama smoke, deploy/backup/restore
 xavfsizligi va qo‘llanmalar qo‘shildi. **Bu ishlab chiqarishda sinovdan o‘tgan
@@ -25,14 +25,15 @@ uchun alohida test serveri kerak. Admin belgilaydigan maksimal interval, post,
 qoida, sanoqchi, tarif/obuna va referal chegaralari ×10 oshirildi; **mavjud/default
 qiymatlar o‘zgarmadi**. Telegram albomi (10 rasm), 25 xabar/s, jitter (30%) va
 chegirma (50%) xavfsizlik/texnik cheklovlari saqlandi. `/start`, admin va sotuvchi
-panelida «📖 Foydalanish yo‘riqnomasi» tugmasi bor; bu ariza yoki yangi menyu
-emas. [Deploy va tiklash](docs/DEPLOY.md) ·
+panelida «📖 Foydalanish yo‘riqnomasi» tugmasi bor. Oddiy `/start` ochiq;
+shaxsiy ariza admin tasdig‘idan keyin **faqat** sotuvchi panelini ochadi,
+tarif/chek/e’lon alohida. [Deploy va tiklash](docs/DEPLOY.md) ·
 [Video-qo‘llanma ssenariysi](docs/VIDEO_SENARIY.md) (**video hali yozilmagan**).
 
 | Ish | Holat |
 |---|---|
 | Docker Compose (bot + poster + PostgreSQL 16 + Redis 7 + Caddy) | ✅ |
-| 45 jadvalli baza sxemasi + Alembic (Phase 8: referal/chek/broadcast kengaytmalari) | ✅ |
+| 46 jadvalli baza sxemasi + Alembic (Phase 8 + UX-2 alohida ariza jadvali) | ✅ |
 | Konfiguratsiya (.env, pydantic-settings, validatsiya) | ✅ |
 | Loglar (loguru, kunlik aylanish), xato jurnali (`error_log`) | ✅ |
 | Middleware'lar (DB sessiya, foydalanuvchi konteksti, anti-flood, texnik rejim) | ✅ |
@@ -197,7 +198,7 @@ uchun admin huquqlarini tiklash yoki qo'lda aralashish zarur bo'lishi mumkin.
    uchun to'xtaydi. Telegram noaniq javob bergan xabar
    qayta yuborilmaydi; admin tekshirib yopadi.
 
-**Deploydan oldin:** `alembic upgrade head` (`8d93a17e623c`) va
+**Deploydan oldin:** `alembic upgrade head` (UX-2: `b6c8e4d0192a`) va
 `python -m scripts.seed` (26 sozlama, 30 matn, 3 namuna tarif) bajaring.
 SQLite offline tekshiruvi PostgreSQL/Redis va haqiqiy Telegram/bank sinovini
 almashtirmaydi. Phase 9ning deploy/restore amaliy qadamlari uchun
@@ -308,8 +309,9 @@ SHOP_BOT/
 │   ├── redis_client.py      # Redis + FSM storage (ixtiyoriy komponent)
 │   ├── db/
 │   │   ├── base.py          # engine, sessiya, JSONB varianti
-│   │   └── models.py        # 45 jadval (REJA.md 4-bo'lim + Phase 6–8)
+│   │   └── models.py        # 46 jadval (REJA.md 4-bo'lim + Phase 6–8 + UX-2)
 │   ├── handlers/
+│   │   ├── applications.py  # sotuvchilik arizasi (user FSM + admin navbati)
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati
 │   │   ├── admin/           # panel + guruh siyosati, counter.py, to'lovlar
 │   │   ├── seller/          # sotuvchi paneli + ads.py (e'lonlar) + payments.py (chek)
@@ -320,13 +322,13 @@ SHOP_BOT/
 │   ├── services/            # settings, text, group, category, seller, tariff,
 │   │                        # subscription, ad, posting, posting_limiter, payment,
 │   │                        # group_policy_service, counter_service, referral,
-│   │                        # report, broadcast, error, admin, notify, stats
+│   │                        # report, broadcast, application_service, error, admin, notify, stats
 │   ├── scheduler/           # jobs.py (sanoqchi/referal/broadcast/stats), poster.py, runner.py
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh, deploy.sh, preflight.py, load_smoke.py
 ├── docs/                    # DEPLOY.md, VIDEO_SENARIY.md (video fayli hali yo‘q)
-├── tests/                   # 355 test (offline E2E + servis + infratuzilma smoke)
+├── tests/                   # 384 test (offline E2E + servis + infratuzilma smoke)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile

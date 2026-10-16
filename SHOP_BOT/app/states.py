@@ -28,6 +28,20 @@ class AdminCategoryStates(StatesGroup):
     waiting_description = State()
 
 
+class SellerApplicationStates(StatesGroup):
+    """Shaxsiy sotuvchilik arizasi: ism → aloqa → preview."""
+
+    waiting_name = State()
+    waiting_contact = State()
+    preview = State()
+
+
+class AdminApplicationStates(StatesGroup):
+    """Adminning erkin rad sababini kiritishi (tarif/chek FSMidan alohida)."""
+
+    waiting_reason = State()
+
+
 class AdminSellerStates(StatesGroup):
     """Sotuvchilar bo'limi (Phase 2)."""
 

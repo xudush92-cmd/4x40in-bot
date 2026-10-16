@@ -10,6 +10,7 @@ from aiogram import Router
 
 from app.handlers import common
 from app.handlers.admin import admin_router
+from app.handlers.applications import user_router as application_user_router
 from app.handlers.group import group_router
 from app.handlers.seller import seller_router
 from app.handlers.seller.ads import router as seller_ads_router
@@ -22,8 +23,9 @@ def build_root_router() -> Router:
     root.include_router(seller_payments_router) # 2) sotuvchi to'lovi/chek FSM (Phase 5)
     root.include_router(seller_ads_router)      # 3) sotuvchi e'lonlari (Phase 3)
     root.include_router(seller_router)          # 4) sotuvchi paneli
-    root.include_router(group_router)           # 5) guruh hodisalari
-    root.include_router(common.router)          # 6) umumiy buyruqlar va fallback
+    root.include_router(application_user_router) # 5) oddiy foydalanuvchi arizasi (private)
+    root.include_router(group_router)           # 6) guruh hodisalari
+    root.include_router(common.router)          # 7) umumiy buyruqlar va fallback
     return root
 
 

@@ -26,6 +26,8 @@ router.callback_query.filter(IsAdmin())
 def menu_text(counts: dict[str, int], role: str | None) -> str:
     """Navbatda faqat qaror kutayotgan ariza/e'lon/chek; xatolar emas."""
     lines = ["🛠 <b>Boshqaruv paneli</b>", "━━━━━━━━━━━━━━━━━━━━", "📥 <b>Qaror kutayotganlar</b>"]
+    if role in {AdminRole.ADMIN, AdminRole.SUPER}:
+        lines.append(f"🛒 Arizalar: <b>{counts.get('applications', 0)}</b>")
     lines.append(f"📢 Moderatsiya: <b>{counts.get('moderation', 0)}</b>")
     if role in {AdminRole.ADMIN, AdminRole.SUPER}:
         lines.append(f"🧾 Cheklar: <b>{counts.get('payments', 0)}</b>")
@@ -99,6 +101,14 @@ async def open_section(
 ) -> None:
     """Bo'limni ochish: tayyor bo'lsa ko'rsatiladi, aks holda "Phase N" xabari."""
     key = callback_data.value
+    # Eski `adm:section` callback ham UI'ni chetlab o'tmasin: ro'yxatni
+    # to'g'ridan-to'g'ri render qilish ichki router filtrini ishlatmaydi.
+    if (
+        key in {"applications", "sellers", "tariffs", "payments", "referral", "broadcast", "errors"}
+        and role not in {AdminRole.ADMIN, AdminRole.SUPER}
+    ):
+        await alert(callback, "⛔️ Bu bo'lim faqat admin uchun.", show=True)
+        return
 
     if key == "stats":
         from app.handlers.admin.stats import render_home
@@ -168,6 +178,16 @@ async def open_section(
         from app.handlers.admin.categories import render_list as render_categories
 
         await render_categories(callback, session, 0)
+        await alert(callback, "")
+        return
+
+    if key == "applications":
+        if role not in {AdminRole.ADMIN, AdminRole.SUPER}:
+            await alert(callback, "⛔️ Arizalarni faqat admin ko'radi.", show=True)
+            return
+        from app.handlers.applications import render_admin_list
+
+        await render_admin_list(callback, session)
         await alert(callback, "")
         return
 
