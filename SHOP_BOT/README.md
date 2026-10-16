@@ -9,6 +9,8 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > **[HOLAT.md](HOLAT.md)** — nima bajarilgan, nima qolgan, muhim shartnomalar.
 > Administrator uchun tugma-baqadam amaliy yo‘riqnoma:
 > **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
+> Panel, limit va sotuvchilik arizasi bo‘yicha **taklif (hali botda yo‘q)**:
+> **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**.
 
 ---
 
