@@ -28,10 +28,17 @@ from app.keyboards.callbacks import SellerPanelCB
 from app.keyboards.seller_panel import (
     back_to_menu_kb,
     seller_menu_kb,
+    seller_profile_kb,
     tariff_screen_kb,
     tariffs_catalog_kb,
 )
-from app.services import referral_service, seller_service, subscription_service, tariff_service
+from app.services import (
+    referral_service,
+    seller_dashboard,
+    seller_service,
+    subscription_service,
+    tariff_service,
+)
 from app.services.settings_service import settings_service
 from app.states import SellerPaymentStates
 from app.utils.text import escape_html, fmt_amount, truncate
@@ -179,31 +186,33 @@ async def on_menu(callback: CallbackQuery, session: AsyncSession, state: FSMCont
     if seller is None:
         return
 
-    active = await subscription_service.active_for(session, seller.id)
-    latest = await subscription_service.latest_for(session, seller.id)
-    stats = await seller_service.get_seller_stats(session, seller)
-
-    if latest is None:
-        header = "🛒 <b>Sotuvchi paneli</b>\n\n⛔️ Tarifingiz hali berilmagan."
-    elif active is None:
-        header = (
-            "🛒 <b>Sotuvchi paneli</b>\n\n"
-            f"⚠️ Tarif muddati tugagan ({fmt_date(latest.expires_at)}).\n"
-            "Yangilash uchun katalogdan tarifni tanlang yoki admin bilan bog'laning."
-        )
-    else:
-        left = subscription_service.days_left(active)
-        tariff_name = active.tariff.name if active.tariff else "—"
-        header = (
-            "🛒 <b>Sotuvchi paneli</b>\n\n"
-            f"💳 Tarif: <b>{escape_html(tariff_name)}</b>\n"
-            f"🕒 Qolgan: <b>{left} kun</b>  ·  📢 Limit: <b>{active.ads_used}/{active.ads_limit}</b>"
-        )
-
+    overview = await seller_dashboard.get_overview(session, seller)
     await render(
         callback,
-        header,
-        seller_menu_kb(has_subscription=active is not None, ads_count=stats["ads_active"]),
+        "🛒 <b>Mening kabinetim</b>\n━━━━━━━━━━━━━━━━━━━━\n" + overview.text,
+        seller_menu_kb(
+            has_subscription=overview.has_subscription, ads_count=overview.ads_count,
+            can_create_ad=overview.can_create_ad,
+        ),
+    )
+    await alert(callback, "")
+
+
+@seller_router.callback_query(SellerPanelCB.filter(F.action == "profile"))
+async def on_profile(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    """Shaxsiy aloqa ma'lumotlari; tahrir hozircha admin orqali (mavjud oqim)."""
+    await _leave_payment(state)
+    seller = await _seller_of(callback, session)
+    if seller is None:
+        return
+    await render(
+        callback,
+        "👤 <b>Aloqa ma'lumotlarim</b>\n━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏪 Ism/do'kon: <b>{escape_html(seller.display_name or 'kiritilmagan')}</b>\n"
+        f"📞 Telefon: {escape_html(seller.phone or 'kiritilmagan')}\n"
+        f"🔗 Aloqa: {escape_html(seller.contact or 'kiritilmagan')}\n\n"
+        "✏️ O'zgartirish uchun admin bilan bog'laning; e'lon aloqasi alohida tahrirlanadi.",
+        seller_profile_kb(),
     )
     await alert(callback, "")
 

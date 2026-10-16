@@ -136,7 +136,7 @@ Ariza faqat shaxsiy chatda ochiladi; Telegram `from_user.id` avtomatik olinadi (
 - Admin/super-admin arizani ko‘radi va qaror qiladi; moderator uni tasdiqlamaydi. Tugma yashirilishi **yetarli emas**: callback/servis ham rolni tekshiradi. Rad sababi foydalanuvchiga yuboriladi; qayta ariza alohida ID. UX-2 uchun konservativ spam chegarasi: **rad qaroridan 1 soat** kutish, **24 soatda ko‘pi bilan 3 ta ariza**. Eski ariza/yangi ariza statusi «tarifsiz sotuvchi»dan mustaqil.
 - Ilgari qo‘lda qo‘shilgan sotuvchilar ariza jadvaliga ko‘chirilib «kutilayotgan» bo‘lib qolmaydi. Qo‘lda ID bilan qo‘shish ochiq arizani xuddi shu tranzaksiyada yopadi; ikkita adminning eski tugmasi qayta seller/DM yaratmaydi. `User` va ariza qatori/qulf, qisman UNIQUE pending indeksi, `Seller.user_id` UNIQUE va shartli UPDATE qo‘llanadi; PostgreSQLdagi haqiqiy parallel workerlar hali alohida sinovdan o‘tishi kerak. DM muvaffaqiyatsiz bo‘lsa foydalanuvchi `/start`dan statusini qayta ko‘radi. Eski callbacklar saqlangan; migratsiya oldingi sotuvchini/obunani ko‘chirmaydi.
 
-## 5. Sotuvchi uchun birinchi ekran (prioritet)
+## 5. Sotuvchi uchun birinchi ekran (UX-3da amalga oshirildi)
 
 ```text
 🛒 Mening kabinetim
@@ -152,7 +152,23 @@ Keyingi qadam: «tekshiruv natijasini kuting» yoki «tarif tanlang»
 [🎁 Referal] [☎️ Yordam]
 ```
 
-Ma’lumot mavjud servislar (`seller_service`, `subscription_service`, `payment_service`, `ad_service`) orqali olinadi; kabinetdagi jamlangan sonlar bilan amaldagi limit hisoblagichi turlicha chiqmasin. Tarif yo‘q bo‘lsa «e’lon yarata olmaysiz», muddat o‘tgan bo‘lsa «yangilang», limit tugagan bo‘lsa ishlatilgan/jami, bloklangan bo‘lsa yordam ko‘rsatiladi. To‘lovning `pending/approved/rejected` holati sotuvchilik arizasining holatidan aniq farqlanadi. Eski «Mening e’lonlarim», «Mening tarifim», to‘lov va referal oqimlari saqlanadi; birinchi ekran ularga tez kirishdir, qayta yozish emas. Oddiy foydalanuvchining `/takliflarim` sanoqchi ekrani alohida qoladi.
+`/start` va «Kabinetga» bir xil `seller_dashboard.get_overview` agregatidan foydalanadi: faol
+tarif/muddat, **faol obunaning aynan `ads_used/ads_limit` hisoblagichi**,
+`ad_service.seller_ads_stats`dagi e’lon holatlari (tarixiy/qoralama e’lon sonini limit deb hisoblamaydi)
+hamda sotuvchining **oxirgi cheki** `payment_service.list_payments(seller_id=..., limit=1)` orqali
+ko‘rsatiladi. Oxirgi chek rad bo‘lsa sababi HTML-escape qilinadi; tasdiqlangan chek ham faol tarifni
+avtomatik anglatmaydi. Keyingi qadam tarif yo‘q, chek tekshiruvda/rad, obuna muddati tugagan/bekor
+qilingan, limit tugagan, e’lon rad/tekshiruvda/qoralama va tez tugaydigan tarif holatiga mos tanlanadi.
+«➕ Yangi e’lon» tugmasi `subscription_service.can_publish`ga mos yashiriladi, **eski callback esa baribir
+servisda tekshiriladi**. «Mening e’lonlarim» tarifsiz ham avvalgi ro‘yxatni ko‘rsatadi, lekin uning
+ichida ham yangi e’lon tugmasi yo‘q; «Kabinetga» qaytish bor. «👤 Aloqa ma’lumotlari» faqat o‘z shaxsiy
+chatida o‘qish uchun; telefon/do‘kon/aloqa nomi tahriri mavjud admin/yordam oqimida qoladi, avtomatik
+verifikatsiya yo‘q. Bloklangan/o‘chirilgan sotuvchi kabinet/profilni ocholmaydi, `/start` yordam
+manzilini ko‘rsatadi. To‘lov `pending` holati ariza `pending`idan **alohida**. Sotuvchining e’lon ustasi
+yoki chek rasmi FSMida ham `/start` umumiy kabinetga qaytadi (qoralama DBdan o‘chmaydi). Eski «Mening
+e’lonlarim», «Mening tarifim», to‘lov va referal oqimlari saqlanadi; oddiy foydalanuvchining
+`/takliflarim` sanoqchi ekrani alohida qoladi. Oflayn testda real bot/tashqi bank tekshiruvi sinovdan
+o‘tmagan.
 
 ## 6. Bosqichlar va qabul mezonlari
 
@@ -164,7 +180,7 @@ Bu **Phase 0–9ni qayta boshlash emas**, keyingi UX ishlari uchun alohida kichi
 4. **UX-3 — sotuvchi kabineti:** mavjud e’lon/tarif/to‘lov holatini jamlash va tez yo‘llar. Qabul: har holat uchun to‘g‘ri keyingi qadam, limit va to‘lov holati amaldagi servisga mos; mavjud e’lon/tarif/chek oqimlari buzilmaydi.
 5. **UX-4 — keyingi alohida limit ko‘rib chiqish:** hozirgi ×10 bosqichidan boshqa o‘zgarish bo‘lsa, alohida ruxsat va maydon kesimidagi xavfsizlik tekshiruvi kerak. Qabul: UI, servis, test va mavjud ma’lumotlar mos; Telegram hard cheklovlari saqlanadi.
 
-**Alohida bajarilgan limit/yo‘riqnoma bosqichi (2026-10-16):** foydalanuvchining ×10 so‘rovi doirasida admin belgilaydigan maksimumlar oshirildi (3-bo‘lim), admin/moderator/sotuvchi/oddiy foydalanuvchining shaxsiy ekranlarida «📖 Foydalanish yo‘riqnomasi» tugmasi qo‘shildi. Rol callbackda berilmaydi, DBdagi haqiqiy rolga qarab serverda aniqlanadi. **O‘sha bosqichda** ariza, navbatlar va menyu hali yo‘q edi; keyingi ruxsat doirasida UX-1 va UX-2 joriy qilindi. UX-3 kabineti hali yo‘q.
+**Alohida bajarilgan limit/yo‘riqnoma bosqichi (2026-10-16):** foydalanuvchining ×10 so‘rovi doirasida admin belgilaydigan maksimumlar oshirildi (3-bo‘lim), admin/moderator/sotuvchi/oddiy foydalanuvchining shaxsiy ekranlarida «📖 Foydalanish yo‘riqnomasi» tugmasi qo‘shildi. Rol callbackda berilmaydi, DBdagi haqiqiy rolga qarab serverda aniqlanadi. **O‘sha bosqichda** ariza, navbatlar va menyu hali yo‘q edi; keyingi umumiy ruxsat doirasida UX-1/2/3 joriy qilindi. UX-3 uchun yangi jadval/migratsiya yoki avtomatik chek/e’lon qarori yo‘q.
 
 Har bir **kod bosqichi** yakunida: to‘liq `pytest`, `compileall`, vaqtinchalik DBda Alembic `upgrade head` + `check` (yangi migratsiya bo‘lsa eski holatdan o‘tish), seedni ikki marta bajarib dublikat tekshiruvi, boundary/ruxsat/oqim testlari, diff va hisobot; so‘ng **faqat joriy branchga** commit/push. Oflayn testlar jonli Telegram/Redis/PostgreSQL yoki Replit qabul sinovi o‘rnini bosmaydi; jonli sinov/deploy alohida ruxsat va xavfsiz muhit bilan qilinadi.
 
@@ -175,6 +191,6 @@ Har bir **kod bosqichi** yakunida: to‘liq `pytest`, `compileall`, vaqtinchalik
 - **5 bo‘limli admin menyusi** va guruh ichidagi «N kishi» / «kanal a’zoligi» alohida yo‘li UX-1da joriy etildi; har guruh qoidalari mustaqil saqlanadi.
 - UX-2 ariza maydonlari **ism/do‘kon nomi + @username yoki telefon**. Rad qaroridan keyin 1 soat kutish va 24 soatda eng ko‘pi 3 ta ariza qoidasi kodda/testda qo‘llanadi; operatsion ehtiyoj boshqa bo‘lsa alohida kelishish lozim.
 - ×10 limit so‘rovi 3-bo‘limdagi xavfsiz chegaralar bilan bajarildi; 10 rasm/albom, 25 xabar/soniya, 30% jitter va 50% chegirma **oshirilmagan**. Boshqa limit kerak bo‘lsa alohida ruxsat bilan ko‘rib chiqiladi.
-- UX-2 migratsiyasi oflayn eski sotuvchi bilan upgrade/check/downgrade sinovidan o‘tgan. Haqiqiy PostgreSQL parallel worker, Redis FSM, Telegram xabar yetkazish va jonli Replit/deploy alohida qabulni talab qiladi.
+- UX-2 migratsiyasi oflayn eski sotuvchi bilan upgrade/check/downgrade sinovidan o‘tgan. UX-3 faqat mavjud bazani o‘qiydi; yangi jadval yoki avtomatik to‘lov/e’lon tasdig‘i yo‘q. Haqiqiy PostgreSQL parallel worker, Redis FSM, Telegram xabar yetkazish va jonli Replit/deploy alohida qabulni talab qiladi.
 
 **Ruxsat chegarasi:** UX-1/2/3ga umumiy ruxsat berilgan, lekin boshqa yangi kod bosqichi yoki Replitni yangilashga avtomatik ruxsat yo‘q. Har bosqich yakunida hisobot beriladi.

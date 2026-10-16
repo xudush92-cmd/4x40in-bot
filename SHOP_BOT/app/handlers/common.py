@@ -13,7 +13,6 @@ from app import __version__
 from app.constants import AdminRole, ApplicationStatus, SellerStatus
 from app.db.models import Seller, User
 from app.filters import PrivateChat
-from app.handlers.seller import seller_status_text
 from app.keyboards import AdminCB, GuideCB, admin_main_kb
 from app.keyboards.guide import GUIDES, guide_kb, user_start_kb
 from app.keyboards.seller_panel import seller_menu_kb
@@ -21,14 +20,13 @@ from app.services import (
     application_service,
     broadcast_service,
     referral_service,
-    seller_service,
-    subscription_service,
+    seller_dashboard,
 )
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
 from app.services.stats_service import get_menu_counts
 from app.services.text_service import text_service
-from app.states import AdminApplicationStates, SellerApplicationStates
+from app.states import AdminApplicationStates, SellerAdStates, SellerApplicationStates, SellerPaymentStates
 from app.utils.text import escape_html
 from app.utils.tg import alert, render
 from app.utils.time import ensure_aware, utcnow
@@ -86,9 +84,10 @@ async def cmd_start(
     state: FSMContext | None = None,
 ) -> None:
     """Bot bilan tanishish. ref_<kod> faqat yangi foydalanuvchiga yoziladi."""
-    application_steps = (*SellerApplicationStates.__all_states__, AdminApplicationStates.waiting_reason)
-    if state and await state.get_state() in {step.state for step in application_steps}:
-        await state.clear()  # eski ariza matni keyingi xabarni yutib yubormasin
+    cancellable_steps = (*SellerApplicationStates.__all_states__, AdminApplicationStates.waiting_reason,
+                         *SellerAdStates.__all_states__, *SellerPaymentStates.__all_states__)
+    if state and await state.get_state() in {step.state for step in cancellable_steps}:
+        await state.clear()  # eski ariza/e'lon/chek matni yangi /start'ni yutib yubormasin
     name = escape_html((user.first_name if user else None) or message.from_user.first_name or "do'st")
     first_private_start = user is not None and user.private_started_at is None
     if first_private_start:
@@ -118,15 +117,13 @@ async def cmd_start(
 
     seller = await get_seller(session, message.from_user.id)
     if seller is not None and seller.status in {SellerStatus.PENDING, SellerStatus.ACTIVE}:
-        text = await text_service.get(
-            "start.seller", ism=name, tarif_holati=await seller_status_text(seller, session)
-        )
-        active = await subscription_service.active_for(session, seller.id)
-        stats = await seller_service.get_seller_stats(session, seller)
+        overview = await seller_dashboard.get_overview(session, seller)
+        text = await text_service.get("start.seller", ism=name, tarif_holati=overview.text)
         await message.answer(
             text + referral_note,
             reply_markup=seller_menu_kb(
-                has_subscription=active is not None, ads_count=stats["ads_active"]
+                has_subscription=overview.has_subscription, ads_count=overview.ads_count,
+                can_create_ad=overview.can_create_ad,
             ),
         )
         return

@@ -59,7 +59,9 @@ from app.utils.time import fmt_date
 
 router = Router(name="seller:ads")
 router.callback_query.filter(AdCB.filter(), PrivateChat(), IsSeller())
-router.message.filter(StateFilter(SellerAdStates), PrivateChat(), IsSeller())
+# /start (jumladan deep-link) umumiy handlerga o'tsin, draft/FSM esa u yerda tozalanadi.
+router.message.filter(StateFilter(SellerAdStates), PrivateChat(), IsSeller(),
+                      ~F.text.startswith("/start"))
 
 FLOW_WIZARD = "wizard"
 FLOW_EDIT = "edit"
@@ -374,6 +376,7 @@ async def render_ads_list(
     )
     stats = await ad_service.seller_ads_stats(session, seller.id)
     subscription = await subscription_service.active_for(session, seller.id)
+    can_create, _ = await subscription_service.can_publish(session, seller)
 
     lines = [
         "📢 <b>Mening e'lonlarim</b>",
@@ -390,7 +393,9 @@ async def render_ads_list(
     lines.append("")
 
     if not ads:
-        lines.append("📭 Bu filtrda e'lon yo'q. «➕ Yangi e'lon» tugmasini bosing.")
+        lines.append("📭 Bu filtrda e'lon yo'q. " +
+                     ("«➕ Yangi e'lon» tugmasini bosing." if can_create else
+                      "Yangi e'lon uchun faol tarif va bo'sh limit kerak."))
     else:
         last_category_id = None
         for ad in ads:
@@ -409,7 +414,8 @@ async def render_ads_list(
             lines.append(f"\n<i>Sahifa {page + 1}/{total_pages} · jami {total} ta</i>")
 
     await render(
-        target, "\n".join(lines), ads_list_kb(ads, page=page, total_pages=total_pages, status=status)
+        target, "\n".join(lines), ads_list_kb(ads, page=page, total_pages=total_pages,
+                                               status=status, can_create_ad=can_create)
     )
 
 

@@ -39,8 +39,11 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
     "seller": {
         "home": ("📖 Boshlash", (
             "📖 <b>Botdan foydalanish — sotuvchi</b>\n\n"
-            "/start → sotuvchi paneli. «📅 Mening tarifim»da muddat, "
-            "sarflangan/jami e'lon limiti va rasm chegarasini tekshiring.\n"
+            "/start → kabinet: tarif/muddat, e'lon limiti, e'lonlar va oxirgi chek "
+            "holati hamda keyingi qadam. «📅 Mening tarifim»da rasm chegarasi ham bor.\n"
+            "«📢 Mening e'lonlarim» tarifsiz ham eski e'lonlarni ko'rsatadi; yangi "
+            "e'lon uchun faol tarif va bo'sh limit zarur. «👤 Aloqa ma'lumotlari» "
+            "faqat o'zingizga ko'rinadi, tahrir uchun adminga yozing.\n"
             "Tarif yo'q yoki muddati o'tgan bo'lsa, «💳 Tariflarni ko'rish / olish»dan "
             "tarifni tanlang yoki «☎️ Yordam» orqali adminga yozing.\n"
             "Tarif tasdiqlanmaguncha yangi e'lonni yuborib bo'lmaydi.\n\n"

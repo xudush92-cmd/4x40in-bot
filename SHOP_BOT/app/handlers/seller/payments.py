@@ -34,7 +34,9 @@ from app.utils.time import fmt_dt
 
 router = Router(name="seller:payments")
 router.callback_query.filter(SellerPanelCB.filter(), PrivateChat(), IsSeller())
-router.message.filter(StateFilter(SellerPaymentStates), PrivateChat(), IsSeller())
+# /start chek fotosi kutishni to'xtatib umumiy kabinetga o'tishi kerak.
+router.message.filter(StateFilter(SellerPaymentStates), PrivateChat(), IsSeller(),
+                      ~F.text.startswith("/start"))
 
 
 async def _owner(session: AsyncSession, user_id: int) -> Seller:
@@ -187,7 +189,7 @@ async def cancel_payment(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(StateFilter(SellerPaymentStates.waiting_receipt), F.text)
 async def receipt_text(message: Message, state: FSMContext) -> None:
-    if (message.text or "").strip().lower() in {"/cancel", "/start"}:
+    if (message.text or "").strip().lower() == "/cancel":
         await state.clear()
         await message.answer("❌ To'lov jarayoni bekor qilindi.", reply_markup=back_to_menu_kb())
         return

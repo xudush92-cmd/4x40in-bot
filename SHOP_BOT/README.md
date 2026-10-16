@@ -11,12 +11,12 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
 > Admin navigatsiyasi va sotuvchilik arizasi bo‘yicha bosqichlar:
 > **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**. UX-1 navigatsiyasi,
-> UX-2 shaxsiy sotuvchilik arizasi + admin navbati/qarori, ×10 chegaralar va rolli
-> yo‘riqnoma oflayn tekshirildi. UX-3 sotuvchi kabinetini jamlash keyingi ish.
+> UX-2 shaxsiy sotuvchilik arizasi + admin navbati/qarori, UX-3 sotuvchi kabineti,
+> ×10 chegaralar va rolli yo‘riqnoma oflayn tekshirildi.
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–9 + limit/yo‘riqnoma + UX-1/2 oflayn ✅ · UX-3 va jonli qabul qolgan**
+## 📌 Hozirgi holat: **Phase 0–9 + limit/yo‘riqnoma + UX-1/2/3 oflayn ✅ · jonli qabul qolgan**
 
 Phase 9da olingan ruxsat doirasida yuklama smoke, deploy/backup/restore
 xavfsizligi va qo‘llanmalar qo‘shildi. **Bu ishlab chiqarishda sinovdan o‘tgan
@@ -27,7 +27,9 @@ qiymatlar o‘zgarmadi**. Telegram albomi (10 rasm), 25 xabar/s, jitter (30%) va
 chegirma (50%) xavfsizlik/texnik cheklovlari saqlandi. `/start`, admin va sotuvchi
 panelida «📖 Foydalanish yo‘riqnomasi» tugmasi bor. Oddiy `/start` ochiq;
 shaxsiy ariza admin tasdig‘idan keyin **faqat** sotuvchi panelini ochadi,
-tarif/chek/e’lon alohida. [Deploy va tiklash](docs/DEPLOY.md) ·
+tarif/chek/e’lon alohida. Sotuvchining `/start`/«Mening kabinetim» ekranida
+obuna limiti, e’lon va oxirgi chek holati hamda keyingi qadam ko‘rinadi;
+aloqa ma’lumotlari faqat o‘ziga ochiladi. [Deploy va tiklash](docs/DEPLOY.md) ·
 [Video-qo‘llanma ssenariysi](docs/VIDEO_SENARIY.md) (**video hali yozilmagan**).
 
 | Ish | Holat |
@@ -198,6 +200,15 @@ uchun admin huquqlarini tiklash yoki qo'lda aralashish zarur bo'lishi mumkin.
    uchun to'xtaydi. Telegram noaniq javob bergan xabar
    qayta yuborilmaydi; admin tekshirib yopadi.
 
+**UX-1/2/3:** admin yo‘nalishlari/guruh diagnostikasi; oddiy `/start`dan shaxsiy
+sotuvchilik arizasi (faqat admin tasdig‘i bilan panel, tarif/to‘lov/e’lon
+alohida); sotuvchi kabinetida faol obuna limiti, e’lon va oxirgi chek holati,
+keyingi qadam, shaxsiy aloqa ma’lumotlari va mavjud amallarga tez yo‘llar.
+Tarifsiz ham eski e’lonlar va chek tarixini ko‘radi, yangi e’lon faqat
+`can_publish` ruxsat berganda. Hisoblangan e’lonlar soni obunaning
+`ads_used` limitidan farq qilishi mumkin (qoralama/tarixiy e’lonlar alohida).
+UX-3ga migratsiya kerak emas. [UX batafsil rejasi](docs/PANELLAR_VA_ARIZA_REJASI.md).
+
 **Deploydan oldin:** `alembic upgrade head` (UX-2: `b6c8e4d0192a`) va
 `python -m scripts.seed` (26 sozlama, 30 matn, 3 namuna tarif) bajaring.
 SQLite offline tekshiruvi PostgreSQL/Redis va haqiqiy Telegram/bank sinovini
@@ -322,13 +333,13 @@ SHOP_BOT/
 │   ├── services/            # settings, text, group, category, seller, tariff,
 │   │                        # subscription, ad, posting, posting_limiter, payment,
 │   │                        # group_policy_service, counter_service, referral,
-│   │                        # report, broadcast, application_service, error, admin, notify, stats
+│   │                        # report, broadcast, application_service, seller_dashboard, error, notify, stats
 │   ├── scheduler/           # jobs.py (sanoqchi/referal/broadcast/stats), poster.py, runner.py
 │   └── web/                 # server.py → /health, /stats, /webhook
 ├── alembic/                 # migratsiyalar
 ├── scripts/                 # seed.py, backup.sh, restore.sh, deploy.sh, preflight.py, load_smoke.py
 ├── docs/                    # DEPLOY.md, VIDEO_SENARIY.md (video fayli hali yo‘q)
-├── tests/                   # 384 test (offline E2E + servis + infratuzilma smoke)
+├── tests/                   # 393 test (offline E2E + servis + infratuzilma smoke)
 ├── docker-compose.yml       # postgres, redis, migrate, bot, poster, caddy
 ├── Dockerfile
 ├── Caddyfile

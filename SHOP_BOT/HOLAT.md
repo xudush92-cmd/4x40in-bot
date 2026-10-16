@@ -4,7 +4,7 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-16 · **Holat:** Phase 0–9 + limit/yo‘riqnoma + UX-1/2 oflayn ✅ (384 test); UX-3 kabineti navbatdagi ish. **Jonli deploy/restore, Telegram/bank qabul sinovi va video hali bajarilmagan.**
+**Oxirgi yangilanish:** 2026-10-16 · **Holat:** Phase 0–9 + limit/yo‘riqnoma + UX-1/2/3 oflayn ✅ (393 test); **jonli deploy/restore, Telegram/bank qabul sinovi va video hali bajarilmagan.**
 
 ---
 
@@ -17,9 +17,9 @@
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
 | Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **384 test, hammasi o'tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, tarmoqsiz SQLite + soxta Telegram API) |
+| Testlar | **393 test, hammasi o'tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, tarmoqsiz SQLite + soxta Telegram API) |
 | Migratsiya | `f789aa7b756f` → `c8a21b6d0f42` → `4f30ae7c912b` → `8d93a17e623c` → **`b6c8e4d0192a`** (46 jadval; SQLite `alembic check` toza) |
-| Keyingi qadam | UX-2 tugadi; shu suhbatdagi umumiy ruxsat doirasida UX-3 sotuvchi kabinetini yakunlash. Replitni foydalanuvchi o‘zi yangilatadi; real Telegram/bank/PostgreSQL/Redis qabul sinovi alohida qoladi |
+| Keyingi qadam | UX-1/2/3 tugadi; faqat joriy branchni foydalanuvchi Replit agentiga yangilashni buyuradi. Keyingi UX bosqichiga yoki jonli deploy/sinovga alohida ruxsat kerak; real Telegram/bank/PostgreSQL/Redis qabul sinovi qolgan |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -45,7 +45,8 @@
 | `ad1d1ef` | **UX-0** — panel/ariza sxemasi, kod emas | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/ad1d1ef) |
 | `f2306ad` | Alohida so‘ralgan **limitlar ×10 / bot yo‘riqnomasi** bosqichi (363 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/f2306ad) |
 | `3c51a90` | **UX-1** — admin navigatsiyasi va guruh diagnostikasi (365 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/3c51a90) |
-| Joriy shoxobchaning so‘nggi commiti (`git log -1 --oneline`) | **UX-2** — sotuvchilik arizasi va admin qarori (384 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
+| `e76f495` | **UX-2** — sotuvchilik arizasi va admin qarori (384 test) | [link](https://github.com/xudush92-cmd/4x40in-bot/commit/e76f495) |
+| Joriy shoxobchaning so‘nggi commiti (`git log -1 --oneline`) | **UX-3** — sotuvchi kabineti (393 test) | [branch](https://github.com/xudush92-cmd/4x40in-bot/tree/arena/18e1094b-4x40in-bot) |
 
 > ⚠️ **Muhim:** ishni faqat chatning **joriy** shoxobchasida olib boring —
 > `main`ga tegmang, qo'shimcha branch/PR ochmang. Keyingi sessiyada shu kodni
@@ -63,7 +64,7 @@
 cd /home/user/4x40in-bot/SHOP_BOT
 python3 -m venv .venv
 .venv/bin/pip install -q -r requirements-dev.txt
-PYTHONPATH=. .venv/bin/python -m pytest -q  # 384 test (offline, ~140 sekund)
+PYTHONPATH=. .venv/bin/python -m pytest -q  # 393 test (offline, ~145 sekund)
 ```
 
 Testlar **offline** ishlaydi: SQLite (vaqtinchalik fayl) + soxta Bot API sessiyasi,
@@ -430,11 +431,34 @@ Oflayn `tests/test_ux2_applications.py` (18 test) va
 rol/idempotent qaror, qo‘lda qo‘shish, commitdan keyingi xabar, referal,
 oldingi sotuvchini saqlagan migratsiya/downgrade. **Haqiqiy PostgreSQL parallel
 worker, Redis FSM, Telegram DM va jonli Replit sinovi bu natijadan kelib
-chiqmaydi.** UX-3 hali joriy qilinmagan; Replitni bu yerdan yangilamaymiz.
+chiqmaydi.** Bu UX-2 commitida UX-3 hali yo‘q edi.
+
+### ✅ UX-3 — sotuvchining birinchi ekrani (2026-10-16)
+
+`app/services/seller_dashboard.py` jamlovchi **o‘qish** servisi: shaxsiy
+`/start` va `sp:menu` bir xil natija oladi. Faol obuna, muddati/nomi, aynan
+shu obunaning `ads_used/ads_limit`i va `ads_left`, e’lonlarning faol/kutilayotgan/
+rad/qoralama (pauza/arxiv alohida) soni, sotuvchining oxirgi cheki va uning
+xavfsiz rad sababi/next-step ko‘rsatiladi. E’lonlar umumiy soni tarixiy
+qoralamalarni ham qamrab oladi; uni obuna limitiga tenglashtirmang. Chek
+`pending` = admin to‘lovni tekshiradi; ariza `pending` = admin sotuvchilikni
+ko‘radi; tasdiqlangan eski chek ham muddati tugagan obunani faollashtirmaydi.
+Tarifsiz/muddati o‘tgan/bekor qilingan/limiti tugagan holatda yangi e’lon
+tugmasi kabinetda va e’lonlar ro‘yxatida yashiriladi (`can_publish` bilan).
+Eski callbacklar baribir servisda rad qilinadi. Eski e’lonlar/cheklar tarifsiz
+ham o‘qiladi; to‘lov, tarif, referal, e’lon ustasi/qarori o‘zgarmaydi.
+E’lon ustasi yoki chek rasmini kutayotgan FSMda `/start` bosilsa eski FSM
+tozalanib shu kabinetga o‘tadi (boshlang‘ich qoralama DBda saqlanadi). Read-only
+«👤 Aloqa ma’lumotlari» shaxsiy chatda o‘z sotuvchisigagina (HTML escaped);
+tahrir admin/yordam orqali. Bloklangan sotuvchi kabinet/profilga kira olmaydi.
+**Yangi jadval yoki migratsiya yo‘q.** `tests/test_ux3_dashboard.py` (9 test)
+yangi/tarifsiz, kutilayotgan/rad chek, xavfsiz HTML, faol/chegaraga yetgan/
+muddati o‘tgan/bekor tarif, guruh chatini rad qilish, mavjud oqimlar navigatsiyasi
+hamda keyingi qadamlarni qamrab oladi. Bu jonli Telegram/bank/PG sinovi emas.
 
 ---
 
-## 5. Test holati (384 test)
+## 5. Test holati (393 test)
 
 | Test fayli | Qamrov | Soni |
 |---|---|---|
@@ -475,7 +499,8 @@ chiqmaydi.** UX-3 hali joriy qilinmagan; Replitni bu yerdan yangilamaymiz.
 | `tests/test_ux1_navigation.py` | UX-1: menyu, moderator, har guruhning diagnostikasi va read-onlyligi | 2 |
 | `tests/test_ux2_applications.py` | UX-2: ariza FSM, rol, dublikat/UNIQUE, kutish/limit, qaror/audit/DM, referal va qo‘lda qo‘shish | 18 |
 | `tests/test_ux2_migration.py` | UX-2: eski sotuvchi saqlanadi, yangi pending UNIQUE, downgrade/upgrade/check | 1 |
-| **JAMI** | | **384** |
+| `tests/test_ux3_dashboard.py` | UX-3: /start/kabinet, chek/e’lon/obuna statusi, limit, navigatsiya, rol/HTML va FSMdan /start | 9 |
+| **JAMI** | | **393** |
 
 **Phase 7 tekshiruvi (tarix):** 319 offline test o'tdi; `compileall` va Phase 7 o'zgartirilgan
 fayllarda Ruff toza (`models.py`da avvaldan mavjud UP037/UP045 qoidalari
@@ -521,6 +546,7 @@ SHOP_BOT/
 │   │   ├── settings_service.py     # 26 global sozlama (restart kerak emas)
 │   │   ├── group_service.py, category_service.py
 │   │   ├── seller_service.py, tariff_service.py, subscription_service.py, application_service.py
+│   │   ├── seller_dashboard.py # UX-3 holat jamlovchi (faqat o'qish)
 │   │   ├── ad_service.py           # ⬅️ Phase 3 (e'lon hayot sikli)
 │   │   ├── posting_service.py, posting_limiter.py  # Phase 4 DB navbat va limiter
 │   │   ├── payment_service.py   # Phase 5 karta/chek/qaror/obuna
@@ -540,7 +566,7 @@ SHOP_BOT/
 │   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
 │   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 384 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 393 test (+ conftest.py, fake_telegram.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
 ├── alembic/versions/c8a21b6d0f42_phase6_xabar_siyosati.py
 ├── alembic/versions/4f30ae7c912b_phase7_sanoqchi.py
@@ -594,6 +620,7 @@ Sahifa/filtr qiymatlari `"<sahifa>|<filtr>"` ko'rinishida (masalan `"0|active"`)
 - `subscription_service`: `grant/extend/set_ads_limit/active_for/latest_for/days_left/can_publish/consume_slot/release_slot/reminders_due/expire_due/mark_reminded/...`
 - `tariff_service`: `create_tariff/.../delete_tariff/move/list_all_active/get_stats/parse_price/format_price`
 - `seller_service`: `get_or_create_seller/get_seller/set_status/soft_delete/normalize_phone/normalize_contact/seller_label/...`
+- `seller_dashboard.get_overview(session, seller)`: UX-3 o‘qish modeli; matn, `has_subscription`, `can_create_ad`, `ads_count`. `/start` va `sp:menu` shu orqali bir xil ma’lumot oladi; `ads_used` e’lonlar agregatidan qayta hisoblanmaydi. O‘qish paytida avtomatik qaror/obuna berilmaydi.
 - `application_service`: `precheck/submit/pending_for/list_pending/count_pending/decide/approve_manually`; pending UNIQUE, AdminRole.ADMIN+, CAS va eski sotuvchi holati tekshiruvi. `notify_application_admins/result` **faqat commitdan keyin**; `SellerStatus.PENDING` ariza holati emas.
 - `payment_service`: `create_method/update_method/move_method/choose_method`,
   `submit_receipt` (hash + dublikat belgisi), `list_payments/count_payments`,
@@ -652,11 +679,12 @@ oladi, lekin o'zgartira olmaydi; e'lonlarni moderatsiya qila oladi.
 
 ## 8. Qolgan ishlar
 
-### Phase 0–9, limit/yo‘riqnoma va UX-1/2 kod/oflayn ✅ — bajarildi
+### Phase 0–9, limit/yo‘riqnoma va UX-1/2/3 kod/oflayn ✅ — bajarildi
 
 Phase 8/9ga alohida ruxsat berilgan; limit/yo‘riqnomadan keyin foydalanuvchi
-UX-1/2/3ning barchasiga birgalikda ruxsat berdi. UX-1/2 bajarildi; UX-3
-kabineti navbatda. Jonli sinov/deploy bu ruxsat doirasida emas. Testlar yuqoridagi §4–5da. Majburiy kanal
+UX-1/2/3ning barchasiga birgalikda ruxsat berdi va ketma-ket bajarildi.
+Keyingi UX-4/boshqa bosqich uchun yangi ruxsat kerak. Jonli sinov/deploy bu
+ruxsat doirasida emas. Testlar yuqoridagi §4–5da. Majburiy kanal
 nomi hali berilmagan: admin Phase 7 panelida kiritadi, hech qaysi kanal
 avtomatik tanlanmagan.
 
@@ -690,6 +718,7 @@ bosqichdan oldin alohida ruxsat** qoidasi o‘z kuchida.
 
 1. ⚠️ **Foydalanuvchi aniq ruxsatisiz kod yozilmaydi.** Har bosqich oxirida: hisobot → ruxsat so'rash → keyingi bosqich.
    Kichik tuzatishlar ham **shu bosqich ichida** qilinadi, lekin yangi bosqichga o'tilmaydi.
+   UX-1/2/3ning barchasiga berilgan ruxsat 2026-10-16da bajarilib bo‘ldi; UX-4ga tatbiq etilmaydi.
 2. **Minimal tuzatish** tamoyili: mavjud kodni qayta yozishdan ko'ra aniq tuzatish afzal.
 3. **Yangi shoxobcha/PR ochilmaydi** — faqat chatning shoxobchasida ishlanadi va `git push` qilinadi.
 4. **`AVTO_BOT/` tegilmaydi** (boshqa loyiha, alohida token/baza).
@@ -706,9 +735,10 @@ bosqichdan oldin alohida ruxsat** qoidasi o‘z kuchida.
 ```
 Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md, REJA.md,
 docs/DEPLOY.md va docs/VIDEO_SENARIY.md fayllarini o'qing: Phase 0–9 kod/oflayn
-ishlar, limit/yo‘riqnoma va UX-1/2 tugagan, 384 test o'tgan. UX-2da oddiy
+ishlar, limit/yo‘riqnoma va UX-1/2/3 tugagan, 393 test o'tgan. UX-2da oddiy
 /start ochiq, shaxsiy ariza tasdiqlansa faqat sotuvchi paneli ochiladi;
-UX-3 sotuvchi kabineti shu suhbatdagi umumiy ruxsat doirasida navbatda.
+UX-3da sotuvchi kabinetida obuna limiti, e'lonlar va oxirgi chek jamlanadi.
+Keyingi bosqich yoki jonli sinov oldidan mendan alohida ruxsat so'rang.
 Kod `arena/18e1094b-4x40in-bot` shoxobchasida;
 main'ga va AVTO_BOT'ga tegmang. Joriy shoxobchani almashtirmang, yangi
 shoxobcha yoki PR ochmang. Jonli PostgreSQL/Redis/Telegram/bank, TLS, real

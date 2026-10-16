@@ -84,6 +84,22 @@ Paneldagi emoji raqamlar — joriy hisoblagich, tugmani «🔄 Yangilash» bilan
 
 **Sotuvchilar (qo‘lda):** «➕ Sotuvchi qo‘shish» → sotuvchining **raqamli Telegram ID**si (`/id`) → ism/do‘kon → telefon (`-` mumkin) → kontakt (`-` mumkin). Ochiq ariza bo‘lsa qo‘lda qo‘shish uni bir qarorda yopadi; eski tasdiq callbacki qayta seller/DM yaratmaydi. Bloklangan yoki o‘chirilgan sotuvchi yangi ariza bilan cheklovni chetlab o‘tolmaydi; admin qo‘lda holatini tekshiradi. Sotuvchi botga shaxsiy `/start` bosgan bo‘lsin, shunda unga xabar boradi. Ro‘yxatda holat filtrlari bor; kartada «💳 Tarif berish» → faol tarifni tanlash bilan obuna **darhol** beriladi: bir xil tarif bo‘lsa muddat/limit qo‘shiladi, boshqasi bo‘lsa yangisi bugundan boshlanadi. «➕ Muddatni uzaytirish (+30 kun)» ham bir bosishda bajariladi; «⏱ Muddat qo‘lda» — 1–36500 qo‘shimcha kun; «📢 Limit qo‘lda» — 0–1000000 yangi jami limit (ishlatilgan son o‘zgarmaydi). «✅ Tasdiqlangan», «📝 Profil», «🚫 Bloklash» (sabab bilan), «✅ Blokdan chiqarish», «🕘 Obunalar tarixi» mavjud. Kartadagi «✅ Tasdiqlangan» belgisi (profil is_verified) ariza qarori bilan bir xil emas. Bloklash sotuvchi panelini yopadi va e’lonlarini to‘xtatadi; oddiy sinov uchun bloklash/o‘chirishdan foydalanmang.
 
+**UX-3 sotuvchi kabineti:** sotuvchi shaxsiy `/start` yoki «◀️ Kabinetga»dan
+faol obuna va uning `ads_used/ads_limit` miqdori, holat bo‘yicha e’lonlar,
+**oxirgi** chek va keyingi qadamni ko‘radi. E’lonlar soni tarixiy/qoralamalarni
+ham sanaydi, shuning uchun u limit ishlatilgani bilan majburan teng emas.
+Chek «tekshiruvda/rad/tasdiqlandi» bo‘lishi sotuvchilik arizasidan mustaqil:
+faol obuna yo‘q bo‘lsa tasdiqlangan eski chek ham yangi e’lon berolmaydi.
+Tarifsiz sotuvchi «Mening e’lonlarim» va «To‘lovlarim»ni ko‘radi, lekin yangi
+e’lon tugmasi ko‘rsatilmaydi; eski callback servisda qayta tekshiriladi.
+«👤 Aloqa ma’lumotlari» sotuvchining o‘ziga shaxsiy chatda read-only: nom,
+telefon yoki aloqa o‘zgarsa admin profilida tuzating; e’londagi aloqani esa
+sotuvchi e’lon kartasida alohida tahrirlaydi. Bloklangan sotuvchi panelga kira
+olmaydi, `/start`dan yordam manzilini ko‘radi. E’lon ustasi/chek rasmi
+kutishidagi sotuvchi `/start` bossa eski FSM tozalanib kabinetga qaytadi;
+qoralama e’lon yozuvi saqlansa «Mening e’lonlarim»da ko‘radi. Bu ekran **tarif berish yoki
+chekni tasdiqlash amali emas** — adminning mavjud qarorlari alohida qoladi.
+
 ## 8. «✅ Moderatsiya», «📢 E’lonlar» va joylash navbati
 
 Sotuvchi shaxsiy panelda toifa, sarlavha, tavsif, narx, aloqa va rasmlarni kiritib e’lon yuboradi. Toifada moderatsiya yoqilgan bo‘lsa:

@@ -330,7 +330,7 @@ class Permission(Base, TimestampMixin):
 #  4.3. SOTUVCHILAR, TARIFLAR, OBUNALAR
 # ═══════════════════════════════════════════════════════════════════════
 class Seller(Base, TimestampMixin):
-    """Sotuvchilar (faqat admin qo'shadi)."""
+    """Sotuvchilar (admin qo'lda qo'shadi yoki arizani tasdiqlaydi)."""
 
     __tablename__ = "sellers"
 

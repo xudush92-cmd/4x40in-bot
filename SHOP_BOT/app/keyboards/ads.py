@@ -9,7 +9,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import AdStatus
 from app.db.models import Ad, Category
-from app.keyboards.callbacks import AdCB
+from app.keyboards.callbacks import AdCB, SellerPanelCB
 from app.keyboards.common import nav_row
 from app.services.ad_service import filter_label
 from app.utils.text import truncate
@@ -51,13 +51,13 @@ def ads_list_kb(
     page: int,
     total_pages: int,
     status: str = "all",
+    can_create_ad: bool = True,
 ) -> InlineKeyboardMarkup:
-    """«Mening e'lonlarim» ro'yxati."""
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(text="➕ Yangi e'lon", callback_data=AdCB(action="new").pack()),
-        ]
-    ]
+    """«Mening e'lonlarim» ro'yxati: ro'yxat tarifsiz ham ko'rinadi."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if can_create_ad:
+        rows.append([InlineKeyboardButton(text="➕ Yangi e'lon",
+                                         callback_data=AdCB(action="new").pack())])
 
     for ad in ads:
         badge = {
@@ -90,6 +90,8 @@ def ads_list_kb(
         rows.append(nav)
 
     rows.extend(filters_row(current=status))
+    rows.append([InlineKeyboardButton(text="◀️ Kabinetga",
+                                      callback_data=SellerPanelCB(action="menu").pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

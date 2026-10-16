@@ -12,43 +12,38 @@ from app.keyboards.callbacks import GuideCB, SellerPanelCB
 from app.utils.text import truncate
 
 
-def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0) -> InlineKeyboardMarkup:
-    """Asosiy sotuvchi menyusi."""
+def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0,
+                   can_create_ad: bool | None = None) -> InlineKeyboardMarkup:
+    """Eski callback'lar saqlanadi; e'lonlar ro'yxati tarifsiz ham ochiq.
+
+    `has_subscription` eski chaqiruvchilar uchun qoldirilgan. Yangi ekran
+    e'lon yaratish tugmasini `can_publish` servisi natijasi bilan boshqaradi;
+    to'g'ridan-to'g'ri callback'da ham servis qayta tekshiradi.
+    """
+    if can_create_ad is None:
+        can_create_ad = has_subscription
     rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(
-                text="📅 Mening tarifim", callback_data=SellerPanelCB(action="tariff").pack()
-            )
-        ]
+        [InlineKeyboardButton(
+            text=f"📢 Mening e'lonlarim ({ads_count})",
+            callback_data=SellerPanelCB(action="ads").pack(),
+        )],
     ]
-
-    if has_subscription:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"📢 Mening e'lonlarim ({ads_count})",
-                    callback_data=SellerPanelCB(action="ads").pack(),
-                )
-            ]
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="➕ Yangi e'lon", callback_data=SellerPanelCB(action="new_ad").pack()
-                )
-            ]
-        )
-
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="💳 Tariflarni ko'rish / olish", callback_data=SellerPanelCB(action="tariffs").pack()
-            ),
-            InlineKeyboardButton(
-                text="🧾 To'lovlarim", callback_data=SellerPanelCB(action="payments").pack()
-            ),
-        ]
-    )
+    if can_create_ad:
+        rows.append([InlineKeyboardButton(
+            text="➕ Yangi e'lon", callback_data=SellerPanelCB(action="new_ad").pack(),
+        )])
+    rows.extend([
+        [InlineKeyboardButton(
+            text="📅 Mening tarifim", callback_data=SellerPanelCB(action="tariff").pack(),
+        ), InlineKeyboardButton(
+            text="🧾 To'lovlarim", callback_data=SellerPanelCB(action="payments").pack(),
+        )],
+        [InlineKeyboardButton(
+            text="💳 Tariflarni ko'rish / olish", callback_data=SellerPanelCB(action="tariffs").pack(),
+        ), InlineKeyboardButton(
+            text="👤 Aloqa ma'lumotlari", callback_data=SellerPanelCB(action="profile").pack(),
+        )],
+    ])
     rows.append(
         [
             InlineKeyboardButton(
@@ -119,4 +114,13 @@ def back_to_menu_kb() -> InlineKeyboardMarkup:
     )
 
 
-__all__ = ["back_to_menu_kb", "seller_menu_kb", "tariff_screen_kb", "tariffs_catalog_kb"]
+def seller_profile_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="☎️ O'zgartirish uchun yordam",
+                              callback_data=SellerPanelCB(action="support").pack())],
+        [InlineKeyboardButton(text="◀️ Kabinetga", callback_data=SellerPanelCB(action="menu").pack())],
+    ])
+
+
+__all__ = ["back_to_menu_kb", "seller_menu_kb", "seller_profile_kb",
+           "tariff_screen_kb", "tariffs_catalog_kb"]
