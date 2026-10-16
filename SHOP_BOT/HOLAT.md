@@ -233,7 +233,7 @@ Eski faol cleaner oldingi sozlamasini saqlaydi (`dry_run=false`), yangi guruh
 dublikat migratsiya/seed o'tgan; haqiqiy PostgreSQL/Redis, Telegram, ko'p process
 race va Privacy Mode'ni ishlab turgan guruhda sinash deploy oldidan qoladi.
 
-### ✅ Phase 7 — Sanoqchi + majburiy kanal (guruh bo'yicha to'liq sozlanadi)
+### ✅ Phase 7 — Sanoqchi + ixtiyoriy kanal sharti (guruh bo'yicha to'liq sozlanadi)
 Admin paneli → «🧮 Sanoqchi» → guruh: yoqish/o'chirish, hozir N (0–1000),
 qolish muddati (0–100800 min), kunlik limit (1–1000), shaxsiy havola limiti
 (1–1000), havola yoki qo'lda qo'shish manbasi, kanal sharti va DM alohida.
@@ -265,6 +265,22 @@ foydalanuvchi bo'yicha +/-/0 va `counter_audit`/`action_log`. Counter qo'ygan
 mute shart bajarilganda yoki funksiya o'chirilganda, boshqa faol posbon/admin
 cheklovi bo'lmasa, schedulerda yechiladi; bot huquqi yo'qolsa qo'lda aralashuv
 kerak bo'lishi mumkin.
+
+**Guruhda vaqtinchalik izoh (2026-10-16, tasdiqlangan tuzatish):** jonli SOFT
+xabarni o'chirgach yoki HARD kirishda mute muvaffaqiyatli qo'yilgach,
+a'zoga sabab va botdagi shaxsiy `/start` → `/takliflarim` yo'li guruhda
+ko'rsatiladi; hatto DM botga `/start` bosilmagani uchun yetmasa ham. Shaxsiy
+0/N ko'rsatilmaydi, faqat guruhning ochiq N talabi; kanal faqat guruhning
+obuna sharti yoqilgan va kanal sozlangan bo'lsa tilga olinadi. Har a'zo/guruhda
+60 soniyalik spam cheklovi bor. Mavjud `group_message_actions`da alohida
+`counter_notice` rezervatsiyasi (yangi jadval/migratsiya **yo'q**), 15 soniya
+`due_at` va poster/all rejimidagi 1s CAS job bilan o'chadi; boshqa Phase 6
+navbatiga aralashmaydi. Restartda saqlangan `pending` navbat tiklanadi,
+`running` delete 45s dan keyin qayta tekshiriladi; `kill_switch` yoqilsa ham
+avval yuborilgan izoh tozalanadi. Poster ishlamasa kechikadi, Telegram delete
+huquqi yo'qolsa/API xato bersa yoki sendMessage javobi bazaga yozilishidan
+oldin process yiqilsa 15s o'chirishni kafolatlab bo'lmaydi. Haqiqiy Telegram va
+PostgreSQL/Redis bilan qabul sinovi hali o'tmagan.
 
 **Migratsiya:** `4f30ae7c912b`: `counter_settings`ga `dry_run` va havola limiti,
 3 yangi jadval, faol havola uchun qisman unique indeks. Oldindan ikki faol
@@ -458,7 +474,7 @@ hamda keyingi qadamlarni qamrab oladi. Bu jonli Telegram/bank/PG sinovi emas.
 
 ---
 
-## 5. Test holati (393 test)
+## 5. Test holati (400 test)
 
 | Test fayli | Qamrov | Soni |
 |---|---|---|
@@ -500,7 +516,15 @@ hamda keyingi qadamlarni qamrab oladi. Bu jonli Telegram/bank/PG sinovi emas.
 | `tests/test_ux2_applications.py` | UX-2: ariza FSM, rol, dublikat/UNIQUE, kutish/limit, qaror/audit/DM, referal va qo‘lda qo‘shish | 18 |
 | `tests/test_ux2_migration.py` | UX-2: eski sotuvchi saqlanadi, yangi pending UNIQUE, downgrade/upgrade/check | 1 |
 | `tests/test_ux3_dashboard.py` | UX-3: /start/kabinet, chek/e’lon/obuna statusi, limit, navigatsiya, rol/HTML va FSMdan /start | 9 |
-| **JAMI** | | **393** |
+| `tests/test_counter_notices.py` | Guruhdagi SOFT/HARD izoh, DM muvaffaqiyatsizligi, 15s navbat, 60s cooldown, istisno, kanal ixtiyoriyligi, retry/restart | 7 |
+| **JAMI** | | **400** |
+
+**15s guruh izohi tekshiruvi (2026-10-16):** 400/400 oflayn pytest;
+`compileall` va o'zgargan Python fayllarida Ruff (bazadagi avvalgi
+`models.py` UP037/UP045 istisnolari bilan) o'tdi; vaqtinchalik SQLite'da
+`alembic upgrade head` + `check` («No new upgrade operations detected.»),
+seed ×2: 2 admin / 26 sozlama / 30 matn / 3 tarif, ikkinchi safar 0 yangi.
+Replitga chiqarilmadi, haqiqiy Telegram/PostgreSQL/Redis qabul sinovi emas.
 
 **Phase 7 tekshiruvi (tarix):** 319 offline test o'tdi; `compileall` va Phase 7 o'zgartirilgan
 fayllarda Ruff toza (`models.py`da avvaldan mavjud UP037/UP045 qoidalari
@@ -566,7 +590,7 @@ SHOP_BOT/
 │   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
 │   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 393 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 400 test (+ conftest.py, fake_telegram.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
 ├── alembic/versions/c8a21b6d0f42_phase6_xabar_siyosati.py
 ├── alembic/versions/4f30ae7c912b_phase7_sanoqchi.py
@@ -735,7 +759,8 @@ bosqichdan oldin alohida ruxsat** qoidasi o‘z kuchida.
 ```
 Salom! SHOP-BOT loyihasini davom ettiramiz. Avval SHOP_BOT/HOLAT.md, REJA.md,
 docs/DEPLOY.md va docs/VIDEO_SENARIY.md fayllarini o'qing: Phase 0–9 kod/oflayn
-ishlar, limit/yo‘riqnoma va UX-1/2/3 tugagan, 393 test o'tgan. UX-2da oddiy
+ishlar, limit/yo‘riqnoma, UX-1/2/3 va guruhdagi 15s sanoqchi izohi tugagan,
+400 test o'tgan. UX-2da oddiy
 /start ochiq, shaxsiy ariza tasdiqlansa faqat sotuvchi paneli ochiladi;
 UX-3da sotuvchi kabinetida obuna limiti, e'lonlar va oxirgi chek jamlanadi.
 Keyingi bosqich yoki jonli sinov oldidan mendan alohida ruxsat so'rang.

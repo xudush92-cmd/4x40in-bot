@@ -46,6 +46,7 @@ from app.db.models import (
 )
 from app.filters import GroupChat, PrivateChat
 from app.keyboards.callbacks import CounterCB
+from app.services import counter_notice_service as notices
 from app.services import counter_service as counters
 from app.services import group_policy_service as policy
 from app.services.group_service import get_group_by_chat_id, pause_group
@@ -371,7 +372,9 @@ async def _joined(bot: Bot, session: AsyncSession, group: Group, user_id: int,
         # qo'shiluvchini darhol xato tekshiruvda jazolamaymiz (fail open).
         need = await _needed(bot, session, group, setting, user_id, fresh=True)
         if need and need.issue in {"not_subscribed", "counter_not_done"}:
-            await _restrict(bot, group.id, user_id, need.issue)
+            if await _restrict(bot, group.id, user_id, need.issue):
+                await notices.send_notice(bot, group_id=group.id, user_id=user_id,
+                                          issue=need.issue)
 
 
 @router.chat_member()
@@ -614,6 +617,10 @@ async def check_message(message: Message, session: AsyncSession, bot: Bot) -> bo
                                               "counter_issue": need.issue}))
     if setting.mode == CounterMode.HARD:
         await _restrict(bot, group_id, message.from_user.id, need.issue)
+    # DM botga /start bosilmagan bo'lsa yetmasligi mumkin; sabab guruhning
+    # o'zida ham ko'rinsin. Navbat uni 15 sekunddan keyin o'chiradi.
+    await notices.send_notice(bot, group_id=group_id, user_id=message.from_user.id,
+                              issue=need.issue, deleted=True)
     try:
         bot_name = (await bot.get_me()).username or ""
         destination = f"https://t.me/{bot_name}" if bot_name else "botdagi /takliflarim"

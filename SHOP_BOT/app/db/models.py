@@ -928,8 +928,9 @@ class Restriction(Base, TimestampMixin):
 class GroupMessageAction(Base, TimestampMixin):
     """Har xabarga yagona qaror: webhook dublikatini va ikki worker amalini to'sadi.
 
-    `running` natijasi noma'lum qolsa avtomatik qayta urinilmaydi: Telegram API'da
-    idempotency key yo'q, noto'g'ri takroriy jazo xavfli.
+    Guard/cleaner `running` natijasi noma'lum qolsa qayta urinilmaydi: Telegram
+    API'da idempotency key yo'q. Botning o'z `counter_notice` xabarini o'chirish
+    alohida, idempotent navbat bilan qayta tekshiriladi.
     """
 
     __tablename__ = "group_message_actions"
@@ -942,10 +943,10 @@ class GroupMessageAction(Base, TimestampMixin):
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), index=True)
     message_id: Mapped[int] = mapped_column(BigInteger)
     user_id: Mapped[int | None] = mapped_column(BigInteger)
-    source: Mapped[str] = mapped_column(String(16))  # guard | cleaner
+    source: Mapped[str] = mapped_column(String(16))  # guard | cleaner | counter | counter_notice
     kind: Mapped[str] = mapped_column(String(32))
     planned_action: Mapped[str] = mapped_column(String(16))  # log | delete | warn | mute | ban
-    status: Mapped[str] = mapped_column(String(16))  # pending | running | done | failed | skipped
+    status: Mapped[str] = mapped_column(String(16))  # sending | pending | running | done | failed | skipped
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
     error: Mapped[str | None] = mapped_column(String(500))

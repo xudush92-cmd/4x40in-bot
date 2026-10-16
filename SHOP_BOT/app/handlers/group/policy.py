@@ -105,11 +105,13 @@ async def claim_due_actions(*, limit: int = 100) -> list[int]:
     async with session_scope() as session:
         due = (await session.execute(select(GroupMessageAction.id).where(
             GroupMessageAction.status == "pending", GroupMessageAction.due_at <= utcnow(),
+            GroupMessageAction.source != "counter_notice",  # o'z alohida 1s navbati bor
         ).order_by(GroupMessageAction.due_at, GroupMessageAction.id).limit(limit))).scalars().all()
         claimed: list[int] = []
         for action_id in due:
             result = await session.execute(update(GroupMessageAction).where(
-                GroupMessageAction.id == action_id, GroupMessageAction.status == "pending"
+                GroupMessageAction.id == action_id, GroupMessageAction.status == "pending",
+                GroupMessageAction.source != "counter_notice",
             ).values(status="running").returning(GroupMessageAction.id))
             if result.scalar_one_or_none() is not None:
                 claimed.append(action_id)

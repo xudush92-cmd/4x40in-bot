@@ -16,6 +16,7 @@ from app.config import Settings
 from app.scheduler.jobs import (
     broadcast_tick_job,
     counter_job,
+    counter_notice_cleanup_job,
     daily_stats_job,
     expire_subscriptions_job,
     group_cleanup_job,
@@ -69,6 +70,13 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             args=[bot],
             id="group_cleanup",
             name="Kechiktirilgan guruh xabarlarini tozalash",
+        )
+        scheduler.add_job(
+            counter_notice_cleanup_job,
+            IntervalTrigger(seconds=1),
+            args=[bot],
+            id="counter_notice_cleanup",
+            name="Sanoqchi izohlarini 15 soniyada o'chirish",
         )
         scheduler.add_job(
             counter_job,

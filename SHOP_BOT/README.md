@@ -125,7 +125,7 @@ Phase 6 siyosati bilan bitta xabar bo'yicha birlashtirilgan; guruhlar mustaqil.
 Phase 9 uchun alohida ruxsat olingan, oflayn ishlar bajarilgan; jonli qabul
 bandlari [yo‘riqnomada](docs/DEPLOY.md) ochiq qayd etilgan.
 
-### Phase 7 — sanoqchi va majburiy kanal ✅
+### Phase 7 — sanoqchi (kanal sharti ixtiyoriy) ✅
 
 | Ish | Holat |
 |---|---|
@@ -151,8 +151,15 @@ alohida; o'zgartirish bir guruhdan boshqasiga o'tmaydi.
 «🔗 Havola olish/yangilash» → uni odamga yuborish. Havola shaxsiy chatdagina
 ko'rsatiladi. Hard mute olgan a'zolar guruhda yozolmagani uchun botga /start
 bosib, «✅ Tekshirdim» tugmasini shaxsiy chatda ishlatsin; imkon bo'lsa
-guruh tavsifida bot manzilini yozib qo'ying. Telegram a'zoligi noma'lum bo'lsa
-jazo berilmaydi. Kanal bot adminligi yo'qolsa jazo to'xtaydi.
+guruh tavsifida bot manzilini yozib qo'ying. Jonli SOFT xabarni o'chirsa yoki
+HARD kirishda mute muvaffaqiyatli qo'ysa, bot sababni guruhda ham ko'rsatadi:
+«Botni ochish» → shaxsiy `/start` → `/takliflarim`. Shaxsiy hisob guruhga
+chiqarilmaydi. Bitta a'zo/guruhga ko'pi bilan **60 soniyada bir marta** izoh;
+DB navbati orqali taxminan **15 soniyadan keyin** o'chadi (poster yoki
+`RUN_MODE=all`, 1 sekundlik job). DM yetmasligi guruh izohini to'xtatmaydi.
+Telegram a'zoligi noma'lum bo'lsa jazo/izoh yo'q. Kanal bot adminligi yo'qolsa
+jazo to'xtaydi. Poster o'chsa delete kechikadi; API/DB xatosi yoki bot huquqi
+yo'qolsa avtomatik o'chirish kafolatlanmaydi.
 
 **Chegara:** haqiqiy Telegram/supergroup/kanal, botning Privacy Mode'i va
 PostgreSQL/Redis parallel worker sinovi deploydan oldin shart. Eski dublikat
@@ -301,7 +308,7 @@ Bot guruhlarda **to'liq** ishlashi uchun (REJA.md 1.2):
 | 1 | **Privacy Mode'ni o'chirish** — aks holda bot guruhdagi oddiy xabarlarni ko'rmaydi (posbon/tozalovchi/sanoqchi ishlamaydi) | @BotFather → `/setprivacy` → **Disable** → botni guruhdan chiqarib, qayta qo'shish |
 | 2 | Bot **admin** bo'lishi | Guruh → Administratorlar → botga: ✏️ Xabarlarni o'chirish, 🚫 A'zolarni cheklash, 🔗 Taklif havolalari |
 | 3 | Guruh **supergroup** bo'lishi | Oddiy guruhda mute/ban ishlamaydi: Sozlamalar → Chat history → Convert to supergroup |
-| 4 | Majburiy kanalda bot **admin** bo'lishi | Kanal → Administratorlar → bot qo'shish |
+| 4 | **Faqat ixtiyoriy kanal sharti yoqilsa:** o'sha kanalda bot **admin** bo'lishi | Kanal → Administratorlar → bot qo'shish; kanal shart bo'lmasa kerak emas |
 | 5 | Bot qo'shilganda adminlarga xabar keladi | Xabardagi ro'yxat bo'yicha tekshiring |
 
 ---

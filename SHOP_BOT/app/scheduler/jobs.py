@@ -42,6 +42,7 @@ from app.services import (
     seller_service,
     subscription_service,
 )
+from app.services.counter_notice_service import process_due_notices
 from app.services.group_service import apply_rights_check, check_group_rights
 from app.services.notify import notify_admins, save_error
 from app.services.settings_service import settings_service
@@ -89,6 +90,11 @@ async def posting_tick_job(bot: Bot) -> None:
 async def group_cleanup_job(bot: Bot) -> None:
     """Har 5 sekundda kechiktirilgan tozalash; kelajakdagi postlarni ushlamaydi."""
     await process_due_cleanup(bot)
+
+
+async def counter_notice_cleanup_job(bot: Bot) -> None:
+    """Har sekundda sanoqchining 15 soniyalik guruh izohlarini o'chir."""
+    await process_due_notices(bot)
 
 
 async def counter_job(bot: Bot) -> None:
@@ -146,7 +152,7 @@ async def retention_job() -> None:
         r3 = await session.execute(delete(CleanupLog).where(CleanupLog.created_at < cleanup_cutoff))
         r4 = await session.execute(delete(GroupMessageAction).where(
             GroupMessageAction.created_at < log_cutoff,
-            GroupMessageAction.status.in_({"done", "failed", "skipped"}),
+            GroupMessageAction.status.in_({"done", "failed", "skipped", "sending"}),
         ))
         r5 = await session.execute(delete(Violation).where(Violation.created_at < log_cutoff))
         r6 = await session.execute(delete(CounterMessageCheck).where(
@@ -292,6 +298,7 @@ async def _send_to_seller(bot: Bot, user_id: int, text: str) -> bool:
 
 __all__ = [
     "counter_job",
+    "counter_notice_cleanup_job",
     "daily_stats_job",
     "expire_subscriptions_job",
     "heartbeat_job",
