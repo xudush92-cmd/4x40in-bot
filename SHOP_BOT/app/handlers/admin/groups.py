@@ -41,6 +41,7 @@ from app.keyboards.groups import (
     cancel_kb,
     delete_confirm_kb,
     group_card_kb,
+    group_diagnostic_kb,
     group_features_kb,
     group_settings_kb,
     groups_list_kb,
@@ -71,7 +72,7 @@ router = Router(name="admin:groups")
 router.message.filter(IsAdmin(AdminRole.ADMIN))
 router.callback_query.filter(IsAdmin())
 router.callback_query.middleware(ReadOnlyForModerator(
-    {"list", "card", "add", "matrix", "feats", "settings", "cats"},
+    {"list", "card", "add", "matrix", "feats", "settings", "cats", "diagnostic"},
 ))
 
 PAUSED_REASONS = {
@@ -283,6 +284,20 @@ async def on_list(callback: CallbackQuery, callback_data: GroupCB, session: Asyn
 async def on_card(callback: CallbackQuery, callback_data: GroupCB, session: AsyncSession) -> None:
     ok = await render_card(callback, session, callback_data.group_id)
     await alert(callback, "" if ok else "Guruh topilmadi")
+
+
+@router.callback_query(GroupCB.filter(F.action == "diagnostic"))
+async def on_diagnostic(callback: CallbackQuery, callback_data: GroupCB,
+                        session: AsyncSession, role: str | None) -> None:
+    from app.services.group_diagnostics import diagnostic_text
+
+    group = await group_service.get_group(session, callback_data.group_id)
+    if group is None:
+        await alert(callback, "Guruh topilmadi", show=True)
+        return
+    await render(callback, await diagnostic_text(session, group),
+                 group_diagnostic_kb(group.id, can_refresh=role in {AdminRole.ADMIN, AdminRole.SUPER}))
+    await alert(callback, "")
 
 
 @router.callback_query(GroupCB.filter(F.action == "add"))

@@ -619,6 +619,8 @@ async def test_admin_menu_shows_seller_counter(session, tg) -> None:
     await _prepare(session, name="Alfa")
 
     await _feed(session, dp, bot, 1, callback_update(AdminCB(action="menu").pack()))
+    assert "🛒 Savdo" in str(fake.called("EditMessageText")[-1]["reply_markup"])
+    await _feed(session, dp, bot, 2, callback_update(AdminCB(action="hub", value="sales").pack()))
     markup = fake.called("EditMessageText")[-1]["reply_markup"]
     labels = [button["text"] for row in markup["inline_keyboard"] for button in row]
     assert any(label.startswith("🛒 Sotuvchilar · 1") for label in labels)

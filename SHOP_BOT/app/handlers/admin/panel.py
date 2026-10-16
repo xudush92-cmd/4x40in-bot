@@ -3,35 +3,90 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import AdminRole
+from app.db.models import ActionLog
 from app.filters import IsAdmin
 from app.keyboards import SECTION_PHASES, SECTION_TITLES, admin_main_kb
+from app.keyboards.admin import HUB_SECTIONS, admin_all_sections_kb, admin_hub_kb
 from app.keyboards.callbacks import AdminCB
 from app.services.stats_service import get_menu_counts
+from app.utils.text import escape_html
 from app.utils.tg import alert, render
+from app.utils.time import fmt_dt
 
 router = Router(name="admin:panel")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
-MENU_TEXT = (
-    "🛠 <b>Boshqaruv paneli</b>\n"
-    "━━━━━━━━━━━━━━━━━━━━\n"
-    "Kerakli bo'limni tanlang.\n\n"
-    "<i>Tugmalardagi raqamlar — joriy holat (masalan guruhlar soni). "
-    "Hali tayyor bo'lmagan bo'limlar qaysi bosqichda qo'shilishini aytadi.</i>"
-)
+def menu_text(counts: dict[str, int], role: str | None) -> str:
+    """Navbatda faqat qaror kutayotgan ariza/e'lon/chek; xatolar emas."""
+    lines = ["🛠 <b>Boshqaruv paneli</b>", "━━━━━━━━━━━━━━━━━━━━", "📥 <b>Qaror kutayotganlar</b>"]
+    lines.append(f"📢 Moderatsiya: <b>{counts.get('moderation', 0)}</b>")
+    if role in {AdminRole.ADMIN, AdminRole.SUPER}:
+        lines.append(f"🧾 Cheklar: <b>{counts.get('payments', 0)}</b>")
+    lines.append("\n👥 Guruhlar → har bir guruhning joylash/N/kanal/qoidalari alohida.")
+    lines.append("🛒 Savdo · 📢 Kontent · 📊 Nazorat · ⚙️ Tizim")
+    lines.append("<i>Global o'chirgich guruh qoidasini o'zgartirmaydi.</i>")
+    return "\n".join(lines)
+
+
+MENU_TEXT = menu_text({}, AdminRole.SUPER)  # eski importlar uchun
 
 
 @router.callback_query(AdminCB.filter(F.action == "menu"))
 async def show_menu(callback: CallbackQuery, role: str | None, session: AsyncSession) -> None:
     """Asosiy panel ekranini ko'rsatish/yangilash."""
     counts = await get_menu_counts(session)
-    await render(callback, MENU_TEXT, admin_main_kb(role, counts))
+    await render(callback, menu_text(counts, role), admin_main_kb(role, counts))
+    await alert(callback, "")
+
+
+@router.callback_query(AdminCB.filter(F.action == "hub"))
+async def open_hub(callback: CallbackQuery, callback_data: AdminCB,
+                   role: str | None, session: AsyncSession) -> None:
+    key = callback_data.value
+    if key not in HUB_SECTIONS or (key == "sales" and role == AdminRole.MODERATOR):
+        await alert(callback, "⛔️ Bo'lim mavjud emas yoki ruxsat yo'q.", show=True)
+        return
+    counts = await get_menu_counts(session)
+    title, _ = HUB_SECTIONS[key]
+    text = f"{title} — <b>bo'limlar</b>\n\n"
+    if key == "system":
+        text += ("Global pauza (⚙️ Sozlamalar) <b>guruh qoidalarini o'zgartirmaydi</b>. "
+                 "Majburiy kanallarni guruh kartasidan alohida sozlang.")
+    else:
+        text += "Kerakli tugmani tanlang; eski bo'limlar va huquq tekshiruvlari saqlangan."
+    await render(callback, text, admin_hub_kb(key, role, counts))
+    await alert(callback, "")
+
+
+@router.callback_query(AdminCB.filter(F.action == "all"))
+async def open_all(callback: CallbackQuery, role: str | None) -> None:
+    await render(callback, "📚 <b>Barcha tayyor bo'limlar</b>\nEski tugmalar ham ishlaydi.",
+                 admin_all_sections_kb(role))
+    await alert(callback, "")
+
+
+@router.callback_query(AdminCB.filter(F.action == "audit"))
+async def open_audit(callback: CallbackQuery, role: str | None, session: AsyncSession) -> None:
+    if role not in {AdminRole.ADMIN, AdminRole.SUPER}:
+        await alert(callback, "⛔️ Harakatlar tarixini faqat admin ko'radi.", show=True)
+        return
+    history = (await session.execute(select(ActionLog).order_by(ActionLog.id.desc()).limit(15))).scalars().all()
+    lines = ["📋 <b>Harakatlar tarixi</b> (oxirgi 15 amal)"]
+    lines += [f"{fmt_dt(row.created_at)} · {row.actor_id or 'tizim'} · "
+              f"{escape_html(row.action)} · {escape_html(row.entity or '—')} #{row.entity_id or '—'}"
+              for row in history]
+    if not history:
+        lines.append("Hali harakat yo'q.")
+    await render(callback, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="◀️ Nazorat", callback_data=AdminCB(action="hub", value="control").pack())
+    ]]))
     await alert(callback, "")
 
 

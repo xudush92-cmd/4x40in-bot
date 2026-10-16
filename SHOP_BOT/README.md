@@ -9,9 +9,10 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > **[HOLAT.md](HOLAT.md)** — nima bajarilgan, nima qolgan, muhim shartnomalar.
 > Administrator uchun tugma-baqadam amaliy yo‘riqnoma:
 > **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
-> Admin menyusini qayta tartiblash va sotuvchilik arizasi bo‘yicha **taklif (hali botda yo‘q)**:
-> **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**. Uning limit auditi
-> yangilandi: admin belgilaydigan chegaralar ×10, rollarga mos bot yo‘riqnomasi esa joriy qilingan.
+> Admin navigatsiyasi va sotuvchilik arizasi bo‘yicha bosqichlar:
+> **[PANELLAR_VA_ARIZA_REJASI.md](docs/PANELLAR_VA_ARIZA_REJASI.md)**. UX-1 navigatsiyasi,
+> admin belgilaydigan ×10 chegaralar va rollarga mos bot yo‘riqnomasi joriy qilindi;
+> ariza/kabinet bo‘yicha UX-2/3 ishlari navbatdagi bosqichda.
 
 ---
 

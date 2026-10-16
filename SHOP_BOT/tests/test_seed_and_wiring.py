@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from app.db.base import session_scope
 from app.db.models import Admin, BotText, Setting, Tariff
 from app.keyboards import ADMIN_SECTIONS, admin_main_kb, settings_kb
+from app.keyboards.admin import HUB_SECTIONS, admin_all_sections_kb, admin_hub_kb
 from app.keyboards.callbacks import AdminCB
 from app.services.text_service import DEFAULT_TEXTS
 from scripts.seed import SAMPLE_TARIFFS, seed
@@ -74,19 +75,26 @@ def test_dispatcher_registers_routers_and_updates() -> None:
 
 
 def test_admin_keyboard_has_all_sections() -> None:
-    kb = admin_main_kb(role="super")
-    callbacks = [button.callback_data for row in kb.inline_keyboard for button in row]
+    main = admin_main_kb(role="super")
+    callbacks = [button.callback_data for row in main.inline_keyboard for button in row]
+    assert AdminCB(action="section", value="groups").pack() in callbacks
+    for hub in HUB_SECTIONS:
+        assert AdminCB(action="hub", value=hub).pack() in callbacks
 
+    # Eski 19 bo'lim ham «Tizim → Barcha bo'limlar» orqali saqlangan.
+    kb = admin_all_sections_kb(role="super")
+    callbacks = [button.callback_data for row in kb.inline_keyboard for button in row]
     for key, _label, _phase in ADMIN_SECTIONS:
-        expected = AdminCB(action="section", value=key).pack()
-        assert expected in callbacks, f"{key} bo'limi tugmasi yo'q"
+        assert AdminCB(action="section", value=key).pack() in callbacks, key
 
 
 def test_admin_keyboard_hides_admins_for_regular_admin() -> None:
-    kb_admin = admin_main_kb(role="admin")
+    kb_admin = admin_hub_kb("system", role="admin")
     callbacks = [button.callback_data for row in kb_admin.inline_keyboard for button in row]
     assert AdminCB(action="section", value="admins").pack() not in callbacks
-    assert AdminCB(action="section", value="stats").pack() in callbacks
+    assert AdminCB(action="hub", value="control").pack() in {
+        button.callback_data for row in admin_main_kb(role="admin").inline_keyboard for button in row
+    }
 
 
 def test_callback_data_roundtrip() -> None:

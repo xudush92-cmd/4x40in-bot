@@ -46,6 +46,8 @@ python3 -m app.main
 | **Admin** | Guruh/toifa, sotuvchi/tarif, to‘lov, siyosat/sanoqchi, matn, broadcast va boshqa operatsion sozlamalar. Boshqa adminlarning rolini o‘zgartirmaydi. |
 | **Moderator** | «✅ Moderatsiya» va e’lonlarni ko‘rish/qaror qilish. Guruh, toifa, global sozlama, siyosat, sanoqchi, ruxsat, referal va matnlarning ko‘pini **faqat ko‘radi**; navbatni qo‘lda joylay olmaydi, sotuvchi/tarif va to‘lov paneliga kira olmaydi; moliyaviy CSV olmaydi. |
 
+Asosiy menyuda «📥 Qaror kutayotganlar» (faqat moderatsiya va chek), «👥 Guruhlar», «🛒 Savdo», «📢 Kontent», «📊 Nazorat», «⚙️ Tizim» bor. Guruh kartasida «🧮 N kishi» va «📣 Kanal a’zoligi» mustaqil tugmalar; «🔍 Nega ishlamayapti?» saqlangan global/guruh/sinov holati va so‘nggi bot huquqlarini faqat o‘qib ko‘rsatadi, Telegramdagi huquqlarni «🔄 qayta tekshirish» alohida amalga oshiradi. «⚙️ Tizim → 📚 Barcha bo‘limlar»da eski navigatsiya saqlangan.
+
 Paneldagi emoji raqamlar — joriy hisoblagich, tugmani «🔄 Yangilash» bilan qayta chizish mumkin. Amallarda «/cancel» — kiritilayotgan qiymatni bekor qiladi. Tugma eskirgan bo‘lsa `/start` yoki `/admin` bilan panelni qayta oching. **Ko‘rish** va **jonli amalga ruxsat** bir xil narsa emas: xavfli tugmalarni tasdiqlashdan avval guruh nomi va holatini qayta o‘qing.
 
 ## 4. «⚙️ Sozlamalar» — hamma guruhlarga tegishli

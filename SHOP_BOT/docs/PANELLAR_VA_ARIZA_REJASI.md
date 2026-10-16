@@ -1,6 +1,6 @@
 # Boshqaruv panellari, limitlar va sotuvchilik arizasi — loyiha rejasi
 
-**Holat:** UX-0 admin navigatsiyasi, sotuvchilik arizasi va kabinet **hali bot kodiga kiritilmagan reja**. Keyinroq alohida ruxsat bilan so‘ralgan **limitlar ×10 va botdagi rolli yo‘riqnoma tugmalari amalga oshirildi** (quyidagi 3- va 6-bo‘limlar); bu qolgan UX bosqichlarini boshlashga ruxsat bermaydi.
+**Holat:** UX-0 rejasi va keyingi alohida ruxsat bilan **UX-1 admin navigatsiyasi**, limitlar ×10 hamda rolli yo‘riqnoma tugmalari joriy qilindi. Foydalanuvchi 2026-10-16da UX-1/2/3 uchun birgalikda ruxsat berdi; sotuvchilik arizasi (UX-2) va kabinet (UX-3) hali ishda. Jonli Replit/deploy bu ruxsatga kirmaydi.
 
 **Doira:** `SHOP_BOT/`; `AVTO_BOT/`, `main` va jonli Replit muhitiga tegilmaydi.
 

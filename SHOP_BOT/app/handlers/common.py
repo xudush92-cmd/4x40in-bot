@@ -19,6 +19,7 @@ from app.keyboards.seller_panel import seller_menu_kb
 from app.services import broadcast_service, referral_service, seller_service, subscription_service
 from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
+from app.services.stats_service import get_menu_counts
 from app.services.text_service import text_service
 from app.utils.text import escape_html
 from app.utils.tg import alert, render
@@ -59,8 +60,12 @@ async def cmd_start(
         logger.debug("/start deep-link: {} (user {})", payload, message.from_user.id)
 
     if is_admin:
+        from app.handlers.admin.panel import menu_text
+
+        counts = await get_menu_counts(session)
         text = await text_service.get("start.admin", ism=name)
-        await message.answer(text, reply_markup=admin_main_kb(role))
+        await message.answer(text + "\n\n" + menu_text(counts, role),
+                             reply_markup=admin_main_kb(role, counts))
         return
 
     seller = await get_seller(session, message.from_user.id)
@@ -156,14 +161,15 @@ async def cmd_ping(message: Message) -> None:
 
 
 @router.message(Command("admin"))
-async def cmd_admin(message: Message, is_admin: bool, role: str | None) -> None:
+async def cmd_admin(message: Message, is_admin: bool, role: str | None,
+                    session: AsyncSession) -> None:
     if not is_admin:
         await message.answer(await text_service.get("common.not_admin"))
         return
-    await message.answer(
-        "🛠 <b>Boshqaruv paneli</b>\nKerakli bo'limni tanlang:",
-        reply_markup=admin_main_kb(role),
-    )
+    from app.handlers.admin.panel import menu_text
+
+    counts = await get_menu_counts(session)
+    await message.answer(menu_text(counts, role), reply_markup=admin_main_kb(role, counts))
 
 
 @router.message(Command("xabarlar_stop"), PrivateChat())

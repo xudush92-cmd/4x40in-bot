@@ -101,11 +101,13 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
             action="home", group_id=group.id, value="cleaner").pack()),
     ])
     rows.append([
-        InlineKeyboardButton(text="🧮 Sanoqchi", callback_data=CounterAdminCB(
+        InlineKeyboardButton(text="🧮 N kishi sharti", callback_data=CounterAdminCB(
             action="home", group_id=group.id).pack()),
-        InlineKeyboardButton(text="🔑 Guruh ruxsatlari", callback_data=PolicyCB(
-            action="perm", group_id=group.id).pack()),
+        InlineKeyboardButton(text="📣 Kanal a'zoligi", callback_data=CounterAdminCB(
+            action="channels", group_id=group.id).pack()),
     ])
+    rows.append([InlineKeyboardButton(text="🔑 Guruh ruxsatlari", callback_data=PolicyCB(
+        action="perm", group_id=group.id).pack())])
     rows.append(
         [
             InlineKeyboardButton(
@@ -114,14 +116,12 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
             )
         ]
     )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="🔍 Huquqlarni tekshirish",
-                callback_data=GroupCB(action="refresh", group_id=group.id).pack(),
-            )
-        ]
-    )
+    rows.append([
+        InlineKeyboardButton(text="🔍 Nega ishlamayapti?", callback_data=GroupCB(
+            action="diagnostic", group_id=group.id).pack()),
+        InlineKeyboardButton(text="🔄 Huquqlarni tekshirish", callback_data=GroupCB(
+            action="refresh", group_id=group.id).pack()),
+    ])
     rows.append(
         [
             InlineKeyboardButton(
@@ -138,6 +138,20 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
             )
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def group_diagnostic_kb(group_id: int, *, can_refresh: bool) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🔄 Holatni yangilash", callback_data=GroupCB(
+            action="diagnostic", group_id=group_id).pack())],
+    ]
+    if can_refresh:
+        rows.append([InlineKeyboardButton(text="🔍 Telegram huquqlarini qayta tekshirish",
+                                          callback_data=GroupCB(action="refresh", group_id=group_id).pack())])
+    rows.append([InlineKeyboardButton(text="◀️ Guruh kartasi", callback_data=GroupCB(
+        action="card", group_id=group_id).pack())])
+    rows.append([MENU_BUTTON])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
