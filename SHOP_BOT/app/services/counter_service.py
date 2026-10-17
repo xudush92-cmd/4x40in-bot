@@ -16,9 +16,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.constants import CounterMode, InviteSource, PermissionKind
+from app.constants import CounterMode, InviteSource, PermissionKind, SellerStatus, SubscriptionStatus
 from app.db.models import (
     ActionLog,
+    Category,
     CounterAudit,
     CounterJoinRequest,
     CounterSetting,
@@ -27,6 +28,9 @@ from app.db.models import (
     InviteEvent,
     InviteLink,
     RequiredChannel,
+    Seller,
+    Subscription,
+    Tariff,
 )
 from app.services.group_policy_service import permission_kinds
 from app.utils.text import clean_text
@@ -44,8 +48,11 @@ def safe_counter(group_id: int) -> CounterSetting:
     return CounterSetting(
         group_id=group_id, enabled=False, dry_run=True, required_n=3, mode=CounterMode.SOFT,
         min_stay_minutes=10, max_per_day=20, link_member_limit=20,
-        count_sources={"link": True, "added_by": False},
-        require_subscription=False, notify_inviter=True,
+        # Yangi guruhga Telegramdagi «A'zo qo'shish» yetarli; bot havolasi
+        # yoki uning invite huquqi shart emas. Eski guruhning manbalari
+        # saqlanadi, linkni admin xohlasa alohida yoqishi mumkin.
+        count_sources={"link": False, "added_by": True},
+        require_subscription=False, notify_inviter=False,
     )
 
 
@@ -121,6 +128,46 @@ async def edit_counter(session: AsyncSession, group: Group, field: str, value: o
         ))
     await session.flush()
     return row
+
+
+async def paid_for_group(session: AsyncSession, group_id: int, user_id: int) -> bool:
+    """Faol pullik tarif qamrab olgan guruhda taklif talabini qo'llama.
+
+    Obuna hozircha Seller orqali saqlanadi; oddiy odamga tarif ochish oqimi
+    keyingi bosqich. Katalogdagi bepul/sinov tarifi istisno bo'la olmaydi.
+    """
+    if group_id <= 0 or user_id <= 0:
+        return False
+    now = utcnow()
+    subscriptions = (await session.execute(
+        select(Tariff.allowed_group_ids, Tariff.allowed_category_ids)
+        .join(Subscription, Subscription.tariff_id == Tariff.id)
+        .join(Seller, Seller.id == Subscription.seller_id)
+        .where(
+            Seller.user_id == user_id, Seller.status == SellerStatus.ACTIVE,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.starts_at <= now, Subscription.expires_at > now,
+            Tariff.price > 0, Tariff.is_trial.is_(False),
+        )
+    )).all()
+    if not subscriptions:
+        return False
+    categories = set((await session.execute(select(Category.id).where(
+        Category.group_id == group_id, Category.is_active.is_(True),
+    ))).scalars())
+    if not categories:
+        return False
+
+    def allows(value: object, target: int) -> bool:
+        return value is None or (isinstance(value, list)
+                                 and (target in value or str(target) in value))
+
+    return any(
+        allows(groups, group_id) and
+        (allowed_categories is None or
+         any(allows(allowed_categories, category_id) for category_id in categories))
+        for groups, allowed_categories in subscriptions
+    )
 
 
 async def applicable_channels(session: AsyncSession, group_id: int) -> list[RequiredChannel]:
@@ -415,6 +462,17 @@ async def reserve_join(session: AsyncSession, *, group_id: int, invitee_id: int,
     return entry
 
 
+async def reject_unattributed_direct(session: AsyncSession, *, group_id: int,
+                                     invitee_id: int) -> bool:
+    """Join request/folder a'zosining oldingi xizmat xabari admini sanalmasin."""
+    result = await session.execute(update(InviteEvent).where(
+        InviteEvent.group_id == group_id, InviteEvent.invitee_id == invitee_id,
+        InviteEvent.source == InviteSource.ADDED_BY, InviteEvent.counted.is_(False),
+        or_(InviteEvent.reject_reason.is_(None), InviteEvent.reject_reason == "checking"),
+    ).values(reject_reason="unattributed_join").returning(InviteEvent.id))
+    return result.scalar_one_or_none() is not None
+
+
 async def abandon_early(session: AsyncSession, *, group_id: int, invitee_id: int) -> bool:
     result = await session.execute(update(InviteEvent).where(
         InviteEvent.group_id == group_id, InviteEvent.invitee_id == invitee_id,
@@ -545,9 +603,9 @@ async def counter_exempt(session: AsyncSession, group_id: int, user_id: int) -> 
 
 
 __all__ = [
-    "safe_counter", "ensure_counter", "edit_counter", "applicable_channels",
+    "safe_counter", "ensure_counter", "edit_counter", "paid_for_group", "applicable_channels",
     "add_channel", "remove_channel", "reserve_personal_link", "finish_personal_link",
     "cancel_personal_link", "total_for", "adjust", "reset_count", "record_request", "request_link",
-    "reserve_join", "abandon_early", "claim_due", "retry_check", "credit_join",
+    "reserve_join", "reject_unattributed_direct", "abandon_early", "claim_due", "retry_check", "credit_join",
     "recent_invites", "counter_exempt",
 ]

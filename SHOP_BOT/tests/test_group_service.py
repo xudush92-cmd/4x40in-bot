@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from aiogram.types import Chat, ChatMemberAdministrator, User as TgUser
+from aiogram.types import Chat, ChatMemberAdministrator
+from aiogram.types import User as TgUser
 
 from app.db.models import GroupSettings
 from app.services.group_service import (
@@ -55,6 +56,12 @@ def test_extract_rights_from_administrator() -> None:
     assert set(REQUIRED_RIGHTS).issubset(rights)
 
 
+def test_direct_add_does_not_need_bot_invite_link_permission() -> None:
+    rights = extract_rights(_admin_member(can_invite=False))
+    assert rights["can_invite_users"] is False
+    assert missing_rights(rights) == []
+
+
 def test_extract_rights_from_non_admin() -> None:
     class FakeMember:
         status = "member"
@@ -80,7 +87,7 @@ async def test_get_or_create_group_creates_settings_and_rotation(session) -> Non
 
 
 async def test_get_or_create_group_updates_title(session) -> None:
-    group = await get_or_create_group(session, _chat())
+    await get_or_create_group(session, _chat())
     await session.flush()
     await get_or_create_group(session, _chat(title="Yangi nom"), added_by=None)
     await session.flush()

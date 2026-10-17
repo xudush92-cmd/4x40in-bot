@@ -161,10 +161,14 @@ async def test_settings_are_scoped_safe_and_audited(session):
     policy = await counters.ensure_counter(session, one)
     assert not policy.enabled and policy.dry_run and policy.mode == "soft"
     assert policy.required_n == 3 and policy.min_stay_minutes == 10
+    assert policy.count_sources == {"link": False, "added_by": True}
+    assert not policy.notify_inviter
     assert not group1.settings.counter_enabled and not group2.settings.counter_enabled
     assert await group_service.set_feature(session, group1, "counter", True, actor_id=ADMIN_ID)
     assert policy.enabled and policy.dry_run and group1.settings.counter_enabled
     await counters.edit_counter(session, group1, "required_n", "5", ADMIN_ID)
+    await counters.edit_counter(session, group1, "source", "added_by", ADMIN_ID)
+    assert not policy.count_sources["added_by"]  # tugma manbani mustaqil o'chiradi
     await counters.edit_counter(session, group1, "source", "added_by", ADMIN_ID)
     await counters.edit_counter(session, group1, "mode", "hard", ADMIN_ID)
     assert policy.dry_run and policy.mode == "hard" and policy.count_sources["added_by"]

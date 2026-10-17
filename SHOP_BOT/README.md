@@ -7,6 +7,7 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 > admin panel daraxti, jarayonlar, masshtablash, risklar, bosqichlar).
 > Joriy holat va **davom ettirish qo'llanmasi** (yangi chat/sessiya uchun):
 > **[HOLAT.md](HOLAT.md)** — nima bajarilgan, nima qolgan, muhim shartnomalar.
+> Yangi guruh/bepul/pullik e’lon oqimi: **[docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md)**.
 > Administrator uchun tugma-baqadam amaliy yo‘riqnoma:
 > **[ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md)**.
 > Admin navigatsiyasi va sotuvchilik arizasi bo‘yicha bosqichlar:
@@ -16,7 +17,14 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–9 + limit/yo‘riqnoma + UX-1/2/3 oflayn ✅ · jonli qabul qolgan**
+## 📌 Hozirgi holat: **Phase 0–9 + UX-1/2/3 + guruhda bevosita qo‘shish (yangi bosqich 1) oflayn ✅ · jonli qabul qolgan**
+
+**Yangi e’lon oqimining faqat birinchi bosqichi bajarildi:** guruh ichida
+«A’zo qo‘shish» hisobi, minimal 15 soniyalik ogohlantirish va mavjud pullik
+tarif egasining shu guruhdagi taklifdan ozodligi. Oddiy foydalanuvchining
+**bot orqali bir oylik bepul e’loni**, hamma uchun **arizasiz pullik xarid**
+va **har foydalanuvchining alohida Start/Stop intervali** hali yozilmagan.
+Guruh Slow Mode’ini administrator Telegramning o‘zida sozlaydi.
 
 Phase 9da olingan ruxsat doirasida yuklama smoke, deploy/backup/restore
 xavfsizligi va qo‘llanmalar qo‘shildi. **Bu ishlab chiqarishda sinovdan o‘tgan
@@ -147,19 +155,30 @@ tanlash yana sinovga qaytaradi va jonli rejimni **qayta** tasdiqlash talab qilad
 Guruh switch, global sanoqchi switch, favqulodda pauza hamda `kill_switch`
 alohida; o'zgartirish bir guruhdan boshqasiga o'tmaydi.
 
-**A'zo yo'li:** bot bilan shaxsiy chatda `/takliflarim` → guruhni tanlash →
-«🔗 Havola olish/yangilash» → uni odamga yuborish. Havola shaxsiy chatdagina
-ko'rsatiladi. Hard mute olgan a'zolar guruhda yozolmagani uchun botga /start
-bosib, «✅ Tekshirdim» tugmasini shaxsiy chatda ishlatsin; imkon bo'lsa
-guruh tavsifida bot manzilini yozib qo'ying. Jonli SOFT xabarni o'chirsa yoki
-HARD kirishda mute muvaffaqiyatli qo'ysa, bot sababni guruhda ham ko'rsatadi:
-«Botni ochish» → shaxsiy `/start` → `/takliflarim`. Shaxsiy hisob guruhga
-chiqarilmaydi. Bitta a'zo/guruhga ko'pi bilan **60 soniyada bir marta** izoh;
-DB navbati orqali taxminan **15 soniyadan keyin** o'chadi (poster yoki
-`RUN_MODE=all`, 1 sekundlik job). DM yetmasligi guruh izohini to'xtatmaydi.
-Telegram a'zoligi noma'lum bo'lsa jazo/izoh yo'q. Kanal bot adminligi yo'qolsa
-jazo to'xtaydi. Poster o'chsa delete kechikadi; API/DB xatosi yoki bot huquqi
-yo'qolsa avtomatik o'chirish kafolatlanmaydi.
+**Guruhda qo'lda yozadigan a'zo yo'li (yangi bosqich 1):** Telegram guruhining
+ichidagi **«A'zo qo'shish»** tugmasi bilan shu guruhga odam qo'shadi. Botning
+shaxsiy `/start`i, menyusi va taklif havolasi shart emas. Telegram taklif
+qiluvchini ko'rsatmasa yoki yangi a'zo bo'lmasa, bot birovga hisob yozmaydi;
+belgilangan qolish vaqtidan keyin a'zolikni qayta tekshiradi. Jonli SOFT xabarni
+o'chirsa (yoki eski HARD rejimda mute qilsa), guruhdagi izoh **aynan**
+«Guruhga yozish uchun odam qo'shing.» — raqam, havola, tugma va ortiqcha DM yo'q.
+Izoh bir a'zo/guruhga 60 soniyada ko'pi bilan bir marta yuboriladi; poster yoki
+`RUN_MODE=all`dagi 1 sekundlik navbat uni taxminan 15 soniyadan keyin o'chiradi.
+Bot/Telegram/DB xatosi yoki poster to'xtashi o'chirishni kechiktirishi mumkin.
+Guruhning **Slow Mode** intervali Telegram sozlamasidan qo'yiladi; botning
+avtomatik e'lon posteri bundan mustaqil (keyingi bosqich). Sanoqchi jonli bo'lsa,
+qo'lda yozilgan oddiy suhbat xabarlarini ham tekshiradi: uni faqat e'lonlarga
+mo'ljallangan guruhda sinab yoqing. Shu guruhni qamrab olgan faol **pullik**
+tarif egasi taklif talabidan ozod. Eski `/takliflarim`/shaxsiy havola yo'li
+ixtiyoriy ravishda saqlangan; guruh a'zosiga u ko'rsatilmaydi yoki majburlanmaydi.
+
+Yangi guruhda `added_by` manbasi yoqilgan, ammo sanoqchi **o'chiq va sinovda**.
+Eski guruhlarning saqlangan manba/DM sozlamalari avtomatik o'zgarmaydi:
+admin «Qo'lda qo'shish»ni yoqib, «DM xabar»ni kerak bo'lmasa o'chirsin va
+sinovdan keyin faqat o'sha guruhda jonli tasdiqlasin. Kanal talabi shart emas
+(standartda o'chiq); `min_stay_minutes` standartda 10, admin uni 0 ga tushirishi
+mumkin. Hisob schedulerda har 30 soniyada qayta tekshiriladi, shu bois hatto
+0 daqiqada ham darhol ochilish kafolatlanmaydi.
 
 **Chegara:** haqiqiy Telegram/supergroup/kanal, botning Privacy Mode'i va
 PostgreSQL/Redis parallel worker sinovi deploydan oldin shart. Eski dublikat

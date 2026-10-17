@@ -86,12 +86,10 @@ async def test_soft_shows_reason_in_group_when_dm_blocked_and_deletes_after_15s(
     sent = group_notices(fake)
     assert len(sent) == 1
     text = sent[0]["text"]
-    assert "Sanoqchi" in text and "xabaringiz o'chirildi" in text
-    assert "3 ta a'zo" in text and "/start" in text and "/takliflarim" in text
-    assert "15 soniyadan keyin" in text and "0/3" not in text
-    assert "obuna" not in text.lower()  # kanal avtomatik shart qilinmaydi
-    assert sent[0]["parse_mode"] == "HTML"
-    assert sent[0]["reply_markup"]["inline_keyboard"][0][0]["url"] == "https://t.me/shopbot"
+    assert text == "Guruhga yozish uchun odam qo'shing."
+    assert "reply_markup" not in sent[0] and "parse_mode" not in sent[0]
+    assert not any(p["chat_id"] == INVITER for p in fake.called("SendMessage"))
+    assert not fake.called("GetMe")  # ortiqcha API kutishi ham, bot havolasi ham yo'q
     assert [entry["message_id"] for entry in fake.called("DeleteMessage")] == [8101]
 
     row = (await notice_rows(session))[0]
@@ -151,8 +149,7 @@ async def test_hard_join_warns_only_after_successful_mute(session, tg):
     await send(session, dp, bot, membership(INVITEE, update_id=8301))
     assert fake.called("RestrictChatMember")
     assert len(group_notices(fake)) == 1
-    assert "Guruhga yozish cheklangan" in group_notices(fake)[0]["text"]
-    assert "2 ta a'zo" in group_notices(fake)[0]["text"]
+    assert group_notices(fake)[0]["text"] == "Guruhga yozish uchun odam qo'shing."
     assert (await notice_rows(session))[0].status == "pending"
     await send(session, dp, bot, membership(INVITEE, update_id=8302))
     assert len(group_notices(fake)) == 1  # takroriy update/xuddi shu mute
@@ -213,9 +210,8 @@ async def test_explicit_subscription_condition_is_explained_only_when_enabled(se
     fake.overrides["GetChatMember"] = member
     await send(session, dp, bot, message(8501))
     assert len(group_notices(fake)) == 1
-    assert "alohida yoqilgan obuna sharti" in group_notices(fake)[0]["text"]
-    assert "/takliflarim" in group_notices(fake)[0]["text"]
-    assert "0/1" not in group_notices(fake)[0]["text"]
+    assert group_notices(fake)[0]["text"] == "Guruhga yozish uchun obuna shartini bajaring."
+    assert "reply_markup" not in group_notices(fake)[0]
 
 
 async def test_failed_send_has_cooldown_and_network_delete_retries_even_during_pause(session, tg):

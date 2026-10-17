@@ -11,7 +11,6 @@ from datetime import timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from loguru import logger
 from sqlalchemy import and_, or_, select, update
 
@@ -31,7 +30,7 @@ _RETRY_SECONDS = 30
 _STALE_SECONDS = 45
 
 
-async def _reserve(group_id: int, user_id: int, issue: str) -> tuple[int, int, int] | None:
+async def _reserve(group_id: int, user_id: int, issue: str) -> tuple[int, int] | None:
     """Guruh qatori qulfida har a'zoga 60 sekundda ko'pi bilan bir ogohlantirish."""
     if (user_id <= 0 or issue not in {"counter_not_done", "not_subscribed"}
             or not await settings_service.is_feature_enabled_fresh("counter")):
@@ -64,7 +63,7 @@ async def _reserve(group_id: int, user_id: int, issue: str) -> tuple[int, int, i
         local = (await session.execute(select(GroupAdmin.id).where(
             GroupAdmin.group_id == group_id, GroupAdmin.user_id == user_id,
         ))).scalar_one_or_none()
-        if admin or local:
+        if admin or local or await counters.paid_for_group(session, group_id, user_id):
             return None
         recent = (await session.execute(select(GroupMessageAction.id).where(
             GroupMessageAction.group_id == group_id,
@@ -85,26 +84,20 @@ async def _reserve(group_id: int, user_id: int, issue: str) -> tuple[int, int, i
         )
         session.add(row)
         await session.flush()
-        return row.id, group.tg_chat_id, setting.required_n
+        return row.id, group.tg_chat_id
 
 
-def _text(user_id: int, issue: str, required: int, *, deleted: bool) -> str:
-    intro = ("Yozgan xabaringiz o'chirildi: " if deleted else "Guruhga yozish cheklangan: ")
-    reason = (f"bu guruhga kamida {required} ta a'zo taklif qilish sharti bajarilmagan."
-              if issue == "counter_not_done" else
-              "bu guruh uchun alohida yoqilgan obuna sharti bajarilmagan.")
-    details = ("Kerakli obuna havolasi va holatni ko'rish uchun "
-               if issue == "not_subscribed" else
-               "Shaxsiy taklif havolasi va holatni ko'rish uchun ")
-    return (
-        f'🧮 <a href="tg://user?id={user_id}">Aʼzo</a>, {intro}Sanoqchi — {reason}\n'
-        f"{details}botga shaxsiy xabarda /start bosing, so'ng /takliflarim ni oching.\n"
-        "Bu izoh 15 soniyadan keyin o'chadi."
-    )
+def _text(issue: str) -> str:
+    # Guruh a'zosi bot menyusidan foydalanishi shart emas. Raqam, havola,
+    # shaxsiy hisob va ortiqcha tugmalarni ommaviy xabarda ko'rsatmaymiz.
+    if issue == "counter_not_done":
+        return "Guruhga yozish uchun odam qo'shing."
+    # Faqat eski guruhda admin alohida yoqqan kanal qoidasi uchun: yolg'on
+    # «odam qo'shing» degan izoh yubormaymiz (yangi guruhda kanal talabi yo'q).
+    return "Guruhga yozish uchun obuna shartini bajaring."
 
 
-async def send_notice(bot: Bot, *, group_id: int, user_id: int, issue: str,
-                      deleted: bool = False) -> None:
+async def send_notice(bot: Bot, *, group_id: int, user_id: int, issue: str) -> None:
     """Faqat muvaffaqiyatli delete/mute'dan keyin chaqiriladi; xato jazoni buzmaydi."""
     sent_id: int | None = None
     chat_id: int | None = None
@@ -113,26 +106,17 @@ async def send_notice(bot: Bot, *, group_id: int, user_id: int, issue: str,
         reserved = await _reserve(group_id, user_id, issue)
         if reserved is None:
             return
-        action_id, chat_id, required = reserved
-        try:
-            me = await bot.me()
-            username = me.username or ""
-        except TelegramAPIError:
-            username = ""  # bot username topilmasa ham tushuntirish yetib boradi
-        # GetMe kutishida global favqulodda switch o'chirilgan bo'lishi mumkin.
+        action_id, chat_id = reserved
+        # DB rezervatsiyasidan so'ng ham global favqulodda switchni tekshir.
         if not await settings_service.is_feature_enabled_fresh("counter"):
             async with session_scope() as session:
                 row = await session.get(GroupMessageAction, action_id)
                 if row is not None and row.status == "sending":
                     row.status, row.error = "skipped", "Global sanoqchi pauzaga olingan."
             return
-        keyboard = (InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🤖 Botni ochish", url=f"https://t.me/{username}")
-        ]]) if username else None)
         try:
             sent = await bot.send_message(
-                chat_id, _text(user_id, issue, required, deleted=deleted),
-                parse_mode="HTML", disable_notification=True, reply_markup=keyboard,
+                chat_id, _text(issue), parse_mode=None, disable_notification=True,
             )
         except TelegramAPIError as exc:
             async with session_scope() as session:

@@ -32,10 +32,12 @@ from app.utils.time import next_run_time, utcnow
 REQUIRED_RIGHTS: dict[str, str] = {
     "can_delete_messages": "Xabarlarni o'chirish",
     "can_restrict_members": "A'zolarni cheklash (mute/ban)",
-    "can_invite_users": "Taklif havolalari yaratish",
 }
 
 OPTIONAL_RIGHTS: dict[str, str] = {
+    # Guruhning «A'zo qo'shish» tugmasi botning shaxsiy havola yaratish
+    # huquqiga bog'liq emas; link manbasi yoqilsa uning servisi alohida tekshiradi.
+    "can_invite_users": "Taklif havolalari yaratish",
     "can_pin_messages": "Xabarlarni qadash",
     "can_change_info": "Guruh ma'lumotlarini o'zgartirish",
 }

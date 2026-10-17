@@ -912,6 +912,14 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 > qaysi bosqich bajarilgan, qolgan ishlar ro'yxati, servis shartnomalari va
 > yangi chatda ishni qaytadan boshlash uchun aniq buyruqlar.
 
+## YANGI OQIM (2026-10-17)
+
+Oldingi Phase 0–9 rejasi tarixiy asos bo‘lib qoladi. Guruhda qo‘lda odam
+qo‘shish, bot orqali bir oylik bepul/pullik e’lon va har foydalanuvchining
+mustaqil Start/Stop taymeri bo‘yicha joriy talablar va ochiq qarorlar:
+**[docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md)**. Hozir faqat
+birinchi bosqich kodlangan; keyingi bosqichlarga alohida ruxsat kerak.
+
 ## 16. KEYINGI QADAM
 
 1. ✅ Reja yozildi va ko'rib chiqish uchun taqdim etildi.

@@ -107,6 +107,8 @@ async def _needed(bot: Bot, session: AsyncSession, group: Group, setting: Counte
         return Need("unknown", 0, setting.required_n)
     if str(member.status) in {"administrator", "creator"}:
         return None
+    if await counters.paid_for_group(session, group.id, user_id):
+        return None  # shu guruhga amal qiladigan pullik tarif taklifdan ozod
 
     count = await counters.total_for(session, group.id, user_id)
     channels = await counters.applicable_channels(session, group.id) if setting.require_subscription else []
@@ -357,6 +359,12 @@ async def _joined(bot: Bot, session: AsyncSession, group: Group, user_id: int,
         link = (await session.execute(select(InviteLink).where(
             InviteLink.group_id == group.id, InviteLink.invite_link == invite_link,
         ))).scalar_one_or_none()
+        if link is None:
+            # Oddiy guruh havolasining egasi ma'lum emas: undan oldingi
+            # xizmat xabaridagi actor'ni ham taklifchi deb sanamaymiz.
+            await counters.reject_unattributed_direct(session, group_id=group.id,
+                                                      invitee_id=user_id)
+            return
     inviter_id = link.user_id if link else actor_id if source == InviteSource.ADDED_BY else None
     if inviter_id is not None and inviter_id == (await bot.get_me()).id:
         inviter_id = None
@@ -396,6 +404,14 @@ async def member_event(event: ChatMemberUpdated, bot: Bot, session: AsyncSession
         return
     link = event.invite_link.invite_link if event.invite_link else None
     link = link or await counters.request_link(session, group.id, user_id)
+    if (event.via_join_request or event.via_chat_folder_invite_link) and not link:
+        # Tasdiqlovchi admin yoki chat-folder havolasini «odam qo'shgan» deb
+        # yozmaymiz. Oldingi xizmat xabari noto'g'ri egaga yozilgan bo'lsa ham
+        # kreditga o'tishidan oldin rad etamiz. Bot havolasining egasi aniq
+        # bo'lsa eski yo'l qoladi.
+        await counters.reject_unattributed_direct(session, group_id=group.id,
+                                                  invitee_id=user_id)
+        return
     await _joined(bot, session, group, user_id, event.from_user.id, link,
                   is_bot=new.user.is_bot)
 
@@ -617,19 +633,10 @@ async def check_message(message: Message, session: AsyncSession, bot: Bot) -> bo
                                               "counter_issue": need.issue}))
     if setting.mode == CounterMode.HARD:
         await _restrict(bot, group_id, message.from_user.id, need.issue)
-    # DM botga /start bosilmagan bo'lsa yetmasligi mumkin; sabab guruhning
-    # o'zida ham ko'rinsin. Navbat uni 15 sekunddan keyin o'chiradi.
+    # Oddiy guruh a'zosiga botga kirish yoki shaxsiy DM kerak emas. Izoh
+    # faqat guruhda bir jumla bo'lib ko'rinadi; 15s navbati uni o'chiradi.
     await notices.send_notice(bot, group_id=group_id, user_id=message.from_user.id,
-                              issue=need.issue, deleted=True)
-    try:
-        bot_name = (await bot.get_me()).username or ""
-        destination = f"https://t.me/{bot_name}" if bot_name else "botdagi /takliflarim"
-        await bot.send_message(message.from_user.id,
-                               f"🧮 {escape_html(group.display)}: xabaringiz shart sabab o'chirildi "
-                               f"({escape_html(need.issue)}). {need.count}/{need.required}. "
-                               f"Holat va kanalni ko'rish: {destination}")
-    except TelegramAPIError:
-        pass  # /start bosmagan a'zoga DM jo'natib bo'lmaydi
+                              issue=need.issue)
     return True
 
 
@@ -646,8 +653,9 @@ async def process_due(bot: Bot) -> int:
                     if event:
                         await counters.retry_check(session, event)
                     continue
-                chat_id, invitee_id, inviter_id, gid = (
+                chat_id, invitee_id, inviter_id, gid, source = (
                     group.tg_chat_id, event.invitee_id, event.inviter_id, event.group_id,
+                    event.source,
                 )
             if not await settings_service.is_feature_enabled_fresh("counter"):
                 async with session_scope() as session:
@@ -659,7 +667,9 @@ async def process_due(bot: Bot) -> int:
             async with session_scope() as session:
                 count = await counters.credit_join(session, entry_id, still_member=_member(member))
                 setting = await session.get(CounterSetting, gid)
-            if count and setting and setting.notify_inviter:
+            if count and setting and setting.notify_inviter and source == InviteSource.LINK:
+                # Guruhdagi «A'zo qo'shish» yo'li bot bilan shaxsiy muloqot
+                # talab qilmaydi; eski havola yo'lidagi ixtiyoriy DM saqlanadi.
                 try:
                     await bot.send_message(inviter_id, f"🧮 Taklifingiz hisoblandi: "
                                            f"{count}/{setting.required_n}. /takliflarim")

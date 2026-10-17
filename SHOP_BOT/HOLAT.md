@@ -4,9 +4,20 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-16 · **Holat:** Phase 0–9 + limit/yo‘riqnoma + UX-1/2/3 oflayn ✅ (393 test); **jonli deploy/restore, Telegram/bank qabul sinovi va video hali bajarilmagan.**
+**Oxirgi yangilanish:** 2026-10-17 · **Holat:** yangi oqimning 1-bosqichi — guruhda bevosita a’zo qo‘shish va minimal izoh oflayn ✅. Bir oylik bepul bot e’loni, arizasiz pullik oqim va mustaqil Start/Stop taymerlari **hali yozilmagan**; jonli Telegram/PostgreSQL/Redis sinovi yo‘q.
 
 ---
+
+## Joriy yangi oqim: 1-bosqich (2026-10-17)
+
+Kelishilgan to‘liq yangi reja: [docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md).
+
+- Oddiy guruh a’zosi Telegram guruhining «A’zo qo‘shish» tugmasidan foydalanadi; shaxsiy bot menyusi, `/start` yoki havola kerak emas. Yangi guruh Sanoqchisida `added_by=true`, `link=false`, `notify_inviter=false`, ammo `enabled=false`, `dry_run=true`; mavjud guruh sozlamalari yashirincha almashtirilmaydi. Admin eski guruhda manbani alohida yoqib, avval sinovdan keyin jonli tasdiqlaydi.
+- Jonli SOFT xabarni o‘chirsa yoki eski HARD mute qo‘ysa, guruhdagi matn **faqat** «Guruhga yozish uchun odam qo‘shing.»; raqam, havola, tugma, bot menyusi yoki shaxsiy DM yo‘q. Guruhda 60 soniyalik spam cheklovi va taxminan 15 soniyalik DB cleanup saqlangan. Maxsus eski kanal sharti yoqilsa boshqa qisqa izoh chiqadi; yangi guruhda kanal talabi yo‘q.
+- Botning havola yaratish huquqi bevosita qo‘shish uchun shart emas. Botga ma’lum bo‘lmagan umumiy havola, join request va chat-folder kirishi qo‘shgan odamga avtomatik yozilmaydi; takror, o‘zini qo‘shish va botlar hisoblanmaydi. Sanoqchi guruhlar bo‘yicha alohida, qolish/a’zolik tekshiruvi saqlangan. Shu guruhni qamragan faol, pullik, sinov bo‘lmagan tarif egasi taklif talabidan ozod.
+- Guruhning Slow Mode’i Telegram sozlamasidan boshqariladi. **Muhim:** Sanoqchi jonli bo‘lsa oddiy guruh xabarlarini ham tekshiradi; aralash suhbat guruhida ko‘r-ko‘rona yoqmang. Eski `/takliflarim`/havola ixtiyoriy qolgan.
+- Tekshiruv: **408/408** oflayn pytest, `compileall`, o‘zgargan Python fayllariga Ruff (`--ignore UP045,UP037`), vaqtinchalik SQLite’da `alembic upgrade head` + `alembic check` («No new upgrade operations detected.»), seed ×2 o‘tdi. DB sxemasi o‘zgarmadi; haqiqiy Telegram/PostgreSQL/Redis sinovi yo‘q.
+- Keyingi bosqichlar alohida ruxsat bilan: soha guruhi tanlanadigan qisqa e’lon oqimi va bir oylik bepul huquq, hamma uchun pullik tarif, keyin guruh+foydalanuvchi bo‘yicha alohida Start/Stop va adolatli poster. Hozirgi `ad_service.submit` hamon sotuvchi obunasini, `posting_service.eligible_ad` hamon faol obunani va guruh/toifa navbatini talab qiladi; **yangi avtomatik e’lon modeli ishlamaydi**.
 
 ## 0. Bir qarashda (TL;DR)
 
@@ -17,9 +28,9 @@
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
 | Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **393 test, hammasi o'tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, tarmoqsiz SQLite + soxta Telegram API) |
+| Testlar | **408/408 oflayn test o'tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, SQLite + soxta Telegram API); jonli Telegram/PostgreSQL/Redis emas |
 | Migratsiya | `f789aa7b756f` → `c8a21b6d0f42` → `4f30ae7c912b` → `8d93a17e623c` → **`b6c8e4d0192a`** (46 jadval; SQLite `alembic check` toza) |
-| Keyingi qadam | UX-1/2/3 tugadi; faqat joriy branchni foydalanuvchi Replit agentiga yangilashni buyuradi. Keyingi UX bosqichiga yoki jonli deploy/sinovga alohida ruxsat kerak; real Telegram/bank/PostgreSQL/Redis qabul sinovi qolgan |
+| Keyingi qadam | Yangi oqimning 1-bosqichi oflayn tugadi. 2-bosqich — bir oylik bepul bot e’loni va qisqa guruh tanlash menyusi — uchun alohida ruxsat va ochiq limit qarorlari kerak. Replitni foydalanuvchi o‘zi yangilatadi; jonli Telegram/PostgreSQL/Redis qabul sinovi qolgan |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -266,21 +277,18 @@ mute shart bajarilganda yoki funksiya o'chirilganda, boshqa faol posbon/admin
 cheklovi bo'lmasa, schedulerda yechiladi; bot huquqi yo'qolsa qo'lda aralashuv
 kerak bo'lishi mumkin.
 
-**Guruhda vaqtinchalik izoh (2026-10-16, tasdiqlangan tuzatish):** jonli SOFT
-xabarni o'chirgach yoki HARD kirishda mute muvaffaqiyatli qo'yilgach,
-a'zoga sabab va botdagi shaxsiy `/start` → `/takliflarim` yo'li guruhda
-ko'rsatiladi; hatto DM botga `/start` bosilmagani uchun yetmasa ham. Shaxsiy
-0/N ko'rsatilmaydi, faqat guruhning ochiq N talabi; kanal faqat guruhning
-obuna sharti yoqilgan va kanal sozlangan bo'lsa tilga olinadi. Har a'zo/guruhda
-60 soniyalik spam cheklovi bor. Mavjud `group_message_actions`da alohida
-`counter_notice` rezervatsiyasi (yangi jadval/migratsiya **yo'q**), 15 soniya
-`due_at` va poster/all rejimidagi 1s CAS job bilan o'chadi; boshqa Phase 6
-navbatiga aralashmaydi. Restartda saqlangan `pending` navbat tiklanadi,
-`running` delete 45s dan keyin qayta tekshiriladi; `kill_switch` yoqilsa ham
-avval yuborilgan izoh tozalanadi. Poster ishlamasa kechikadi, Telegram delete
-huquqi yo'qolsa/API xato bersa yoki sendMessage javobi bazaga yozilishidan
-oldin process yiqilsa 15s o'chirishni kafolatlab bo'lmaydi. Haqiqiy Telegram va
-PostgreSQL/Redis bilan qabul sinovi hali o'tmagan.
+**Guruhda vaqtinchalik izoh (2026-10-16; matn 2026-10-17da soddalashtirilgan):**
+jonli SOFT xabarni o‘chirgach yoki HARD mute muvaffaqiyatli qo‘yilgach,
+qo‘shish sharti bo‘yicha guruhda faqat «Guruhga yozish uchun odam qo‘shing.»
+chiqadi. Shaxsiy 0/N, ochiq N, botga havola/tugma va ortiqcha DM yo‘q. Har
+a’zo/guruh uchun 60 soniyalik spam cheklovi saqlangan. Mavjud
+`group_message_actions`dagi `counter_notice` rezervatsiyasi (yangi jadval
+yo‘q) 15 soniyalik `due_at` va poster/all rejimidagi 1s CAS job bilan
+o‘chadi; Phase 6 navbatiga aralashmaydi. Restartda saqlangan `pending`
+navbat tiklanadi, `running` delete 45s dan keyin qayta olinadi va
+`kill_switch` yoqilganda ham yuborilgan izoh tozalanadi. Poster ishlamasa
+yoki API/DB/huquqda xato bo‘lsa, 15 soniyada o‘chirish kafolatlanmaydi.
+Haqiqiy Telegram va PostgreSQL/Redis sinovi hali o‘tmagan.
 
 **Migratsiya:** `4f30ae7c912b`: `counter_settings`ga `dry_run` va havola limiti,
 3 yangi jadval, faol havola uchun qisman unique indeks. Oldindan ikki faol

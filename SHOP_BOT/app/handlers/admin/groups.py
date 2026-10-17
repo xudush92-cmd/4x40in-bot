@@ -309,7 +309,7 @@ async def on_add(callback: CallbackQuery) -> None:
         "2️⃣ Botni <b>admin</b> qiling va quyidagi huquqlarni bering:\n"
         "   • 🗑 Xabarlarni o'chirish\n"
         "   • 🚫 A'zolarni cheklash (mute/ban)\n"
-        "   • 🔗 Taklif havolalari yaratish\n"
+        "   Ixtiyoriy: 🔗 Taklif havolalari yaratish (shaxsiy havola kerak bo'lsa)\n"
         "3️⃣ Guruh <b>supergroup</b> bo'lishi kerak (aks holda mute/ban ishlamaydi)\n"
         "4️⃣ @BotFather → /setprivacy → <b>Disable</b> (majburiy!)\n\n"
         "Guruh qo'shilgach ro'yxatda o'zi paydo bo'ladi va menga xabar keladi.\n"
