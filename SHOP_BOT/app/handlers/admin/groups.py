@@ -141,6 +141,7 @@ def _card_text(group: Group, stats: dict[str, int]) -> str:
             f"🧩 Yoqilgan funksiyalar: {' '.join(features) if features else '— yo‘q'}",
             f"⏱ Interval: <b>{fmt_interval(s.interval_sec)}</b> (±{s.jitter_percent}%)",
             f"📆 Kunlik limit: <b>{s.daily_post_limit}</b>",
+            f"🎁 Bepul e'lon: {'🟢 yoqilgan' if s.free_ads_enabled else '🔴 o‘chiq'}",
             f"🌙 Tinch soatlar: <b>{fmt_quiet_hours(s.quiet_start, s.quiet_end)}</b>",
         ]
 
@@ -177,6 +178,8 @@ def _features_text(group: Group) -> str:
 
     lines += [
         "━━━━━━━━━━━━━━━━━━━━",
+        f"🎁 <b>Bepul e'lonlar</b>: {'🟢 yoqilgan' if (s and s.free_ads_enabled) else '🔴 o‘chiq'} "
+        "(guruhning o'zidagi jonli qo'lda qo'shish va admin tasdig'i shart).",
         "🖼 <b>Kontentni himoya qilish</b> — joylangan e'lonlarni nusxalashni taqiqlaydi: "
         f"{'🟢 yoqilgan' if (s and s.protect_content) else '🔴 o‘chirilgan'}",
         "",
@@ -330,6 +333,31 @@ async def on_matrix(callback: CallbackQuery, callback_data: GroupCB, session: As
 async def on_features(callback: CallbackQuery, callback_data: GroupCB, session: AsyncSession) -> None:
     await render_features(callback, session, callback_data.group_id)
     await alert(callback, "")
+
+
+@router.callback_query(GroupCB.filter(F.action == "free_ads"), IsAdmin(AdminRole.ADMIN))
+async def on_free_ads_toggle(callback: CallbackQuery, callback_data: GroupCB,
+                             session: AsyncSession) -> None:
+    """Har guruhda bepul dastur alohida, default OFF; pullik tarifga tegmaydi."""
+    group = await group_service.get_group(session, callback_data.group_id)
+    if group is None or group.settings is None:
+        await alert(callback, "⚠️ Guruh topilmadi", show=True)
+        return
+    old = group.settings.free_ads_enabled
+    group.settings.free_ads_enabled = not old
+    session.add(ActionLog(actor_id=callback.from_user.id, action="free_ads_switch",
+                          entity="group_settings", entity_id=group.id, group_id=group.id,
+                          before={"free_ads_enabled": old},
+                          after={"free_ads_enabled": not old}))
+    if not old:
+        from app.services.free_ad_service import rebase_group_due
+
+        await rebase_group_due(session, group)
+    await session.flush()
+    await render_features(callback, session, group.id)
+    await alert(callback, "🎁 Bepul e'lonlar yoqildi. Sanoqchi jonli va joylash ham yoqilgan "
+                "bo'lsin." if not old else "🎁 Bepul e'lonlar to'xtatildi; pullik navbat o'zgarmaydi.",
+                show=True)
 
 
 @router.callback_query(FeatureCB.filter())

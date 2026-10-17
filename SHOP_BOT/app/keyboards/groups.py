@@ -176,6 +176,10 @@ def group_features_kb(group: Group) -> InlineKeyboardMarkup:
             ]
         )
 
+    rows.append([InlineKeyboardButton(
+        text=f"{'🟢' if settings and settings.free_ads_enabled else '🔴'} 🎁 Bepul e'lonlar (alohida)",
+        callback_data=GroupCB(action="free_ads", group_id=group.id).pack(),
+    )])
     rows.append([InlineKeyboardButton(text="🔧 Sanoqchi qoidalari va jonli tasdiq",
                                     callback_data=CounterAdminCB(action="home", group_id=group.id).pack())])
 

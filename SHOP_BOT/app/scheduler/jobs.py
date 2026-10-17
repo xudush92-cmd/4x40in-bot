@@ -23,6 +23,7 @@ from app.db.models import (
     CounterJoinRequest,
     CounterMessageCheck,
     ErrorLog,
+    FreePostLog,
     Group,
     GroupMessageAction,
     GroupSettings,
@@ -33,6 +34,7 @@ from app.db.models import (
 from app.handlers.group.counter import process_due, process_restrictions
 from app.handlers.group.policy import process_due_cleanup
 from app.redis_client import redis_manager
+from app.scheduler import free_poster
 from app.scheduler.poster import post_group
 from app.services import (
     broadcast_service,
@@ -48,7 +50,7 @@ from app.services.notify import notify_admins, save_error
 from app.services.settings_service import settings_service
 from app.services.text_service import text_service
 from app.utils.text import escape_html
-from app.utils.time import fmt_date, utcnow
+from app.utils.time import ensure_aware, fmt_date, utcnow
 
 
 async def heartbeat_job() -> None:
@@ -85,6 +87,69 @@ async def posting_tick_job(bot: Bot) -> None:
                     pass
 
     await asyncio.gather(*(_one(group_id) for group_id in due))
+
+
+_free_wait_cursor = 0
+
+
+async def free_posting_tick_job(bot: Bot) -> None:
+    """Bepul huquq/taymer va texnik navbat: bir guruhda 10s tick'ga bir post.
+
+    Har reklama beruvchining next_post_at'i alohida; pullik 30 daqiqalik
+    group_rotation.next_post_at uning o'rniga ishlatilmaydi. Guruhlar parallel.
+    """
+    global _free_wait_cursor
+    now = utcnow()
+    await free_poster.recover_stale(bot, now=now)
+    if not await settings_service.is_feature_enabled_fresh("posting"):
+        await free_poster.rebase_paused(now)
+        return
+
+    from app.db.models import FreeAd
+    from app.services import free_ad_service as free_ads
+
+    async with session_scope() as session:
+        waiting = await free_ads.waiting_ids(session, now, after_id=_free_wait_cursor)
+    _free_wait_cursor = waiting[-1] if len(waiting) == 100 else 0
+    allow_new = await settings_service.is_feature_enabled_fresh("counter")
+    for ad_id in waiting:
+        try:
+            async with session_scope() as session:
+                ad = await session.get(FreeAd, ad_id)
+                group = await session.get(Group, ad.group_id) if ad else None
+                access = await free_ads.entitlement(session, ad.user_id, ad.group_id) if ad else None
+                active = bool(access and ensure_aware(access.expires_at) > now)
+                policy = await free_ads.terms(session, group) if allow_new and group else None
+                enough = bool(policy and ad and await free_ads.unspent_count(
+                    session, ad.group_id, ad.user_id) >= policy.required_n)
+                if ad and not active and not enough:
+                    ad.next_post_at = None
+                candidate = (group.tg_chat_id, ad.user_id) if group and (active or enough) else None
+            if candidate is not None and await free_ads.is_member(bot, *candidate):
+                async with session_scope() as session:
+                    ad = (await session.execute(select(FreeAd).where(FreeAd.id == ad_id)
+                                                .with_for_update(skip_locked=True))).scalar_one_or_none()
+                    if ad:
+                        await free_ads.maybe_activate(session, ad, utcnow(),
+                                                      member_ok=True, allow_new=allow_new)
+        except Exception as exc:
+            logger.exception("Bepul huquqni tekshirish #{}: {}", ad_id, exc)
+            await save_error(None, "free_poster", f"Huquq #{ad_id}: {type(exc).__name__}: {exc}", exc=exc)
+
+    async with session_scope() as session:
+        due = await free_ads.due_one_per_group(session, utcnow())
+    limiter = asyncio.Semaphore(10)
+
+    async def _one(ad_id: int) -> None:
+        async with limiter:
+            try:
+                await free_poster.post_one(bot, ad_id)
+            except Exception as exc:
+                logger.exception("Bepul poster xatosi (e'lon={}): {}", ad_id, exc)
+                await save_error(None, "free_poster", f"Post #{ad_id}: {type(exc).__name__}: {exc}", exc=exc)
+                # Agar claim allaqachon commit bo'lgan bo'lsa, sending log
+                # stale recovery orqali noma'lum holatga o'tadi; retry yo'q.
+    await asyncio.gather(*(_one(ad_id) for ad_id in due))
 
 
 async def group_cleanup_job(bot: Bot) -> None:
@@ -149,6 +214,12 @@ async def retention_job() -> None:
             ErrorLog.created_at < log_cutoff, ErrorLog.resolved_at.is_not(None),
         ))
         r2 = await session.execute(delete(PostLog).where(PostLog.created_at < post_cutoff))
+        # Bepul post jurnali pulliknikidek cheklangan; noma'lum/sending
+        # natijalarni admin tekshiruvigacha hech qachon avtomatik o'chirmaymiz.
+        r_free = await session.execute(delete(FreePostLog).where(
+            FreePostLog.created_at < post_cutoff,
+            FreePostLog.status.in_({"sent", "skipped", "retry", "error"}),
+        ))
         r3 = await session.execute(delete(CleanupLog).where(CleanupLog.created_at < cleanup_cutoff))
         r4 = await session.execute(delete(GroupMessageAction).where(
             GroupMessageAction.created_at < log_cutoff,
@@ -168,10 +239,10 @@ async def retention_job() -> None:
         ).values(is_active=False, lifted_at=now))
 
     logger.info(
-        "Retention: error_log -{}, post_log -{}, cleanup_log -{}, xabar amallari -{}, "
-        "qoidabuzarliklar -{}, sanoqchi xabarlari -{}, join request -{}",
-        r1.rowcount, r2.rowcount, r3.rowcount, r4.rowcount, r5.rowcount,
-        r6.rowcount, r7.rowcount,
+        "Retention: error_log -{}, post_log -{}, bepul_post_log -{}, cleanup_log -{}, "
+        "xabar amallari -{}, qoidabuzarliklar -{}, sanoqchi xabarlari -{}, join request -{}",
+        r1.rowcount, r2.rowcount, r_free.rowcount, r3.rowcount, r4.rowcount,
+        r5.rowcount, r6.rowcount, r7.rowcount,
     )
 
 

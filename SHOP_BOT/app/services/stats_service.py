@@ -13,6 +13,8 @@ from app.db.models import (
     Ad,
     Category,
     ErrorLog,
+    FreeAd,
+    FreePostLog,
     Group,
     Payment,
     PostLog,
@@ -61,6 +63,9 @@ async def get_overview(session: AsyncSession) -> dict[str, Any]:
         "ads_active": await _count(session, Ad, Ad.status == AdStatus.ACTIVE),
         "ads_pending": await _count(session, Ad, Ad.status == AdStatus.PENDING),
         "ads_paused": await _count(session, Ad, Ad.status == AdStatus.PAUSED),
+        "free_ads": await _count(session, FreeAd),
+        "free_ads_pending": await _count(session, FreeAd, FreeAd.review_status == "pending"),
+        "free_posts_24h": await _count(session, FreePostLog, FreePostLog.status == "sent", FreePostLog.sent_at >= day_ago),
         "subscriptions_active": await _count(
             session, Subscription,
             Subscription.status == SubscriptionStatus.ACTIVE,
@@ -85,6 +90,7 @@ async def get_menu_counts(session: AsyncSession) -> dict[str, int]:
         "applications": await _count(session, SellerApplication, SellerApplication.status == ApplicationStatus.PENDING),
         "ads": await _count(session, Ad),
         "moderation": await _count(session, Ad, Ad.status == AdStatus.PENDING),
+        "free_moderation": await _count(session, FreeAd, FreeAd.review_status == "pending"),
         "payments": await _count(session, Payment, Payment.status == PaymentStatus.PENDING),
         "users": await _count(session, User),
         "errors": await _count(session, ErrorLog, ErrorLog.resolved_at.is_(None)),
@@ -108,8 +114,9 @@ def format_overview(data: dict[str, Any]) -> str:
         f"📢 E'lonlar: <b>{data['ads_total']:,}</b> "
         f"(faol {data['ads_active']:,}, moderatsiyada {data['ads_pending']:,}, "
         f"pauzada {data['ads_paused']:,})\n"
+        f"🎁 Bepul: {data['free_ads']:,} (tekshiruvda {data['free_ads_pending']:,})\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🚀 Joylangan xabarlar (24 soat): <b>{data['posts_24h']:,}</b>\n"
+        f"🚀 Joylangan (24 soat): pullik {data['posts_24h']:,}, bepul {data['free_posts_24h']:,}\n"
         f"⚠️ Qoidabuzarlik (24 soat): <b>{data['violations_24h']:,}</b>\n"
         f"🧾 Kutilayotgan cheklar: <b>{data['payments_pending']:,}</b>\n"
         f"💰 Tasdiqlangan to'lov (7 kun): <b>{data['payments_week_sum']:,.0f} so'm</b>\n"

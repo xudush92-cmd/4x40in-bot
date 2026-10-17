@@ -4,20 +4,20 @@
 > Yangi chatda avval shu faylni, keyin `REJA.md` ni o'qing — kod aynan qolgan joyidan
 > davom ettiriladi. Bu fayl doim **eng oxirgi holat** bo'yicha yangilanadi.
 
-**Oxirgi yangilanish:** 2026-10-17 · **Holat:** yangi oqimning 1-bosqichi — guruhda bevosita a’zo qo‘shish va minimal izoh oflayn ✅. Bir oylik bepul bot e’loni, arizasiz pullik oqim va mustaqil Start/Stop taymerlari **hali yozilmagan**; jonli Telegram/PostgreSQL/Redis sinovi yo‘q.
+**Oxirgi yangilanish:** 2026-10-17 · **Holat:** yangi oqimning 1-bosqichi (guruhdagi bevosita qo‘shish/qisqa izoh) va foydalanuvchi ruxsat bergan **2-bosqichi (nomli guruh + 30 kunlik bepul e’lon)** oflayn ✅. Pullik xaridning oddiy odamga ochilishi va barcha foydalanuvchilarning pullik tarifga mos mustaqil Start/Stop taymeri hali yo‘q. Jonli Telegram/PostgreSQL/Redis sinovi qolgan; Replitni foydalanuvchi o‘zi yangilatadi. Har keyingi bosqichga alohida ruxsat kerak.
 
 ---
 
-## Joriy yangi oqim: 1-bosqich (2026-10-17)
+## Joriy yangi oqim: 1–2-bosqichlar (2026-10-17)
 
-Kelishilgan to‘liq yangi reja: [docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md).
+Kelishilgan talablari va xavfsiz talqinlar: [docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md).
 
-- Oddiy guruh a’zosi Telegram guruhining «A’zo qo‘shish» tugmasidan foydalanadi; shaxsiy bot menyusi, `/start` yoki havola kerak emas. Yangi guruh Sanoqchisida `added_by=true`, `link=false`, `notify_inviter=false`, ammo `enabled=false`, `dry_run=true`; mavjud guruh sozlamalari yashirincha almashtirilmaydi. Admin eski guruhda manbani alohida yoqib, avval sinovdan keyin jonli tasdiqlaydi.
-- Jonli SOFT xabarni o‘chirsa yoki eski HARD mute qo‘ysa, guruhdagi matn **faqat** «Guruhga yozish uchun odam qo‘shing.»; raqam, havola, tugma, bot menyusi yoki shaxsiy DM yo‘q. Guruhda 60 soniyalik spam cheklovi va taxminan 15 soniyalik DB cleanup saqlangan. Maxsus eski kanal sharti yoqilsa boshqa qisqa izoh chiqadi; yangi guruhda kanal talabi yo‘q.
-- Botning havola yaratish huquqi bevosita qo‘shish uchun shart emas. Botga ma’lum bo‘lmagan umumiy havola, join request va chat-folder kirishi qo‘shgan odamga avtomatik yozilmaydi; takror, o‘zini qo‘shish va botlar hisoblanmaydi. Sanoqchi guruhlar bo‘yicha alohida, qolish/a’zolik tekshiruvi saqlangan. Shu guruhni qamragan faol, pullik, sinov bo‘lmagan tarif egasi taklif talabidan ozod.
-- Guruhning Slow Mode’i Telegram sozlamasidan boshqariladi. **Muhim:** Sanoqchi jonli bo‘lsa oddiy guruh xabarlarini ham tekshiradi; aralash suhbat guruhida ko‘r-ko‘rona yoqmang. Eski `/takliflarim`/havola ixtiyoriy qolgan.
-- Tekshiruv: **408/408** oflayn pytest, `compileall`, o‘zgargan Python fayllariga Ruff (`--ignore UP045,UP037`), vaqtinchalik SQLite’da `alembic upgrade head` + `alembic check` («No new upgrade operations detected.»), seed ×2 o‘tdi. DB sxemasi o‘zgarmadi; haqiqiy Telegram/PostgreSQL/Redis sinovi yo‘q.
-- Keyingi bosqichlar alohida ruxsat bilan: soha guruhi tanlanadigan qisqa e’lon oqimi va bir oylik bepul huquq, hamma uchun pullik tarif, keyin guruh+foydalanuvchi bo‘yicha alohida Start/Stop va adolatli poster. Hozirgi `ad_service.submit` hamon sotuvchi obunasini, `posting_service.eligible_ad` hamon faol obunani va guruh/toifa navbatini talab qiladi; **yangi avtomatik e’lon modeli ishlamaydi**.
+- **1-bosqich:** guruhning «A’zo qo‘shish» tugmasi; `InviteEvent`dagi haqiqiy tasdiqlangan direct-add, bot/havola majburiy emas. Guruhdagi e’lon talabi izohi faqat **«Guruhga yozish uchun odam qo‘shing.»**, taxminan 15s keyin o‘chadi. Yangi guruh Sanoqchi `added_by=true`, `link=false`, `notify_inviter=false`, lekin `enabled=false`/`dry_run=true`. Eski guruhlar yashirincha o‘zgarmaydi; faol pullik tarif shu guruhdagi yozish talabidan ozod.
+- **2-bosqich UX:** oddiy/sotuvchi shaxsiy `/start` yoki `/elon`dan **soha guruhi nomi** tugmasini tanlaydi; bepul/pullik shartlar ko‘rinadi. Pullik oddiy xarid hali ma’lumot xolos, eski sotuvchi oqimi o‘zgarmaydi. Bepul yo‘lda sotuvchilik arizasisiz bitta surat+caption, preview→admin, har yangi/tahrirlangan mazmun uchun alohida tasdiq; admin panelida alohida «🎁 Bepul e’lonlar» navbati. Rad etilgan tahrir eski tasdiqlangan mazmunni o‘zgartirmaydi.
+- **Huquq:** `free_ads`, `free_entitlements`, `free_invite_uses`, `free_post_logs` (`871c32b421d5`); eski guruhda bepul switch default **OFF**. Har guruhda bot admin+faol toifa+posting+jonli direct-add Sanoqchi (`N>0`, `require_subscription=false`), bepul switchni admin alohida yoqadi. 30×24 soat faqat tasdiq+N sarflanmagan `added_by` event+reklama beruvchining hozirgi a’zoligi+start istagi bilan boshlanadi; navbatdagi davr uchun yangi N event kerak. Qo‘lda yozish uchun CounterTotal boshqa. 1 user+guruhda 1 joriy bepul e’lon, boshqa guruh va keyingi davrlar ochiq.
+- **Poster:** bepul `FreeAd.next_post_at` odamga xos (guruh `interval_sec`, ilk/har postdan so‘ng); mavjud pullik `group_rotation.next_post_at` unga 30 daqiqalik to‘siq emas. Stop/start bepul e’lon uchungina; bot `/start` kampaniya starti emas. Texnik navbat 10s tick’da guruhdan bitta, umumiy 2s limiter, quiet/daily cap, global/group pauza va Telegram noma’lum natijasiga fail-safe. Pullik poster avvalgidek obunali `Ad` guruh/toifa aylanmasi; unga individual tarif intervallarini va’da qilmaslik.
+- **Tekshiruv:** **422/422** oflayn pytest, `compileall`, o‘zgargan Python fayllarga Ruff (`--ignore UP045,UP037`), yangi vaqtinchalik SQLite bazasida `alembic upgrade head` + `alembic check` (50 jadval), eski pullik guruh saqlangan holda upgrade/downgrade/upgrade (bepul default OFF), seed ×2 (26 sozlama, 30 matn, 3 tarif; ikkinchisi dublikat yaratmadi), `git diff --check` o‘tdi. Real Replit/Telegram/PostgreSQL/Redis qabul sinovi qilinmagan.
+- **Keyingi alohida ruxsat:** oddiy foydalanuvchiga pullik xarid va tarifga xos surat/interval, keyin barcha kampaniyaga umumiy mustaqil Start/Stop va adolatli poster. Admin Replit agentiga yangilash buyrug‘ini o‘zi beradi.
 
 ## 0. Bir qarashda (TL;DR)
 
@@ -28,9 +28,9 @@ Kelishilgan to‘liq yangi reja: [docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIM
 | Repo | `https://github.com/xudush92-cmd/4x40in-bot` |
 | Ish shoxobi | `arena/18e1094b-4x40in-bot` (shu chatning shoxobchasi; `main`ga tegilmaydi) |
 | Texnologiya | Python 3.11+/3.12, aiogram 3.31, SQLAlchemy 2.1 (async), PostgreSQL 16, Redis 7, APScheduler, Docker Compose + Caddy + webhook |
-| Testlar | **408/408 oflayn test o'tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, SQLite + soxta Telegram API); jonli Telegram/PostgreSQL/Redis emas |
-| Migratsiya | `f789aa7b756f` → `c8a21b6d0f42` → `4f30ae7c912b` → `8d93a17e623c` → **`b6c8e4d0192a`** (46 jadval; SQLite `alembic check` toza) |
-| Keyingi qadam | Yangi oqimning 1-bosqichi oflayn tugadi. 2-bosqich — bir oylik bepul bot e’loni va qisqa guruh tanlash menyusi — uchun alohida ruxsat va ochiq limit qarorlari kerak. Replitni foydalanuvchi o‘zi yangilatadi; jonli Telegram/PostgreSQL/Redis qabul sinovi qolgan |
+| Testlar | **422/422 oflayn test o‘tdi** (`PYTHONPATH=. .venv/bin/python -m pytest -q`, SQLite + soxta Telegram API); jonli Telegram/PostgreSQL/Redis emas |
+| Migratsiya | `f789aa7b756f` → `c8a21b6d0f42` → `4f30ae7c912b` → `8d93a17e623c` → **`b6c8e4d0192a`** → **`871c32b421d5`** (50 jadval; SQLite `alembic check` toza) |
+| Keyingi qadam | 1–2-bosqichlar oflayn tugadi; keyingi pullik xarid/universal individual taymerga alohida ruxsat kerak. Replitni foydalanuvchi o‘zi yangilatadi; jonli qabul sinovi qolgan |
 | Ish qoidasi | ⚠️ **Foydalanuvchi ruxsatisiz kod yozilmaydi** — har bosqich oxirida hisobot + ruxsat so'rash |
 
 ---
@@ -573,14 +573,15 @@ SHOP_BOT/
 │   ├── main.py                 # RUN_MODE: bot | poster | all
 │   ├── bot.py                  # Bot/Dispatcher, middleware, xato ushlagich
 │   ├── config.py, constants.py, states.py, logging_setup.py, redis_client.py
-│   ├── db/models.py            # 46 jadval (Phase 8 + UX-2 ariza)
+│   ├── db/models.py            # 50 jadval (bepul e’lon/huquq/taklif/post ham)
 │   ├── services/
 │   │   ├── settings_service.py     # 26 global sozlama (restart kerak emas)
 │   │   ├── group_service.py, category_service.py
 │   │   ├── seller_service.py, tariff_service.py, subscription_service.py, application_service.py
 │   │   ├── seller_dashboard.py # UX-3 holat jamlovchi (faqat o'qish)
 │   │   ├── ad_service.py           # ⬅️ Phase 3 (e'lon hayot sikli)
-│   │   ├── posting_service.py, posting_limiter.py  # Phase 4 DB navbat va limiter
+│   │   ├── posting_service.py, posting_limiter.py  # Phase 4 pullik DB navbat/limiter
+│   │   ├── free_ad_service.py  # 30 kun/haqiqiy direct-add/grant/shaxsiy due
 │   │   ├── payment_service.py   # Phase 5 karta/chek/qaror/obuna
 │   │   ├── group_policy_service.py  # Phase 6 guruh filtr/jazo/ruxsat qoidalari
 │   │   ├── counter_service.py  # Phase 7 sanoqchi/kanal/join/kredit/audit
@@ -590,20 +591,23 @@ SHOP_BOT/
 │   │   ├── __init__.py         # build_root_router() — router tartibi MUHIM
 │   │   ├── common.py           # /start, fallback, sotuvchi holati
 │   │   ├── applications.py     # UX-2 user arizasi + admin navbati
+│   │   ├── free_ads.py         # guruh tanlash, surat+preview, holat/Stop/Start
 │   │   ├── admin/              # panel, settings, groups, policy, counter.py va boshqalar
 │   │   ├── seller/ads.py, seller/payments.py  # e'lon ustasi va chek FSM
 │   │   └── group/              # lifecycle, policy, counter.py (invite + xabar)
 │   ├── keyboards/              # admin, groups, policy, counter.py va boshqalar
-│   ├── scheduler/jobs.py       # posting_tick_job + counter_job + cleanup
-│   ├── scheduler/poster.py     # Telegram albomi, aloqa, xatolar, jo'natish
-│   ├── scheduler/runner.py     # job ro'yxati (posting_tick — har 10 sekund)
+│   ├── scheduler/jobs.py       # pullik/bepul 10s tick + counter + cleanup
+│   ├── scheduler/poster.py     # pullik Telegram albomi, aloqa, xatolar
+│   ├── scheduler/free_poster.py # bepul claim → Telegram → natija, uncertain pauza
+│   ├── scheduler/runner.py     # har 10 sekundda pullik va bepul alohida job
 │   └── web/server.py           # /health, /stats, webhook
-├── tests/                      # 400 test (+ conftest.py, fake_telegram.py)
+├── tests/                      # 422 oflayn test (jumladan test_free_group_ads.py)
 ├── alembic/versions/f789aa7b756f_boshlangich_sxema.py
 ├── alembic/versions/c8a21b6d0f42_phase6_xabar_siyosati.py
 ├── alembic/versions/4f30ae7c912b_phase7_sanoqchi.py
 ├── alembic/versions/8d93a17e623c_phase8_referral_panels_broadcast.py
 ├── alembic/versions/b6c8e4d0192a_ux2_seller_applications.py
+├── alembic/versions/871c32b421d5_free_group_ads_and_invite_entitlement.py
 ├── scripts/seed.py, backup.sh, restore.sh, deploy.sh, preflight.py, load_smoke.py
 └── docs/DEPLOY.md, VIDEO_SENARIY.md  # operator yo‘riqnomasi; video fayli yo‘q
 ```
@@ -614,7 +618,7 @@ SHOP_BOT/
 
 ### Router tartibi (`app/handlers/__init__.py`)
 ```
-admin_router → seller_payments_router → seller_ads_router → seller_router → application_user_router → group_router → common.router
+admin_router → free_ads.router → seller_payments_router → seller_ads_router → seller_router → application_user_router → group_router → common.router
 ```
 E'lon va to'lov router'lari (`app/handlers/seller/{ads,payments}.py`) **root darajasida**
 turadi (sabab: yuqoridagi Phase 3 xatosi). Sotuvchi panelida `SellerPanelCB.filter()`
@@ -622,6 +626,11 @@ router filtri bor; to'lov router'ida esa `SellerPaymentStates` bilan kelgan rasm
 ushlanadi. Ariza (`ApplicationCB`, user FSM/admin FSM) sotuvchi routeridan
 **alohida** ulangan, admin qarorida DB roli servisda ham tekshiriladi.
 **Boshqa prefiksdagi router'ni seller_router ichiga qo'shmang**.
+Bepul `FreeCB` faqat private/haqiqiy `from_user.id`, `FreeModCB` faqat admin/moderator;
+`GroupCB(action=free_ads)`ni moderator o'zgartira olmaydi. Bepul post `Ad`
+va `Subscription` emas; `FreeInviteUse.event_id` noyob, eski event keyingi
+30 kunga qayta sanalmaydi. Claim Telegram'dan oldin commit qilinadi,
+`sending` natijasi noma'lum bo'lsa admin tekshiradi, avtomatik retry YO'Q.
 `group_router`: lifecycle → counter (chat_member/join request va /takliflarim) →
 policy (oddiy xabarlar). Phase 6 policy handleri join xizmat xabarida Phase 7
 `service_join`ni chaqirib, o'sha xabarni cleanerda ham ishlashiga ruxsat beradi;

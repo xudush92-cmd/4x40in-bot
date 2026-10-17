@@ -98,7 +98,7 @@ async def test_direct_add_button_unlocks_without_personal_link_or_bot_menu(sessi
     await send(session, dp, bot, message(9101))
     assert fake.called("DeleteMessage") == [{"chat_id": GROUP_CHAT_ID, "message_id": 9101}]
     assert [p["text"] for p in fake.called("SendMessage")] == [
-        "Guruhga yozish uchun odam qo'shing.",
+        "Guruhga yozish uchun odam qo‘shing.",
     ]
 
     # Hatto eski guruhda DM switchi yoqilgan bo'lsa ham qo'lda qo'shgan
@@ -137,7 +137,7 @@ async def test_direct_add_is_scoped_to_group_and_self_join_is_not_counted(sessio
     assert await counters.total_for(session, other_gid, INVITER) == 0
     await send(session, dp, bot, message(9203, chat_id=OTHER))
     assert [p["text"] for p in fake.called("SendMessage") if p["chat_id"] == OTHER] == [
-        "Guruhga yozish uchun odam qo'shing.",
+        "Guruhga yozish uchun odam qo‘shing.",
     ]
 
     other_chat = Chat(id=OTHER, type="supergroup", title="Ikkinchi guruh")

@@ -14,6 +14,7 @@ from app.handlers.admin import (
     categories,
     counter,
     errors,
+    free_ads,
     groups,
     mods,
     panel,
@@ -51,6 +52,7 @@ admin_router.include_router(sellers.router)      # 🛒 sotuvchilar (FSM)
 admin_router.include_router(applications_router)  # 📥 sotuvchilik arizalari (FSM)
 admin_router.include_router(tariffs.router)      # 💳 tariflar (FSM)
 admin_router.include_router(mods.router)         # ✅ moderatsiya + 📢 e'lonlar
+admin_router.include_router(free_ads.router)     # 🎁 bepul e'lonlar — majburiy moderatsiya
 admin_router.include_router(posting.router)      # 📋 navbat / 🚀 qo'lda joylash (Phase 4)
 admin_router.include_router(payments.router)     # 💰 cheklar va rekvizitlar (Phase 5)
 admin_router.include_router(panel.router)        # 🛠 asosiy menyu va bo'limlar

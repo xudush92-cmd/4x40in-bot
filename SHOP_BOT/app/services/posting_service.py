@@ -24,6 +24,8 @@ from app.db.models import (
     CleanerSetting,
     CleanupLog,
     ErrorLog,
+    FreeAd,
+    FreePostLog,
     Group,
     GroupRotation,
     GroupSettings,
@@ -267,6 +269,13 @@ async def claim_post(
             session.add(ErrorLog(source="poster", group_id=group_id, message=sending.error, is_critical=True))
             return None, PostingResult("uncertain", sending.error, sending.ad_id, notify=True)
         return None, PostingResult("busy", "Bu guruhda joylash davom etmoqda.")
+    # Bepul va pullik post bir guruhga bir vaqtda ketmasin. Bepul claim ham
+    # shu group_rotation qatorini qulflaydi; yuborish payti sending log turadi.
+    free_sending = (await session.execute(select(FreePostLog.id).where(
+        FreePostLog.group_id == group_id, FreePostLog.status == "sending",
+    ).limit(1))).scalar_one_or_none()
+    if free_sending is not None:
+        return None, PostingResult("busy", "Bepul e'lon joylash davom etmoqda.")
 
     zone_name = settings.timezone or str(await settings_service.get("timezone", "Asia/Tashkent", session))
     tz = timezone_for(zone_name)
@@ -319,6 +328,18 @@ async def claim_post(
             if await _cas_next(session, rotation, later):
                 return None, PostingResult("deferred", f"Keyingi nomzod: {later.isoformat()}")
             return None, PostingResult("busy")
+        # Bepul oqim eski Ad/Subscription navbatida ko'rinmaydi. Uni pullik
+        # navbat bo'sh deb guruh bilan birga to'xtatish xavfli: invite hisoblash
+        # ham o'chadi. Pullik soatni to'xtatamiz, bepul taymerlar alohida yuradi.
+        has_free = (await session.execute(select(FreeAd.id).where(
+            FreeAd.group_id == group_id,
+        ).limit(1))).scalar_one_or_none()
+        if has_free is not None:
+            # Pullik navbatni kelajakda yana tekshiramiz: keyinchalik Ad
+            # tasdiqlansa ushbu guruhning eski pullik postlari ham uyg'onsin.
+            # Bu vaqt bepul e'lonlarning alohida next_post_at'ini to'smaydi.
+            rotation.next_post_at = now + timedelta(seconds=max(MIN_INTERVAL_SEC, settings.interval_sec))
+            return None, PostingResult("empty", "Pullik navbat bo'sh; bepul e'lonlar alohida ishlaydi.")
         await pause_group(session, group, reason="empty_queue")
         group.last_error = "Navbatda obunasi faol e'lon yo'q"
         session.add(PostLog(group_id=group_id, status="skipped", error=group.last_error))

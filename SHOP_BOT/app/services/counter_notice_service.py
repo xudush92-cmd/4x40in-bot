@@ -91,7 +91,7 @@ def _text(issue: str) -> str:
     # Guruh a'zosi bot menyusidan foydalanishi shart emas. Raqam, havola,
     # shaxsiy hisob va ortiqcha tugmalarni ommaviy xabarda ko'rsatmaymiz.
     if issue == "counter_not_done":
-        return "Guruhga yozish uchun odam qo'shing."
+        return "Guruhga yozish uchun odam qo‘shing."
     # Faqat eski guruhda admin alohida yoqqan kanal qoidasi uchun: yolg'on
     # «odam qo'shing» degan izoh yubormaymiz (yangi guruhda kanal talabi yo'q).
     return "Guruhga yozish uchun obuna shartini bajaring."

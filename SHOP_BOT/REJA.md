@@ -917,8 +917,10 @@ o'zgartirish, eski postni o'chirish, FloodWait/Forbidden ishlovi).
 Oldingi Phase 0–9 rejasi tarixiy asos bo‘lib qoladi. Guruhda qo‘lda odam
 qo‘shish, bot orqali bir oylik bepul/pullik e’lon va har foydalanuvchining
 mustaqil Start/Stop taymeri bo‘yicha joriy talablar va ochiq qarorlar:
-**[docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md)**. Hozir faqat
-birinchi bosqich kodlangan; keyingi bosqichlarga alohida ruxsat kerak.
+**[docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md)**. 1-bosqich
+(guruhga qo‘lda a’zo qo‘shish) va 2-bosqich (soha guruhi + bir oylik
+bepul e’lon) kodlangan; oddiy odamga pullik xarid hamda barcha pullik
+kampaniyalarning mustaqil Start/Stop tizimiga alohida ruxsat kerak.
 
 ## 16. KEYINGI QADAM
 

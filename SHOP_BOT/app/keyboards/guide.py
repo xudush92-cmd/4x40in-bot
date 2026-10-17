@@ -9,7 +9,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import ApplicationStatus
-from app.keyboards.callbacks import AdminCB, ApplicationCB, GuideCB, SellerPanelCB
+from app.keyboards.callbacks import AdminCB, ApplicationCB, FreeCB, GuideCB, SellerPanelCB
 
 # Kalit → (tugma, qisqa Telegram HTML matni). Mavjud amallar bilan mos saqlang.
 GUIDES: dict[str, dict[str, tuple[str, str]]] = {
@@ -17,12 +17,13 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
         "home": ("📖 Boshlash", (
             "📖 <b>Botdan foydalanish — foydalanuvchi</b>\n\n"
             "1️⃣ /start — bot bilan shaxsiy suhbatni ochadi.\n"
-            "2️⃣ E'lonlarni bot ulangan guruhlarda toifalar bo'yicha ko'ring.\n"
-            "3️⃣ Guruh N kishi yoki kanal a'zoligi shartini qo'ysa, "
-            "/takliflarim orqali holat va shaxsiy havolani ko'ring.\n"
-            "4️⃣ Sotuvchi bo'lish uchun «🛒 Sotuvchi bo'lish» arizasini shaxsiy chatda "
-            "yuboring. Admin tasdiqlasa sotuvchi paneli ochiladi; tarif, chek va "
-            "e'lonlar alohida tekshiriladi. Oddiy /start cheklanmagan.\n\n"
+            "2️⃣ «📢 E'lon joylash» yoki /elon → soha guruhi nomi → bepul/pullik "
+            "shartlar. Bepul: guruhdagi «A'zo qo'shish» bilan N do'st, bitta "
+            "surat+izoh, admin tasdig'i, 30 kun. Sotuvchilik arizasi shart emas.\n"
+            "3️⃣ Guruhda qo'lda yozish uchun bot menyusi shart emas: Telegram "
+            "guruhida «A'zo qo'shish»dan foydalaning.\n"
+            "4️⃣ Eski pullik sotuvchi kabinetini ochish uchun «🛒 Sotuvchi bo'lish» "
+            "arizasini yuboring. Oddiy pullik xarid keyin ochiladi.\n\n"
             "/help — buyruqlar · /id — Telegram ID · /xabarlar_stop — ommaviy DMni to'xtatish."
         )),
         "counter": ("🧮 Taklif va kanal", (
@@ -41,8 +42,10 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "📖 <b>Botdan foydalanish — sotuvchi</b>\n\n"
             "/start → kabinet: tarif/muddat, e'lon limiti, e'lonlar va oxirgi chek "
             "holati hamda keyingi qadam. «📅 Mening tarifim»da rasm chegarasi ham bor.\n"
-            "«📢 Mening e'lonlarim» tarifsiz ham eski e'lonlarni ko'rsatadi; yangi "
-            "e'lon uchun faol tarif va bo'sh limit zarur. «👤 Aloqa ma'lumotlari» "
+            "«📢 Mening e'lonlarim» tarifsiz ham eski pullik e'lonlarni ko'rsatadi; "
+            "yangi pullik e'lon uchun faol tarif va bo'sh limit zarur. "
+            "«🎁 Guruh uchun bepul e'lon» alohida, N do'st+admin tasdig'i bilan. "
+            "«👤 Aloqa ma'lumotlari» "
             "faqat o'zingizga ko'rinadi, tahrir uchun adminga yozing.\n"
             "Tarif yo'q yoki muddati o'tgan bo'lsa, «💳 Tariflarni ko'rish / olish»dan "
             "tarifni tanlang yoki «☎️ Yordam» orqali adminga yozing.\n"
@@ -87,8 +90,9 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "«👥 Guruhlar» → superguruh → «🔄 Huquqlarni tekshirish»; "
             "botga o'chirish, cheklash va taklif huquqlari kerak. "
             "Telegram Privacy Mode o'chirilgan bo'lsin.\n"
-            "«🧩 Funksiyalar»da joylashni yoqing; guruh sozlamalarida interval, "
-            "kunlik limit, jitter va tinch soatlarni kiriting. "
+            "«🧩 Funksiyalar»da joylashni yoqing; bepul oqimni har guruhda "
+            "alohida yoqing (default o'chiq, jonli direct-add Sanoqchi ham kerak). "
+            "Guruh sozlamalarida interval, kunlik limit, jitter va tinch soatlarni kiriting. "
             "«🗂 Toifalar»da shu guruhga toifa ulang; unga alohida interval berish mumkin.\n"
             "«📋 E'lonlar navbati»dan tekshiring. «🚀 Hoziroq» — haqiqiy xabar: "
             "faqat sinov guruhida ishlating."
@@ -120,7 +124,8 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
         "home": ("📖 Boshlash", (
             "📖 <b>Botni boshqarish — moderator</b>\n\n"
             "Shaxsiy /start yoki /admin orqali panelni oching. "
-            "Vazifangiz — «✅ Moderatsiya»da e'lonni ko'rib chiqish.\n"
+            "Vazifangiz — «✅ Moderatsiya» (pullik) va «🎁 Bepul e'lonlar» "
+            "navbatida rasm/matnni ko'rib chiqish.\n"
             "Tarif, to'lov, global sozlama va guruh qoidalarini "
             "faqat admin/super-admin o'zgartiradi.\n"
             "Shubhali e'londa sababni yozing; bank chekini bu ekrandan tasdiqlamang."
@@ -131,6 +136,8 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "aloqa va rasmlarni ko'ring. Mos bo'lsa tasdiqlang, "
             "bo'lmasa tayyor yoki qo'lda sabab bilan rad eting.\n"
             "Rad etilganda sotuvchi e'lonni tahrirlab qayta yuborishi mumkin. "
+            "Bepul e'lon alohida navbatda: har tahrirni qayta tekshiring, "
+            "taklif va 30 kunni bot mustaqil tekshiradi. "
             "Xato yoki yetishmayotgan huquqda admin bilan bog'laning."
         )),
     },
@@ -141,7 +148,9 @@ def user_start_kb(
     support: str, *, application_status: str | None = None, can_apply: bool = True,
 ) -> InlineKeyboardMarkup:
     """Oddiy /start va yo'riqnomadan qaytish bir xil, haqiqiy holatga mos."""
-    rows: list[list[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = [[InlineKeyboardButton(
+        text="📢 E'lon joylash — guruhni tanlash", callback_data=FreeCB(action="list").pack(),
+    )]]
     if can_apply and application_status in (None, ApplicationStatus.REJECTED):
         rows.append([InlineKeyboardButton(
             text="🛒 Qayta ariza" if application_status else "🛒 Sotuvchi bo'lish",

@@ -19,6 +19,7 @@ from app.scheduler.jobs import (
     counter_notice_cleanup_job,
     daily_stats_job,
     expire_subscriptions_job,
+    free_posting_tick_job,
     group_cleanup_job,
     heartbeat_job,
     posting_tick_job,
@@ -56,6 +57,13 @@ def build_scheduler(settings: Settings, bot: Bot | None = None) -> AsyncIOSchedu
             args=[bot],
             id="posting_tick",
             name="Aylanma joylash",
+        )
+        scheduler.add_job(
+            free_posting_tick_job,
+            IntervalTrigger(seconds=10),
+            args=[bot],
+            id="free_posting_tick",
+            name="Bepul e'lonlar: shaxsiy muddat va navbat",
         )
         scheduler.add_job(
             broadcast_tick_job,

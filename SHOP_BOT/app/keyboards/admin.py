@@ -21,6 +21,7 @@ ADMIN_SECTIONS: list[tuple[str, str, int]] = [
     ("tariffs", "💳 Tariflar", 2),
     ("ads", "📢 E'lonlar", 3),
     ("moderation", "✅ Moderatsiya", 3),
+    ("free_moderation", "🎁 Bepul e'lonlar", 3),
     ("payments", "💰 To'lovlar", 5),
     ("guard", "🛡 Posbon", 6),
     ("cleaner", "🧹 Tozalovchi", 6),
@@ -48,6 +49,7 @@ READY_SECTIONS = {
     "tariffs",
     "ads",
     "moderation",
+    "free_moderation",
     "payments",
     "guard",
     "cleaner",
@@ -66,7 +68,7 @@ READY_SECTIONS = {
 # bo'limlar faqat bitta qo'shimcha bosqich orqali ochiladi.
 HUB_SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "sales": ("🛒 Savdo", ("applications", "sellers", "tariffs", "payments", "referral")),
-    "content": ("📢 Kontent", ("ads", "moderation", "categories", "broadcast")),
+    "content": ("📢 Kontent", ("ads", "moderation", "free_moderation", "categories", "broadcast")),
     "control": ("📊 Nazorat", ("stats", "users", "errors")),
     "system": ("⚙️ Tizim", ("settings", "texts", "admins")),
 }
@@ -80,6 +82,7 @@ COUNTABLE_SECTIONS = {
     "sellers",
     "ads",
     "moderation",
+    "free_moderation",
     "payments",
     "users",
     "errors",
@@ -114,6 +117,7 @@ def admin_main_kb(
     if _visible("payments", role):
         queues.append(_section_button("payments", counts))
     rows: list[list[InlineKeyboardButton]] = [queues]
+    rows.append([_section_button("free_moderation", counts)])
     rows.append([_section_button("groups", counts)])
     rows.append([
         InlineKeyboardButton(text=HUB_SECTIONS[key][0], callback_data=AdminCB(action="hub", value=key).pack())

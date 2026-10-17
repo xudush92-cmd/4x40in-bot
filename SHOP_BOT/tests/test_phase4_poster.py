@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
@@ -84,7 +85,11 @@ async def test_two_ads_rotate_and_manual_force_moves_cursor(clean_db) -> None:
     group_id, cat_id, [first, second] = await prepared(photos=1, ads=2)
     fake = FakeSession()
     bot = make_bot(fake)
-    now = utcnow()
+    # Interval 31 minut: lokal yarim tun yaqinida today_count reseti tabiiy.
+    # Test esa aynan bitta kunlik aylanishni tekshiradi, shuning uchun tush.
+    now = (utcnow().astimezone(ZoneInfo("Asia/Tashkent")) + timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0,
+    ).astimezone(UTC)
     try:
         one = await poster.post_group(bot, group_id, now=now)
         assert one.status == "sent" and one.ad_id == first

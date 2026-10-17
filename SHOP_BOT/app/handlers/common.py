@@ -26,7 +26,13 @@ from app.services.seller_service import get_seller
 from app.services.settings_service import settings_service
 from app.services.stats_service import get_menu_counts
 from app.services.text_service import text_service
-from app.states import AdminApplicationStates, SellerAdStates, SellerApplicationStates, SellerPaymentStates
+from app.states import (
+    AdminApplicationStates,
+    FreeAdStates,
+    SellerAdStates,
+    SellerApplicationStates,
+    SellerPaymentStates,
+)
 from app.utils.text import escape_html
 from app.utils.tg import alert, render
 from app.utils.time import ensure_aware, utcnow
@@ -52,6 +58,7 @@ async def user_home(
         text += f"\n\n🚫 Sotuvchi hisobingiz cheklangan.{reason} Tiklash uchun adminga yozing."
         return text, user_start_kb(support, can_apply=False)
     text = text.replace(old_hint, new_hint)
+    text += "\n\n🎁 Bepul e'lon uchun sotuvchilik arizasi shart emas: quyida guruhni tanlang."
     application = await application_service.latest_for(session, user_id)
     if application is None:
         text += "\n\n🛒 Sotuvchi bo'lishni istasangiz, shaxsiy ariza yuboring; /start ochiq qoladi."
@@ -85,7 +92,8 @@ async def cmd_start(
 ) -> None:
     """Bot bilan tanishish. ref_<kod> faqat yangi foydalanuvchiga yoziladi."""
     cancellable_steps = (*SellerApplicationStates.__all_states__, AdminApplicationStates.waiting_reason,
-                         *SellerAdStates.__all_states__, *SellerPaymentStates.__all_states__)
+                         *SellerAdStates.__all_states__, *SellerPaymentStates.__all_states__,
+                         *FreeAdStates.__all_states__)
     if state and await state.get_state() in {step.state for step in cancellable_steps}:
         await state.clear()  # eski ariza/e'lon/chek matni yangi /start'ni yutib yubormasin
     name = escape_html((user.first_name if user else None) or message.from_user.first_name or "do'st")
@@ -151,6 +159,7 @@ async def cmd_help(message: Message, is_admin: bool) -> None:
         "",
         "📌 <b>Buyruqlar:</b>",
         "/start — boshlash",
+        "/elon — guruhni tanlab bepul e'lon yuborish",
         "/help — yordam",
         "/id — Telegram ID'ingizni ko'rish",
         "/ping — bot ishlayotganini tekshirish",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from aiogram import Router
 
-from app.handlers import common
+from app.handlers import common, free_ads
 from app.handlers.admin import admin_router
 from app.handlers.applications import user_router as application_user_router
 from app.handlers.group import group_router
@@ -20,6 +20,7 @@ from app.handlers.seller.payments import router as seller_payments_router
 def build_root_router() -> Router:
     root = Router(name="root")
     root.include_router(admin_router)           # 1) admin amallari (private)
+    root.include_router(free_ads.router)        # 1a) barcha uchun guruh-bepul e'lon (private)
     root.include_router(seller_payments_router) # 2) sotuvchi to'lovi/chek FSM (Phase 5)
     root.include_router(seller_ads_router)      # 3) sotuvchi e'lonlari (Phase 3)
     root.include_router(seller_router)          # 4) sotuvchi paneli

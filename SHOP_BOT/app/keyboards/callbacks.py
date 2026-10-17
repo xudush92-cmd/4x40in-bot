@@ -51,6 +51,22 @@ class PolicyCB(CallbackData, prefix="pol"):
     value: str = "-"
 
 
+class FreeCB(CallbackData, prefix="free"):
+    """Shaxsiy bepul e'lon: action, guruh ID. User ID faqat sessiyadan olinadi."""
+
+    action: str
+    group_id: int = 0
+
+
+class FreeModCB(CallbackData, prefix="fmod"):
+    """Adminning e'lonni ko'rish/qaror callback'i (eskirgan revision rad etiladi)."""
+
+    action: str
+    ad_id: int = 0
+    revision: int = 0
+    page: int = 0
+
+
 class CounterCB(CallbackData, prefix="mine"):
     """Foydalanuvchining shaxsiy sanoqchi sahifasi (boshqa odamga ID yo'q)."""
 

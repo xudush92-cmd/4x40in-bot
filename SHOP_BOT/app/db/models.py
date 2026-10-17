@@ -218,6 +218,8 @@ class GroupSettings(Base, TimestampMixin):
     )
     # Funksiya kalitlari (REJA.md 1 — "har funksiyani alohida to'xtatish")
     posting_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Yangi bepul oqim pullik guruhlarda tasodifan yoqilmasin: alohida opt-in.
+    free_ads_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     counter_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     guard_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     cleaner_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -778,6 +780,85 @@ class InviteEvent(Base, TimestampMixin):
     message_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     counted: Mapped[bool] = mapped_column(Boolean, default=False)
     reject_reason: Mapped[Optional[str]] = mapped_column(String(64))
+
+
+class FreeAd(Base, TimestampMixin):
+    """Bitta foydalanuvchining bitta guruhdagi BEPUL e'loni; pullik Ad emas.
+
+    Pending rasm/matn hech qachon posterga berilmaydi: faqat admin tasdiqlagan
+    approved_* ustunlari yuboriladi. Tahrir rad etilsa eskisi saqlanadi.
+    """
+
+    __tablename__ = "free_ads"
+    __table_args__ = (
+        UniqueConstraint("user_id", "group_id", name="uq_free_ad_user_group"),
+        Index("ix_free_ads_due", "next_post_at", "group_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), index=True)
+    approved_photo_id: Mapped[Optional[str]] = mapped_column(String(255))
+    approved_caption: Mapped[Optional[str]] = mapped_column(Text)
+    pending_photo_id: Mapped[Optional[str]] = mapped_column(String(255))
+    pending_caption: Mapped[Optional[str]] = mapped_column(Text)
+    review_status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    desired_running: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_post_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_post_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    post_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_reason: Mapped[Optional[str]] = mapped_column(String(255))
+    reviewed_by: Mapped[Optional[int]] = mapped_column(BigInteger)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class FreeEntitlement(Base, TimestampMixin):
+    """Foydalanuvchi+guruh uchun 30 kunlik huquq; oylar taklifni qayta sarflamaydi."""
+
+    __tablename__ = "free_entitlements"
+    __table_args__ = (UniqueConstraint("user_id", "group_id", name="uq_free_ent_user_group"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id", ondelete="CASCADE"), index=True)
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class FreeInviteUse(Base, TimestampMixin):
+    """UNIQUE event_id: bir haqiqiy qo'shilish faqat bitta bepul oyga yaraydi."""
+
+    __tablename__ = "free_invite_uses"
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("invite_events.id", ondelete="CASCADE"), primary_key=True
+    )
+    entitlement_id: Mapped[int] = mapped_column(
+        ForeignKey("free_entitlements.id", ondelete="CASCADE"), index=True
+    )
+    period: Mapped[int] = mapped_column(Integer)
+
+
+class FreePostLog(Base, TimestampMixin):
+    """Alohida yetkazish jurnali: sending uzilsa avtomatik takror yo'q."""
+
+    __tablename__ = "free_post_logs"
+    __table_args__ = (Index("ix_free_post_logs_group_status", "group_id", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    free_ad_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("free_ads.id", ondelete="SET NULL"), index=True
+    )
+    group_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("groups.id", ondelete="SET NULL"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(16))  # sending | sent | skipped | error | uncertain
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class CounterTotal(Base, TimestampMixin):

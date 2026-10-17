@@ -357,6 +357,10 @@ async def set_feature(
                 if category.rotation and not category.rotation.is_paused:
                     category.rotation.next_post_at = None
         await recompute_next_post(session, group, delay_min_sec=5 if enabled else None)
+        if enabled and group.settings.free_ads_enabled:
+            from app.services.free_ad_service import rebase_group_due
+
+            await rebase_group_due(session, group)
     elif str(feature) == GroupFeature.COUNTER:
         # Phase 7: matritsa tugmasi sanoqchini faqat sinov rejimida yoqadi.
         from app.services.counter_service import ensure_counter
@@ -414,6 +418,10 @@ async def set_setting(
                     ) if category.rotation.last_post_at is not None else None
                 )
         await recompute_next_post(session, group)
+        if field_name == "interval_sec" and group.settings.free_ads_enabled:
+            from app.services.free_ad_service import rebase_group_due
+
+            await rebase_group_due(session, group)
     await session.flush()
 
 
@@ -458,6 +466,10 @@ async def resume_group(session: AsyncSession, group: Group, *, enable_posting: b
             if category.rotation and not category.rotation.is_paused:
                 category.rotation.next_post_at = None
     await recompute_next_post(session, group, delay_min_sec=5)
+    if group.settings and group.settings.free_ads_enabled:
+        from app.services.free_ad_service import rebase_group_due
+
+        await rebase_group_due(session, group)
     logger.info("Guruh qayta yoqildi: {}", group.display)
 
 

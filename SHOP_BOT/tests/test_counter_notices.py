@@ -86,7 +86,7 @@ async def test_soft_shows_reason_in_group_when_dm_blocked_and_deletes_after_15s(
     sent = group_notices(fake)
     assert len(sent) == 1
     text = sent[0]["text"]
-    assert text == "Guruhga yozish uchun odam qo'shing."
+    assert text == "Guruhga yozish uchun odam qo‘shing."
     assert "reply_markup" not in sent[0] and "parse_mode" not in sent[0]
     assert not any(p["chat_id"] == INVITER for p in fake.called("SendMessage"))
     assert not fake.called("GetMe")  # ortiqcha API kutishi ham, bot havolasi ham yo'q
@@ -149,7 +149,7 @@ async def test_hard_join_warns_only_after_successful_mute(session, tg):
     await send(session, dp, bot, membership(INVITEE, update_id=8301))
     assert fake.called("RestrictChatMember")
     assert len(group_notices(fake)) == 1
-    assert group_notices(fake)[0]["text"] == "Guruhga yozish uchun odam qo'shing."
+    assert group_notices(fake)[0]["text"] == "Guruhga yozish uchun odam qo‘shing."
     assert (await notice_rows(session))[0].status == "pending"
     await send(session, dp, bot, membership(INVITEE, update_id=8302))
     assert len(group_notices(fake)) == 1  # takroriy update/xuddi shu mute

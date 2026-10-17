@@ -87,6 +87,13 @@ class SellerAdStates(StatesGroup):
     preview = State()
 
 
+class FreeAdStates(StatesGroup):
+    """Bepul e'lon: bitta surat+caption → shaxsiy ko'rib chiqish → admin."""
+
+    waiting_photo = State()
+    preview = State()
+
+
 class AdminModerationStates(StatesGroup):
     """Moderatsiya bo'limi (Phase 3)."""
 

@@ -219,6 +219,13 @@ async def open_section(
         await alert(callback, "")
         return
 
+    if key == "free_moderation":
+        from app.handlers.admin.free_ads import render_pending
+
+        await render_pending(callback, session)
+        await alert(callback, "")
+        return
+
     if key == "payments":
         if role not in (AdminRole.ADMIN, AdminRole.SUPER):
             await alert(callback, "⛔️ To'lovlarni faqat admin boshqaradi.", show=True)

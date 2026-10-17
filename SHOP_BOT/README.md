@@ -17,14 +17,18 @@ joylashtiruvchi bot. Hamma boshqaruv — inline tugmalar orqali, kodga tegmasdan
 
 ---
 
-## 📌 Hozirgi holat: **Phase 0–9 + UX-1/2/3 + guruhda bevosita qo‘shish (yangi bosqich 1) oflayn ✅ · jonli qabul qolgan**
+## 📌 Hozirgi holat: **Phase 0–9 + UX-1/2/3 + yangi oqimning 1–2-bosqichlari oflayn ✅ · jonli qabul qolgan**
 
-**Yangi e’lon oqimining faqat birinchi bosqichi bajarildi:** guruh ichida
-«A’zo qo‘shish» hisobi, minimal 15 soniyalik ogohlantirish va mavjud pullik
-tarif egasining shu guruhdagi taklifdan ozodligi. Oddiy foydalanuvchining
-**bot orqali bir oylik bepul e’loni**, hamma uchun **arizasiz pullik xarid**
-va **har foydalanuvchining alohida Start/Stop intervali** hali yozilmagan.
-Guruh Slow Mode’ini administrator Telegramning o‘zida sozlaydi.
+Guruhdagi «A’zo qo‘shish» hisobi va faqat **«Guruhga yozish uchun odam qo‘shing.»**
+degan 15 soniyalik izoh bajarilgan. Endi oddiy foydalanuvchi shaxsiy botda
+soha guruhini tanlab, sotuvchilik arizasisiz **30 kunlik bepul e’lon** yuborishi
+mumkin: guruhdagi jonli N ta haqiqiy direct-add, bitta surat, har yangi/tahrirlangan
+mazmunni admin tasdig‘i, shaxsiy due/Stop/Start va keyingi oyga yangi takliflar.
+Guruhda bepul dastur **default OFF**; admin faqat sinovdan keyin har guruhda
+alohida yoqadi. **Hamma uchun pullik xarid** va eski pullik posterning har
+odam/tarifga xos Start/Stop qayta qurilishi hali yozilmagan. Guruh Slow Mode’i
+Telegramning o‘zida sozlanadi. **422/422 oflayn test**, SQLite migratsiya/check
+va seed ×2 o‘tgan; Replit/jonli Telegram tekshiruvi qilinmagan.
 
 Phase 9da olingan ruxsat doirasida yuklama smoke, deploy/backup/restore
 xavfsizligi va qo‘llanmalar qo‘shildi. **Bu ishlab chiqarishda sinovdan o‘tgan
@@ -43,7 +47,7 @@ aloqa ma’lumotlari faqat o‘ziga ochiladi. [Deploy va tiklash](docs/DEPLOY.md
 | Ish | Holat |
 |---|---|
 | Docker Compose (bot + poster + PostgreSQL 16 + Redis 7 + Caddy) | ✅ |
-| 46 jadvalli baza sxemasi + Alembic (Phase 8 + UX-2 alohida ariza jadvali) | ✅ |
+| 50 jadvalli sxema + Alembic (UX-2 arizasi va 2-bosqich bepul huquq/e’lon/post jurnali) | ✅ |
 | Konfiguratsiya (.env, pydantic-settings, validatsiya) | ✅ |
 | Loglar (loguru, kunlik aylanish), xato jurnali (`error_log`) | ✅ |
 | Middleware'lar (DB sessiya, foydalanuvchi konteksti, anti-flood, texnik rejim) | ✅ |
@@ -161,12 +165,12 @@ shaxsiy `/start`i, menyusi va taklif havolasi shart emas. Telegram taklif
 qiluvchini ko'rsatmasa yoki yangi a'zo bo'lmasa, bot birovga hisob yozmaydi;
 belgilangan qolish vaqtidan keyin a'zolikni qayta tekshiradi. Jonli SOFT xabarni
 o'chirsa (yoki eski HARD rejimda mute qilsa), guruhdagi izoh **aynan**
-«Guruhga yozish uchun odam qo'shing.» — raqam, havola, tugma va ortiqcha DM yo'q.
+«Guruhga yozish uchun odam qo‘shing.» — raqam, havola, tugma va ortiqcha DM yo'q.
 Izoh bir a'zo/guruhga 60 soniyada ko'pi bilan bir marta yuboriladi; poster yoki
 `RUN_MODE=all`dagi 1 sekundlik navbat uni taxminan 15 soniyadan keyin o'chiradi.
 Bot/Telegram/DB xatosi yoki poster to'xtashi o'chirishni kechiktirishi mumkin.
-Guruhning **Slow Mode** intervali Telegram sozlamasidan qo'yiladi; botning
-avtomatik e'lon posteri bundan mustaqil (keyingi bosqich). Sanoqchi jonli bo'lsa,
+Guruhning **Slow Mode** intervali Telegram sozlamasidan qo'yiladi;
+avtomatik e'lon posteri bundan mustaqil. Sanoqchi jonli bo'lsa,
 qo'lda yozilgan oddiy suhbat xabarlarini ham tekshiradi: uni faqat e'lonlarga
 mo'ljallangan guruhda sinab yoqing. Shu guruhni qamrab olgan faol **pullik**
 tarif egasi taklif talabidan ozod. Eski `/takliflarim`/shaxsiy havola yo'li
@@ -179,6 +183,18 @@ sinovdan keyin faqat o'sha guruhda jonli tasdiqlasin. Kanal talabi shart emas
 (standartda o'chiq); `min_stay_minutes` standartda 10, admin uni 0 ga tushirishi
 mumkin. Hisob schedulerda har 30 soniyada qayta tekshiriladi, shu bois hatto
 0 daqiqada ham darhol ochilish kafolatlanmaydi.
+
+**Botda bepul e’lon (yangi bosqich 2):** `alembic upgrade head` (`871c32b421d5`)
+→ admin «👥 Guruhlar → 🧩 Funksiyalar → 🎁 Bepul e’lonlar»ni **har guruhda
+alohida** yoqadi (default OFF). Shu guruhda bot admin, faol toifa, joylash va
+qo‘lda qo‘shish sanoqchisi **jonli**, kanal sharti o‘chiq bo‘lishi kerak.
+Foydalanuvchi shaxsiy `/elon` yoki `/start` → guruh nomi → bepul shartlar →
+bitta surat+izoh → admin tasdig‘i. N ta direct-add tasdiqlangach 30×24 soat
+boshlanadi, `group_settings.interval_sec` **har userning** shaxsiy eng erta
+post oralig‘i bo‘ladi; tahrir/Stop muddatni uzaytirmaydi, keyingi davrga yangi
+tasdiqlangan takliflar kerak. `🎁 Bepul e’lonlar` admin moderatsiya navbatida
+rasm/matn ko‘riladi; pullik navbat eski tartibida qolgan. [Aniq shartlar,
+pauza/limit va test ko‘rsatmalari](docs/YANGI_ELON_OQIMI.md).
 
 **Chegara:** haqiqiy Telegram/supergroup/kanal, botning Privacy Mode'i va
 PostgreSQL/Redis parallel worker sinovi deploydan oldin shart. Eski dublikat
@@ -235,7 +251,7 @@ Tarifsiz ham eski e’lonlar va chek tarixini ko‘radi, yangi e’lon faqat
 `ads_used` limitidan farq qilishi mumkin (qoralama/tarixiy e’lonlar alohida).
 UX-3ga migratsiya kerak emas. [UX batafsil rejasi](docs/PANELLAR_VA_ARIZA_REJASI.md).
 
-**Deploydan oldin:** `alembic upgrade head` (UX-2: `b6c8e4d0192a`) va
+**Deploydan oldin:** `alembic upgrade head` (bepul oqim: `871c32b421d5`) va
 `python -m scripts.seed` (26 sozlama, 30 matn, 3 namuna tarif) bajaring.
 SQLite offline tekshiruvi PostgreSQL/Redis va haqiqiy Telegram/bank sinovini
 almashtirmaydi. Phase 9ning deploy/restore amaliy qadamlari uchun
@@ -346,7 +362,7 @@ SHOP_BOT/
 │   ├── redis_client.py      # Redis + FSM storage (ixtiyoriy komponent)
 │   ├── db/
 │   │   ├── base.py          # engine, sessiya, JSONB varianti
-│   │   └── models.py        # 46 jadval (REJA.md 4-bo'lim + Phase 6–8 + UX-2)
+│   │   └── models.py        # 50 jadval (tarixiy bosqichlar + bepul huquq/e’lonlar)
 │   ├── handlers/
 │   │   ├── applications.py  # sotuvchilik arizasi (user FSM + admin navbati)
 │   │   ├── common.py        # /start, /help, /id, /ping, fallback + sotuvchi holati

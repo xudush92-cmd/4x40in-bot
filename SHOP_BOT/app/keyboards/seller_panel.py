@@ -8,7 +8,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.db.models import Tariff
-from app.keyboards.callbacks import GuideCB, SellerPanelCB
+from app.keyboards.callbacks import FreeCB, GuideCB, SellerPanelCB
 from app.utils.text import truncate
 
 
@@ -23,6 +23,9 @@ def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0,
     if can_create_ad is None:
         can_create_ad = has_subscription
     rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="🎁 Guruh uchun bepul e'lon", callback_data=FreeCB(
+            action="list",
+        ).pack())],
         [InlineKeyboardButton(
             text=f"📢 Mening e'lonlarim ({ads_count})",
             callback_data=SellerPanelCB(action="ads").pack(),
