@@ -7,24 +7,19 @@ from datetime import timedelta
 import pytest_asyncio
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
 from aiogram.methods import DeleteMessage, RestrictChatMember, SendMessage
-from aiogram.types import ChatMemberLeft, ChatMemberMember
 from sqlalchemy import select
 
 from app.config import get_settings
 from app.constants import AdminRole
-from app.db.models import Admin, GroupMessageAction, Permission, Setting
-from app.handlers.group import counter as handler
+from app.db.models import Admin, GroupMessageAction, Permission, RequiredChannel, Setting
 from app.handlers.group.policy import claim_due_actions
 from app.scheduler.runner import build_scheduler
 from app.services import counter_notice_service as notices
-from app.services import counter_service as counters
 from app.utils.time import ensure_aware, utcnow
 from tests.fake_telegram import (
     ADMIN_ID,
-    BOT_ID,
     GROUP_CHAT_ID,
     FakeSession,
-    bot_member,
     make_bot,
     make_dispatcher,
     reset_dispatcher_state,
@@ -40,7 +35,6 @@ from tests.test_phase7_counter import (
     send,
     setup_group,
     subscribed,
-    user,
 )
 
 
@@ -49,7 +43,6 @@ async def tg(session):
     session.add(Admin(user_id=ADMIN_ID, role=AdminRole.SUPER))
     await session.commit()
     await reset_dispatcher_state()
-    handler._membership_cache.clear()
     fake = FakeSession()
     bot = make_bot(fake)
     dp = make_dispatcher()
@@ -190,27 +183,19 @@ async def test_dry_run_exemption_unknown_and_global_pause_have_no_notice(session
     assert not fake.called("DeleteMessage")
 
 
-async def test_explicit_subscription_condition_is_explained_only_when_enabled(session, tg):
+async def test_historical_channel_flag_does_not_change_notice(session, tg):
     fake, bot, dp = tg
     gid = await setup_group(session)
     await enable(session, gid, subscribe=True, dry_run=False)
-    await counters.add_channel(session, group_id=gid, channel_id=CHANNEL,
-                               username="alohida", title="Alohida kanal",
-                               invite_link="https://t.me/alohida", actor_id=111111)
+    # Eski qator/flag mavjud bo'lsa ham kanal so'ralmaydi va izoh o'zgarmaydi.
+    session.add(RequiredChannel(group_id=gid, channel_tg_id=CHANNEL,
+                                is_active=True, username="arxiv"))
     await session.commit()
-
-    def member(payload):
-        uid = payload["user_id"]
-        if uid == BOT_ID:
-            return bot_member()
-        if payload["chat_id"] == CHANNEL:
-            return ChatMemberLeft(user=user(uid), status="left")
-        return ChatMemberMember(user=user(uid), status="member")
-
-    fake.overrides["GetChatMember"] = member
+    subscribed(fake)
     await send(session, dp, bot, message(8501))
     assert len(group_notices(fake)) == 1
-    assert group_notices(fake)[0]["text"] == "Guruhga yozish uchun obuna shartini bajaring."
+    assert group_notices(fake)[0]["text"] == "Guruhga yozish uchun odam qo‘shing."
+    assert all(p["chat_id"] != CHANNEL for p in fake.called("GetChatMember"))
     assert "reply_markup" not in group_notices(fake)[0]
 
 

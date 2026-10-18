@@ -4,7 +4,7 @@ Imkoniyatlar:
   * toifalar ro'yxati (guruh bo'yicha filtr bilan), kartasi
   * yaratish (nom/emoji + guruh tanlash), nomini o'zgartirish
   * guruhga biriktirish / biriktirilishini olib tashlash
-  * faol/pauza, moderatsiya rejimi, alohida interval
+  * faol/pauza; e'lon moderatsiyasi majburiy, interval tarifga tegishli
   * tartibni o'zgartirish (⬆️/⬇️), o'chirish
 """
 
@@ -19,7 +19,7 @@ from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import MAX_INTERVAL_SEC, MIN_INTERVAL_SEC, AdminRole
+from app.constants import AdminRole
 from app.db.models import Category
 from app.filters import IsAdmin
 from app.handlers.admin._roles import ReadOnlyForModerator
@@ -37,7 +37,7 @@ from app.keyboards.categories import (
 from app.keyboards.common import PER_PAGE_CATEGORIES, PER_PAGE_GROUPS
 from app.services import category_service, group_service
 from app.states import AdminCategoryStates
-from app.utils.text import escape_html, fmt_interval, human_int, truncate
+from app.utils.text import escape_html, human_int, truncate
 from app.utils.tg import alert, render
 
 router = Router(name="admin:categories")
@@ -77,8 +77,7 @@ def _card_text(category: Category, group_title: str | None, stats: dict[str, int
         "━━━━━━━━━━━━━━━━━━━━",
         f"📎 Guruh: <b>{escape_html(group_title) if group_title else '— biriktirilmagan ⚠️'}</b>",
         f"📌 Holat: {'🟢 Faol' if category.is_active else '⏸ To‘xtatilgan'}",
-        f"🧾 Moderatsiya: {'✅ talab qilinadi' if category.moderation_required else '⚪️ shart emas'}",
-        f"⏱ Interval: <b>{fmt_interval(category.interval_override) if category.interval_override else 'guruh bilan bir xil'}</b>",
+        "🧾 Mazmun: ✅ admin tasdig'i shart",
         f"🔢 Tartib: <b>#{category.position}</b>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"📢 E'lonlar: <b>{stats['total']}</b> "
@@ -251,30 +250,6 @@ async def start_rename(
     await alert(callback, "")
 
 
-@router.callback_query(CategoryCB.filter(F.action == "interval"))
-async def start_interval(
-    callback: CallbackQuery, callback_data: CategoryCB, state: FSMContext, session: AsyncSession
-) -> None:
-    category = await category_service.get_category(session, callback_data.category_id)
-    if category is None:
-        await alert(callback, "⚠️ Toifa topilmadi", show=True)
-        return
-
-    await state.clear()
-    await state.update_data(category_id=category.id)
-    await state.set_state(AdminCategoryStates.waiting_interval)
-    await render(
-        callback,
-        "⏱ <b>Toifa uchun alohida interval</b>\n"
-        f"Hozirgi: <b>{fmt_interval(category.interval_override) if category.interval_override else 'guruh bilan bir xil'}</b>\n\n"
-        f"Daqiqada yuboring ({MIN_INTERVAL_SEC // 60}–{MAX_INTERVAL_SEC // 60}).\n"
-        "Guruh intervaliga qaytarish uchun: <code>0</code>\n"
-        "Bekor qilish uchun /cancel",
-        cancel_edit_kb(category.id),
-    )
-    await alert(callback, "")
-
-
 @router.callback_query(CategoryCB.filter(F.action == "group"))
 async def choose_group(callback: CallbackQuery, callback_data: CategoryCB, session: AsyncSession) -> None:
     await render_group_choice(callback, session, callback_data.category_id, page=0)
@@ -338,24 +313,6 @@ async def toggle_active(callback: CallbackQuery, callback_data: CategoryCB, sess
     await alert(callback, "🟢 Yoqildi" if category.is_active else "⏸ To'xtatildi")
 
 
-@router.callback_query(CategoryCB.filter(F.action == "moderation"))
-async def toggle_moderation(
-    callback: CallbackQuery, callback_data: CategoryCB, session: AsyncSession
-) -> None:
-    category = await category_service.get_category(session, callback_data.category_id)
-    if category is None:
-        await alert(callback, "⚠️ Toifa topilmadi", show=True)
-        return
-
-    await category_service.set_moderation(session, category, not category.moderation_required)
-    await render_card(callback, session, category.id)
-    await alert(
-        callback,
-        "🧾 Yangi e'lonlar admin tasdig'ini kutadi" if category.moderation_required else "✅ E'lonlar darhol navbatga tushadi",
-        show=True,
-    )
-
-
 @router.callback_query(CategoryCB.filter(F.action == "order"))
 async def on_order(callback: CallbackQuery, session: AsyncSession) -> None:
     await render_order(callback, session)
@@ -415,6 +372,9 @@ async def on_delete_confirm(
 # ═══════════════════ FSM: nom / interval kiritish ══════════════════
 @router.message(StateFilter(AdminCategoryStates.waiting_name), F.text)
 async def apply_create_name(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if (message.text or "").strip().split("@")[0] == "/cancel":
+        await cancel_category_input(message, state, session)
+        return
     name = (message.text or "").strip()
     if len(name) < 2:
         await message.answer("⚠️ Nom juda qisqa. Kamida 2 belgi. Bekor qilish: /cancel")
@@ -442,6 +402,9 @@ async def apply_create_name(message: Message, state: FSMContext, session: AsyncS
 
 @router.message(StateFilter(AdminCategoryStates.waiting_rename), F.text)
 async def apply_rename(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if (message.text or "").strip().split("@")[0] == "/cancel":
+        await cancel_category_input(message, state, session)
+        return
     name = (message.text or "").strip()
     data = await state.get_data()
     category_id = int(data.get("category_id") or 0)
@@ -459,39 +422,6 @@ async def apply_rename(message: Message, state: FSMContext, session: AsyncSessio
 
     await state.clear()
     await message.answer(f"✅ Yangi nom: <b>{escape_html(category_service.display_name(category))}</b>")
-    await render_card(message, session, category.id)
-
-
-@router.message(StateFilter(AdminCategoryStates.waiting_interval), F.text)
-async def apply_interval(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    raw = (message.text or "").strip()
-    data = await state.get_data()
-    category_id = int(data.get("category_id") or 0)
-
-    category = await category_service.get_category(session, category_id)
-    if category is None:
-        await state.clear()
-        await message.answer("⚠️ Toifa topilmadi.")
-        return
-
-    if not raw.isdigit():
-        await message.answer("⚠️ Raqam yuboring (daqiqada) yoki 0. Bekor qilish: /cancel")
-        return
-
-    minutes = int(raw)
-    if minutes == 0:
-        await category_service.set_interval_override(session, category, None)
-        await message.answer("✅ Interval guruh sozlamasiga qaytarildi.")
-    else:
-        if not (MIN_INTERVAL_SEC // 60) <= minutes <= (MAX_INTERVAL_SEC // 60):
-            await message.answer(
-                f"⚠️ Qiymat {MIN_INTERVAL_SEC // 60}–{MAX_INTERVAL_SEC // 60} daqiqa orasida bo'lishi kerak."
-            )
-            return
-        await category_service.set_interval_override(session, category, minutes * 60)
-        await message.answer(f"✅ Alohida interval saqlandi: <b>{minutes} daqiqa</b>")
-
-    await state.clear()
     await render_card(message, session, category.id)
 
 

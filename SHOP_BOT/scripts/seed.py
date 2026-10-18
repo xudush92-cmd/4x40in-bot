@@ -37,6 +37,7 @@ SAMPLE_TARIFFS = [
         "duration_days": 30,
         "max_ads": 3,
         "max_photos": 2,
+        "interval_sec": 1800,
         "position": 1000,
     },
     {
@@ -46,6 +47,7 @@ SAMPLE_TARIFFS = [
         "duration_days": 30,
         "max_ads": 10,
         "max_photos": 5,
+        "interval_sec": 600,
         "position": 2000,
     },
     {
@@ -55,6 +57,7 @@ SAMPLE_TARIFFS = [
         "duration_days": 30,
         "max_ads": 30,
         "max_photos": 10,
+        "interval_sec": 300,
         "position": 3000,
     },
 ]

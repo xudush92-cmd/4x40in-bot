@@ -57,7 +57,8 @@ async def run(*, groups: int = 200, ads: int = 5000, hours: int = 24) -> dict:
                 await conn.run_sync(Base.metadata.create_all)
             async with factory() as session:
                 seller = Seller(user_id=999999000, status="active")
-                tariff = Tariff(name="Sintetik 5000 slot", max_ads=ads)
+                tariff = Tariff(name="Sintetik 5000 slot", price=100000, max_ads=ads,
+                                interval_sec=3600)
                 session.add_all([seller, tariff])
                 await session.flush()
                 session.add(Subscription(
@@ -87,7 +88,8 @@ async def run(*, groups: int = 200, ads: int = 5000, hours: int = 24) -> dict:
                 rows = [
                     {"seller_id": seller.id, "category_id": categories[i % groups].id,
                      "group_id": categories[i % groups].group_id,
-                     "title": f"E'lon {i}", "position": i, "status": "active"}
+                     "title": f"E'lon {i}", "position": i, "status": "active",
+                     "next_eligible_at": horizon}
                     for i in range(ads)
                 ]
                 await session.execute(insert(Ad), rows)

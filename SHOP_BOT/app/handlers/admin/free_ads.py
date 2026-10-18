@@ -6,7 +6,9 @@ from math import ceil
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from loguru import logger
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,8 +17,10 @@ from app.constants import AdminRole
 from app.db.models import ActionLog, FreeAd, Group
 from app.filters import IsAdmin
 from app.keyboards.callbacks import FreeCB, FreeModCB
-from app.keyboards.free_ads import free_pending_kb, free_review_kb, free_revoke_kb
+from app.keyboards.free_ads import free_pending_kb, free_review_kb, free_revoke_kb, free_rule_kb
 from app.services import free_ad_service as free_ads
+from app.services.settings_service import settings_service
+from app.states import AdminFreePlanStates
 from app.utils.text import escape_html
 from app.utils.tg import alert, render
 
@@ -58,6 +62,77 @@ async def on_list(callback: CallbackQuery, callback_data: FreeModCB,
     await alert(callback, "")
 
 
+async def render_rule(target: CallbackQuery | Message, session: AsyncSession,
+                      *, can_edit: bool) -> None:
+    enabled = bool(await settings_service.get("free_plan_enabled", True, session))
+    seconds = int(await settings_service.get("free_interval_sec", 1800, session))
+    await render(target, "🎁 <b>Yagona bepul reja</b>\n\n"
+                 "📅 Huquq: 30 × 24 soat; har davr uchun shu guruhdagi N ta "
+                 "bevosita qo'shilgan haqiqiy a'zo.\n"
+                 "🖼 Bitta surat, matnni admin tasdiqlaydi; tahrir qayta ko'riladi.\n"
+                 f"⏱ Joylash oralig'i: <b>{seconds // 60} daqiqa</b>.\n"
+                 f"Holat: {'🟢 ochiq' if enabled else '⏸ pauzada'}.\n\n"
+                 "N har guruh Sanoqchisida mustaqil; eski huquqlar o'chirilmaydi. "
+                 "Admin pauzasi alohida e'lon kartasida.",
+                 free_rule_kb(enabled, seconds // 60, can_edit=can_edit))
+
+
+@router.callback_query(FreeModCB.filter(F.action == "rule"))
+async def on_rule(callback: CallbackQuery, session: AsyncSession,
+                  role: str | None = None) -> None:
+    await render_rule(callback, session, can_edit=role in {AdminRole.ADMIN, AdminRole.SUPER})
+    await alert(callback, "")
+
+
+@router.callback_query(FreeModCB.filter(F.action == "rule_toggle"), IsAdmin(AdminRole.ADMIN))
+async def on_rule_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    old = bool(await settings_service.get("free_plan_enabled", True, session))
+    await settings_service.set(session, "free_plan_enabled", not old,
+                               updated_by=callback.from_user.id)
+    session.add(ActionLog(actor_id=callback.from_user.id, action="free_plan_switch",
+                          entity="setting", before={"enabled": old},
+                          after={"enabled": not old}))
+    # Yoqilganda ham eski muddati o'tgan postlar to'planib ketmasin.
+    if not old:
+        for group in (await session.execute(select(Group))).scalars():
+            await free_ads.rebase_group_due(session, group)
+    await render_rule(callback, session, can_edit=True)
+    await alert(callback, "✅ Saqlandi")
+
+
+@router.callback_query(FreeModCB.filter(F.action == "rule_interval"), IsAdmin(AdminRole.ADMIN))
+async def on_rule_interval(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminFreePlanStates.waiting_interval)
+    await render(callback, "⏱ Bepul reja oralig'ini daqiqada kiriting (1–1440).\n"
+                 "Masalan: <code>30</code>. Bekor qilish: /cancel",
+                 free_rule_kb(True, 30, can_edit=False))
+    await alert(callback, "")
+
+
+@router.message(StateFilter(AdminFreePlanStates.waiting_interval), IsAdmin(AdminRole.ADMIN))
+async def save_rule_interval(message: Message, state: FSMContext,
+                             session: AsyncSession) -> None:
+    raw = (message.text or "").strip()
+    if raw == "/cancel":
+        await state.clear()
+        await render_rule(message, session, can_edit=True)
+        return
+    if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= 1440:
+        await message.answer("⚠️ 1–1440 daqiqa orasida son yuboring. /cancel")
+        return
+    await state.clear()
+    old = int(await settings_service.get("free_interval_sec", 1800, session))
+    seconds = int(raw) * 60
+    await settings_service.set(session, "free_interval_sec", seconds,
+                               updated_by=message.from_user.id)
+    session.add(ActionLog(actor_id=message.from_user.id, action="free_plan_interval",
+                          entity="setting", before={"seconds": old},
+                          after={"seconds": seconds}))
+    for group in (await session.execute(select(Group))).scalars():
+        await free_ads.rebase_group_due(session, group)
+    await render_rule(message, session, can_edit=True)
+
+
 @router.callback_query(FreeModCB.filter(F.action == "card"))
 async def on_card(callback: CallbackQuery, callback_data: FreeModCB,
                   session: AsyncSession) -> None:
@@ -85,7 +160,9 @@ async def on_card(callback: CallbackQuery, callback_data: FreeModCB,
                  f"👥 {escape_html(group_name)}\n"
                  f"👤 <code>{ad.user_id}</code>\n\n"
                  f"{escape_html(caption or '')}\n\n"
-                 "Admin tasdiq faqat mazmunga; taklif/oy alohida tekshiriladi.",
+                 f"Admin pauzasi: {'⏸ yoqilgan' if ad.admin_paused else '▶️ mavjud emas'}; "
+                 f"foydalanuvchi: {'▶️ Start' if ad.desired_running else '⏹ Stop'}.\n"
+                 "Tasdiq, taklif, a'zolik va muddat alohida tekshiriladi.",
                  free_review_kb(ad) if pending else free_revoke_kb(ad))
     await alert(callback, "")
 
@@ -123,6 +200,19 @@ async def on_review(callback: CallbackQuery, callback_data: FreeModCB,
         logger.debug("Bepul e'lon #{} foydalanuvchiga DM yuborilmadi", callback_data.ad_id)
     await render_pending(callback, session)
     await alert(callback, "✅ Tasdiqlandi" if approve else "❌ Rad etildi")
+
+
+@router.callback_query(FreeModCB.filter(F.action.in_({"pause", "unpause"})))
+async def on_admin_pause(callback: CallbackQuery, callback_data: FreeModCB,
+                         session: AsyncSession) -> None:
+    try:
+        ad = await free_ads.set_admin_pause(session, callback_data.ad_id,
+                                            callback_data.revision, callback.from_user.id,
+                                            paused=callback_data.action == "pause")
+    except ValueError as exc:
+        await alert(callback, str(exc), show=True)
+        return
+    await on_card(callback, FreeModCB(action="card", ad_id=ad.id), session)
 
 
 @router.callback_query(FreeModCB.filter(F.action == "revoke_confirm"))

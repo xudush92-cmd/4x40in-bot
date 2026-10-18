@@ -47,7 +47,7 @@ DEFAULT_TEXTS: dict[str, str] = {
         "👋 Assalomu alaykum, <b>{ism}</b>!\n\n"
         "Bu bot — guruhlar uchun onlayn do'kon uslubidagi e'lonlar tizimi.\n\n"
         "📌 Guruhlarda toifa bo'yicha e'lonlarni ko'rishingiz mumkin.\n"
-        "📌 Sotuvchi bo'lish uchun pastdagi arizani yuboring; admin ko'rib chiqadi.\n\n"
+        "📌 Bepul guruh e'loni yoki pullik tarifni tanlang; oldindan ariza shart emas.\n\n"
         "☎️ Yordam: {yordam}"
     ),
     # /start (admin)
@@ -113,8 +113,7 @@ DEFAULT_TEXTS: dict[str, str] = {
     ),
     "ad.approved": (
         "✅ <b>E'loningiz tasdiqlandi!</b>\n\n"
-        "📢 {elon}\n\n"
-        "E'lon navbatga qo'shildi — navbati kelganda guruhlarga joylanadi."
+        "📢 {elon}"
     ),
     "ad.rejected": (
         "❌ <b>E'loningiz rad etildi</b>\n\n"

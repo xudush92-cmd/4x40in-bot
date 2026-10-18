@@ -38,19 +38,15 @@ DEFAULTS: dict[str, Any] = {
     "guard_enabled_global": True,
     "cleaner_enabled_global": True,
     "welcome_enabled_global": True,
-    # Joylash
-    "default_interval_sec": 1800,
-    "default_jitter_percent": 10,
-    "default_daily_post_limit": 50,
-    "min_interval_sec": 60,
+    # Bitta global bepul reja: muddat 30 x 24 soat, 1 surat; interval adminniki.
+    "free_plan_enabled": True,
+    "free_interval_sec": 1800,
     # Sotuvchi / obuna (Phase 2)
     "bot_username": "",                # @username — referal havolasi uchun (Phase 8)
     "subscription_reminder_days": 3,   # muddati tugashidan necha kun oldin eslatma
     "subscription_grace_days": 0,      # muddati o'tgach necha kun "grace" holatida turadi
     # Moderatsiya / limitlar
-    "moderation_required_default": False,
     "default_max_photos": 3,
-    "default_max_ads": 5,
     "receipt_required": True,        # chek rasmini majburiy qilish
     "receipt_duplicate_check": True,
     # Referal

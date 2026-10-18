@@ -1,9 +1,14 @@
 # SHOP-BOT — joylash, monitoring va tiklash qo‘llanmasi
 
 > Bu **operator yo‘riqnomasi**, jonli deploy bajarilgani haqidagi dalil emas.
-> Phase 9 oflayn sinovlari PostgreSQL/Redis, Telegram, bank va TLSning jonli
+> Phase 9 va joriy tarif/bepul oqim oflayn sinovlari PostgreSQL/Redis, Telegram, bank va TLSning jonli
 > ishlashini tasdiqlamaydi. Bularni ishlab chiqarishga chiqarishdan **oldin**
-> ajratilgan test muhitida tekshiring.
+> ajratilgan test muhitida tekshiring. **Joriy xatti-harakat:** [YANGI_ELON_OQIMI.md](YANGI_ELON_OQIMI.md).
+> `a7c890e42d1b` migratsiyasidan oldin DB backup oling; mavjud grant/cheklar migratsiyadagi
+> tarifdan snapshot oladi, oldingi tahrirlangan narxlarning asl qiymati tiklanmaydi.
+> Eski kanal va link manbalari faolsizlanadi; avval hisoblangan link N kreditlari
+> joriy agregatdan ayriladi, ammo xom taklif yozuvlari saqlanadi. Faqat Telegram
+> superguruhlari va «A’zo qo‘shish» manbasi uchun sozlang.
 
 ## 1. Tayyorlash (operator)
 
@@ -131,7 +136,7 @@ Telegram yuborish vaqti **simulyatsiya qilinadi**, API so‘rovi yo‘q. Natijad
 millisekundlar lokal mashina/SQLitega xos; ular production SLA, PostgreSQL
 `SKIP LOCKED` yoki Telegram flood limitiga kafolat emas. Haqiqiy qabul uchun
 **alohida test server**da jonli PostgreSQL/Redis, ikki worker poygasi, Telegram
-supergroup/kanal, webhook TLS, to‘lovni bankda solishtirish va tiklash drillini
+superguruh, webhook TLS, to‘lovni bankda solishtirish va tiklash drillini
 tekshirib, natija/vaqt/xatolarni qayd qiling. Bularni bu muhitda bajarib bo‘lmadi.
 
 ## 5. Maxfiylik va huquqiy eslatma (yuridik maslahat emas)

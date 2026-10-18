@@ -82,8 +82,27 @@ def free_pending_kb(ads: list[FreeAd], page: int, pages: int) -> InlineKeyboardM
                 action="list", page=page + 1,
             ).pack()))
         rows.append(nav)
+    rows.append([InlineKeyboardButton(text="🎁 Bepul reja qoidasi", callback_data=FreeModCB(
+        action="rule",
+    ).pack())])
     rows.append([InlineKeyboardButton(text="🔄 Yangilash", callback_data=FreeModCB(
         action="list", page=page,
+    ).pack())])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def free_rule_kb(enabled: bool, interval_minutes: int, *, can_edit: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if can_edit:
+        rows += [[InlineKeyboardButton(
+            text="🟢 Yoqilgan" if enabled else "⏸ To'xtagan",
+            callback_data=FreeModCB(action="rule_toggle").pack(),
+        )], [InlineKeyboardButton(
+            text=f"⏱ {interval_minutes} daqiqa — o'zgartirish",
+            callback_data=FreeModCB(action="rule_interval").pack(),
+        )]]
+    rows.append([InlineKeyboardButton(text="◀️ Bepul e'lonlar", callback_data=FreeModCB(
+        action="list",
     ).pack())])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -104,10 +123,17 @@ def free_review_kb(ad: FreeAd) -> InlineKeyboardMarkup:
 
 def free_revoke_kb(ad: FreeAd, *, confirm: bool = False) -> InlineKeyboardMarkup:
     action = "revoke" if confirm else "revoke_confirm"
-    rows = [[InlineKeyboardButton(
+    rows = []
+    if not confirm:
+        rows.append([InlineKeyboardButton(
+            text="▶️ Admin pauzasini yechish" if ad.admin_paused else "⏸ Faqat shu e'lonni pauzalash",
+            callback_data=FreeModCB(action="unpause" if ad.admin_paused else "pause",
+                                    ad_id=ad.id, revision=ad.revision).pack(),
+        )])
+    rows.append([InlineKeyboardButton(
         text="⚠️ HA, tasdiqni bekor qilish" if confirm else "🚫 Tasdiqni bekor qilish",
         callback_data=FreeModCB(action=action, ad_id=ad.id, revision=ad.revision).pack(),
-    )]]
+    )])
     rows.append([InlineKeyboardButton(
         text="◀️ E'lon kartasi" if confirm else "◀️ Ro'yxat",
         callback_data=FreeModCB(action="card" if confirm else "list", ad_id=ad.id).pack(),

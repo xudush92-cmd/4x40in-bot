@@ -36,19 +36,18 @@ async def sellers(session, tariff_price: str = "150000"):
     return referrer, referee, tariff, method
 
 
-async def enable(session, *, trigger=ReferralTrigger.SIGNUP, kind="balance", value="50000", limit="5"):
+async def enable(session, *, trigger=ReferralTrigger.SIGNUP, kind="balance", value="50000"):
     await refs.set_config(session, "trigger", trigger, 111111)
     await refs.set_config(session, "bonus_type", kind, 111111)
     await refs.set_config(session, "bonus_value", value, 111111)
-    await refs.set_config(session, "daily_limit", limit, 111111)
     await settings_service.set(session, "referral_enabled", True, updated_by=111111)
     await session.commit()
 
 
-async def test_referral_signup_antifraud_daily_limit_and_uniqueness(session):
+async def test_referral_signup_antifraud_without_daily_quota_and_uniqueness(session):
     referrer, _, _, _ = await sellers(session)
     assert not await refs.register(session, code=referrer.referral_code, referee_id=40404, user_is_new=True)
-    await enable(session, limit="1")
+    await enable(session)
     code = referrer.referral_code
     assert not await refs.register(session, code=code, referee_id=10101, user_is_new=True)  # o'zi
     assert not await refs.register(session, code=code, referee_id=30003, user_is_new=False)
@@ -57,9 +56,10 @@ async def test_referral_signup_antifraud_daily_limit_and_uniqueness(session):
     assert row and row.status == "applied"
     assert (await session.get(Seller, referrer.id)).balance == Decimal("50000")
     assert not await refs.register(session, code=code, referee_id=30003, user_is_new=True)
-    assert not await refs.register(session, code=code, referee_id=30004, user_is_new=True)  # kunlik limit
+    assert await refs.register(session, code=code, referee_id=30004, user_is_new=True)
     await session.commit()
-    assert len((await session.execute(select(ReferralBonusLog))).scalars().all()) == 1
+    assert len((await session.execute(select(ReferralBonusLog))).scalars().all()) == 2
+    assert (await session.get(Seller, referrer.id)).balance == Decimal("100000")
     with pytest.raises(IntegrityError):
         async with session.begin_nested():
             session.add(Referral(referrer_id=10101, referee_id=30003,

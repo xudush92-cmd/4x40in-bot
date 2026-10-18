@@ -29,6 +29,7 @@ from app.db.models import (
     User,
 )
 from app.services.group_service import resume_group
+from app.services.settings_service import settings_service
 from app.utils.time import ensure_aware, utcnow
 
 FREE_DAYS = 30  # kalendar oy emas, qat'iy 30 x 24 soat; eskisi uzaytirilmaydi
@@ -61,10 +62,12 @@ async def group_for(session: AsyncSession, group_id: int) -> Group | None:
 
 async def terms(session: AsyncSession, group: Group) -> CounterSetting | None:
     """Bepul yo'l faqat shu guruhning jonli, qo'lda qo'shish sanoqchisi bilan."""
+    if not await settings_service.get("free_plan_enabled", True, session):
+        return None
     setting = await session.get(CounterSetting, group.id)
     if not (group.settings and group.settings.free_ads_enabled and group.settings.counter_enabled
             and setting and setting.enabled
-            and not setting.dry_run and not setting.require_subscription
+            and not setting.dry_run
             and setting.required_n > 0
             and (setting.count_sources or {}).get(InviteSource.ADDED_BY)):
         return None
@@ -94,10 +97,10 @@ def valid_caption(caption: str) -> bool:
     return 10 <= len(caption) and len(caption.encode("utf-16-le")) // 2 <= MAX_FREE_CAPTION
 
 
-def interval(group: Group) -> timedelta:
-    """Har odamning shaxsiy taymeri; group.rotation.next_post_at EMAS."""
-    assert group.settings is not None
-    return timedelta(seconds=max(MIN_FREE_INTERVAL, group.settings.interval_sec))
+async def interval(session: AsyncSession) -> timedelta:
+    """Bitta bepul qoida; guruh intervali va tijoriy tarifga bog'liq emas."""
+    value = await settings_service.get("free_interval_sec", 1800, session)
+    return timedelta(seconds=max(MIN_FREE_INTERVAL, min(86400, int(value or 1800))))
 
 
 async def get_ad(session: AsyncSession, user_id: int, group_id: int) -> FreeAd | None:
@@ -204,12 +207,13 @@ async def maybe_activate(session: AsyncSession, ad: FreeAd, now: datetime,
     ad = (await session.execute(select(FreeAd).where(FreeAd.id == ad.id)
                                 .with_for_update()
                                 .execution_options(populate_existing=True))).scalar_one_or_none()
-    if ad is None or not ad.desired_running or ad.review_status != "approved":
+    if ad is None or not ad.desired_running or ad.admin_paused or ad.review_status != "approved":
         return False
     if not ad.approved_photo_id or not ad.approved_caption or await is_blocked(session, ad.user_id):
         return False
     group = await group_for(session, ad.group_id)
-    if group is None or not ready_group(group):
+    if (group is None or not ready_group(group) or
+            not await settings_service.get("free_plan_enabled", True, session)):
         return False
     access = await entitlement(session, ad.user_id, ad.group_id, lock=True)
     granted = False
@@ -245,7 +249,7 @@ async def maybe_activate(session: AsyncSession, ad: FreeAd, now: datetime,
             FreePostLog.free_ad_id == ad.id, FreePostLog.status == "sending",
         ).limit(1))).scalar_one_or_none()
         if sending is None:
-            ad.next_post_at = now + interval(group)
+            ad.next_post_at = now + await interval(session)
     return granted
 
 
@@ -298,6 +302,29 @@ async def revoke(session: AsyncSession, ad_id: int, revision: int, actor: int) -
     return ad
 
 
+async def set_admin_pause(session: AsyncSession, ad_id: int, revision: int,
+                          actor: int, paused: bool) -> FreeAd:
+    """Faqat user+guruh e'lonini pauza qiladi; tasdiq, N, muddat o'zgarmaydi."""
+    from app.db.models import ActionLog
+
+    ad = (await session.execute(select(FreeAd).where(FreeAd.id == ad_id)
+                                .with_for_update())).scalar_one_or_none()
+    if ad is None or ad.revision != revision or ad.review_status not in {"approved", "pending"}:
+        raise ValueError("E'lon/tahrir o'zgargan; kartani yangilang.")
+    if (await session.execute(select(FreePostLog.id).where(
+        FreePostLog.free_ad_id == ad.id, FreePostLog.status == "sending",
+    ).limit(1))).scalar_one_or_none() is not None:
+        raise ValueError("Post yuborilmoqda; natijadan keyin qayta urinib ko'ring.")
+    if ad.admin_paused != paused:
+        ad.admin_paused = paused
+        ad.next_post_at = None  # qayta yoqqanda shaxsiy interval boshidan
+        session.add(ActionLog(actor_id=actor, action="free_ad_admin_pause",
+                              entity="free_ad", entity_id=ad.id, group_id=ad.group_id,
+                              before={"paused": not paused}, after={"paused": paused}))
+        await session.flush()
+    return ad
+
+
 async def set_running(session: AsyncSession, ad: FreeAd, running: bool) -> None:
     ad.desired_running = running
     ad.next_post_at = None
@@ -312,7 +339,8 @@ async def rebase_group_due(session: AsyncSession, group: Group,
         return 0
     rows = (await session.execute(select(FreeAd).where(
         FreeAd.group_id == group.id, FreeAd.desired_running.is_(True),
-        FreeAd.review_status == "approved", FreeAd.next_post_at.is_not(None),
+        FreeAd.review_status == "approved", FreeAd.admin_paused.is_(False),
+        FreeAd.next_post_at.is_not(None),
     ).with_for_update())).scalars().all()
     changed = 0
     for ad in rows:
@@ -322,7 +350,7 @@ async def rebase_group_due(session: AsyncSession, group: Group,
         if sending is not None:
             continue  # in-flight xabar va uning lease'i o'zgarmasin
         access = await entitlement(session, ad.user_id, ad.group_id)
-        ad.next_post_at = (now + interval(group) if access and
+        ad.next_post_at = (now + await interval(session) if access and
                            ensure_aware(access.expires_at) > now else None)
         changed += 1
     await session.flush()
@@ -341,7 +369,7 @@ async def waiting_ids(session: AsyncSession, now: datetime, *, after_id: int = 0
         .where(FreeAd.id > after_id, FreeAd.desired_running.is_(True),
                Group.is_active.is_(True), GroupSettings.posting_enabled.is_(True),
                GroupSettings.free_ads_enabled.is_(True),
-               FreeAd.review_status == "approved",
+               FreeAd.review_status == "approved", FreeAd.admin_paused.is_(False),
                or_(FreeAd.next_post_at.is_(None), FreeEntitlement.expires_at <= now))
         .order_by(FreeAd.id).limit(limit)
     )).scalars())
@@ -352,6 +380,7 @@ async def due_ids(session: AsyncSession, now: datetime, *, limit: int = 100) -> 
     return list((await session.execute(select(FreeAd.id).where(
         FreeAd.next_post_at.is_not(None), FreeAd.next_post_at <= now,
         FreeAd.desired_running.is_(True), FreeAd.review_status == "approved",
+        FreeAd.admin_paused.is_(False),
     ).order_by(FreeAd.next_post_at, FreeAd.id).limit(limit))).scalars())
 
 
@@ -365,7 +394,8 @@ async def due_one_per_group(session: AsyncSession, now: datetime,
         .join(FreeEntitlement, (FreeEntitlement.group_id == FreeAd.group_id)
               & (FreeEntitlement.user_id == FreeAd.user_id))
         .where(FreeAd.next_post_at <= now, FreeAd.desired_running.is_(True),
-               FreeAd.review_status == "approved", Group.is_active.is_(True),
+               FreeAd.admin_paused.is_(False), FreeAd.review_status == "approved",
+               Group.is_active.is_(True),
                Group.bot_is_admin.is_(True), GroupSettings.posting_enabled.is_(True),
                GroupSettings.free_ads_enabled.is_(True), FreeEntitlement.expires_at > now)
         .group_by(FreeAd.group_id).order_by("first_due", FreeAd.group_id).limit(limit)
@@ -376,8 +406,8 @@ async def due_one_per_group(session: AsyncSession, now: datetime,
             .join(FreeEntitlement, (FreeEntitlement.group_id == FreeAd.group_id)
                   & (FreeEntitlement.user_id == FreeAd.user_id))
             .where(FreeAd.group_id == group_id, FreeAd.next_post_at <= now,
-                   FreeAd.desired_running.is_(True), FreeAd.review_status == "approved",
-                   FreeEntitlement.expires_at > now)
+                   FreeAd.desired_running.is_(True), FreeAd.admin_paused.is_(False),
+                   FreeAd.review_status == "approved", FreeEntitlement.expires_at > now)
             .order_by(FreeAd.next_post_at, FreeAd.id).limit(1))).scalar_one_or_none()
         if ad_id is not None:
             result.append(ad_id)

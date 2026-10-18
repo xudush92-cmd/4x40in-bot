@@ -183,8 +183,8 @@ async def edit_guard(
         before = policy.banned_words or []
         policy.banned_words = parse_words(str(value))
     else:
-        # require_subscription/counter faqat Phase 7 tekshiruvi tayyor bo'lganda yoqiladi.
-        raise ValueError("Bu sozlama hozircha mavjud emas (majburiy kanal/sanoqchi — Phase 7).")
+        # Eski kanal/counter flag'lari uchun panelda yashirin yo'l qoldirilmaydi.
+        raise ValueError("Bu siyosat sozlamasi mavjud emas.")
     after = getattr(policy, field) if field != "warn_window_hours" else policy.escalate["warn_window_hours"]
     before_values, after_values = {field: before}, {field: after}
     if field == "enabled":

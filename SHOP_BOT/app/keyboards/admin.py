@@ -9,7 +9,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import AdminRole
-from app.keyboards.callbacks import AdminCB, CounterAdminCB, GuideCB
+from app.keyboards.callbacks import AdminCB, GuideCB
 
 # (kalit, tugma matni, tayyor bo'ladigan bosqich)
 ADMIN_SECTIONS: list[tuple[str, str, int]] = [
@@ -145,9 +145,6 @@ def admin_hub_kb(hub: str, role: str | None = None,
         )])
     if hub == "system":
         rows.append([InlineKeyboardButton(
-            text="📣 Umumiy kanallar", callback_data=CounterAdminCB(action="channels").pack()
-        )])
-        rows.append([InlineKeyboardButton(
             text="📚 Barcha bo'limlar", callback_data=AdminCB(action="all").pack()
         )])
     rows += [
@@ -199,12 +196,6 @@ def settings_kb(values: dict[str, object], role: str | None = None) -> InlineKey
             [toggle("receipt_duplicate_check", "🔍 Takroriy chekni ushlash")],
         ])
     rows += [
-        [
-            InlineKeyboardButton(
-                text="⏱ Joylash intervali (default)",
-                callback_data=AdminCB(action="edit", value="default_interval_sec").pack(),
-            )
-        ],
         [
             InlineKeyboardButton(
                 text="☎️ Yordam kontakti",

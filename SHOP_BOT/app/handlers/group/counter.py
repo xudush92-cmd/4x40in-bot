@@ -6,7 +6,6 @@ o'tganidan keyin scheduler getChatMember bilan tekshirib kredit beradi.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 from aiogram import Bot, F, Router
@@ -41,7 +40,6 @@ from app.db.models import (
     GroupSettings,
     InviteEvent,
     InviteLink,
-    RequiredChannel,
     Restriction,
 )
 from app.filters import GroupChat, PrivateChat
@@ -56,16 +54,12 @@ from app.utils.text import escape_html
 from app.utils.time import utcnow
 
 router = Router(name="group:counter")
-# Ijobiy javoblargina keshlanadi; obuna bo'lgan odam 60s nohaq jazolanmaydi.
-_membership_cache: dict[tuple[int, int], float] = {}
-
 
 @dataclass(frozen=True)
 class Need:
-    issue: str  # counter_not_done | not_subscribed | unknown (Telegram tekshirilmayapti)
+    issue: str  # counter_not_done | unknown (Telegram tekshirilmayapti)
     count: int
     required: int
-    channels: tuple[RequiredChannel, ...] = ()
 
 
 def _member(status: object) -> bool:
@@ -111,53 +105,9 @@ async def _needed(bot: Bot, session: AsyncSession, group: Group, setting: Counte
         return None  # shu guruhga amal qiladigan pullik tarif taklifdan ozod
 
     count = await counters.total_for(session, group.id, user_id)
-    channels = await counters.applicable_channels(session, group.id) if setting.require_subscription else []
-    if setting.require_subscription and not channels:
-        return Need("unknown", count, setting.required_n)  # sozlanmagan kanal uchun jazo yo'q
-    missing: list[RequiredChannel] = []
-    for channel in channels:
-        if not isinstance(channel.channel_tg_id, int):
-            return Need("unknown", count, setting.required_n)
-        if fresh:
-            try:
-                # Bot kanal adminligini yo'qotsa getChatMember(user) ishonchsiz:
-                # oldin botning o'z a'zoligini tekshirib fail-open qilamiz.
-                bot_member = await bot.get_chat_member(channel.channel_tg_id, (await bot.get_me()).id)
-            except TelegramAPIError:
-                return Need("unknown", count, setting.required_n)
-            if str(bot_member.status) not in {"administrator", "creator"}:
-                return Need("unknown", count, setting.required_n)
-        key = (channel.channel_tg_id, user_id)
-        if not fresh and _membership_cache.get(key, 0) > time.monotonic():
-            continue
-        try:
-            member = await bot.get_chat_member(channel.channel_tg_id, user_id)
-        except TelegramAPIError as exc:
-            logger.warning("Kanal a'zoligi noaniq (kanal #{}): {}", channel.id, exc)
-            return Need("unknown", count, setting.required_n)
-        if not _member(member):
-            missing.append(channel)
-        else:
-            if len(_membership_cache) >= 10_000:
-                _membership_cache.clear()  # kesh cheksiz o'smasin
-            _membership_cache[key] = time.monotonic() + 60
-    if missing:
-        return Need("not_subscribed", count, setting.required_n, tuple(missing))
     if setting.required_n > count and PermissionKind.COUNTER_EXEMPT not in kinds:
         return Need("counter_not_done", count, setting.required_n)
     return None
-
-
-def _kb_missing(need: Need, group_id: int) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for channel in need.channels[:6]:
-        if channel.invite_link:
-            rows.append([InlineKeyboardButton(text=f"📣 {channel.title or channel.username or 'Kanal'}"[:60],
-                                              url=channel.invite_link)])
-    rows.append([InlineKeyboardButton(text="✅ Tekshirdim", callback_data=CounterCB(
-        action="check", group_id=group_id,
-    ).pack())])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _status_text(group: Group, need: Need | None, count: int, setting: CounterSetting) -> str:
@@ -169,9 +119,7 @@ def _status_text(group: Group, need: Need | None, count: int, setting: CounterSe
     if need is None:
         return text + "✅ Shartlar bajarilgan (yoki siz uchun istisno mavjud)."
     if need.issue == "unknown":
-        return text + "⚠️ Telegram/kanal holatini tekshirib bo'lmadi; hech qanday jazo yo'q."
-    if need.issue == "not_subscribed":
-        return text + "📣 Avval ko'rsatilgan kanal(lar)ga a'zo bo'ling, keyin «Tekshirdim»ni bosing."
+        return text + "⚠️ Telegram guruh a'zoligini tekshirib bo'lmadi; jazo yo'q."
     return text + "👥 Yana odam taklif qiling; a'zolar kamida belgilangan muddat qolishi kerak."
 
 
@@ -257,23 +205,9 @@ async def render_mine(target: CallbackQuery | Message, bot: Bot, session: AsyncS
     if fresh and need is None:
         await _unlock(bot, group.id, user_id)
     text = _status_text(group, need, count, setting)
-    link = (await session.execute(select(InviteLink).where(
-        InviteLink.group_id == group.id, InviteLink.user_id == user_id,
-        InviteLink.is_active.is_(True),
-    ))).scalar_one_or_none()
-    if link and not link.invite_link.startswith("pending:") and link.join_count < setting.link_member_limit:
-        text += f"\n🔗 Shaxsiy havola: <code>{escape_html(link.invite_link)}</code>"
-    elif link:
-        text += "\n⏳ Havola yaratilyapti yoki limiti to'ldi; yangisini so'rang."
     buttons: list[list[InlineKeyboardButton]] = []
-    if need and need.issue == "not_subscribed":
-        buttons.extend(_kb_missing(need, group.id).inline_keyboard)
-    else:
-        buttons.append([InlineKeyboardButton(text="✅ Qayta tekshirish", callback_data=CounterCB(
-            action="check", group_id=group.id,
-        ).pack())])
-    buttons.append([InlineKeyboardButton(text="🔗 Havola olish/yangilash", callback_data=CounterCB(
-        action="link", group_id=group.id,
+    buttons.append([InlineKeyboardButton(text="✅ Qayta tekshirish", callback_data=CounterCB(
+        action="check", group_id=group.id,
     ).pack())])
     buttons.append([InlineKeyboardButton(text="◀️ Guruhlar", callback_data=CounterCB(action="list").pack())])
     await render(target, text, InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -327,11 +261,8 @@ async def mine_callback(callback: CallbackQuery, callback_data: CounterCB, bot: 
         await callback.answer("⚠️ Guruh a'zoligi tekshirilmadi.", show_alert=True)
         return
     if callback_data.action == "link":
-        pair = await _user_group(bot, session, group_id, callback.from_user.id)
-        url = await _personal_link(bot, *pair, callback.from_user.id)
-        if url is None:
-            await callback.answer("⚠️ Havola yaratilmayapti (huquq/pauza/noaniq).", show_alert=True)
-            return
+        await callback.answer("⚠️ N faqat guruhdagi «A'zo qo'shish» bilan hisoblanadi.", show_alert=True)
+        return
     await render_mine(callback, bot, session, group_id, callback.from_user.id,
                       fresh=callback_data.action == "check")
     await callback.answer()
@@ -379,7 +310,7 @@ async def _joined(bot: Bot, session: AsyncSession, group: Group, user_id: int,
         # Foydalanuvchi eski a'zo bo'lsa ham uning shartini tekshir; yangi
         # qo'shiluvchini darhol xato tekshiruvda jazolamaymiz (fail open).
         need = await _needed(bot, session, group, setting, user_id, fresh=True)
-        if need and need.issue in {"not_subscribed", "counter_not_done"}:
+        if need and need.issue in {"counter_not_done"}:
             if await _restrict(bot, group.id, user_id, need.issue):
                 await notices.send_notice(bot, group_id=group.id, user_id=user_id,
                                           issue=need.issue)

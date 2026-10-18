@@ -24,7 +24,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import AdStatus
-from app.db.models import Ad, Seller, Tariff
+from app.db.models import Ad, Seller
 from app.filters import IsSeller, PrivateChat
 from app.keyboards.ads import (
     ad_card_kb,
@@ -158,12 +158,12 @@ async def _active_categories(session: AsyncSession, seller: Seller):
     """Usta uchun faol, guruhli va sotuvchining tarifi ruxsat bergan toifalar."""
     categories = await category_service.list_categories(session, limit=100)
     subscription = await subscription_service.active_for(session, seller.id)
-    tariff = await session.get(Tariff, subscription.tariff_id) if subscription else None
+    terms = subscription_service.terms_for(subscription) if subscription else {}
+    allowed_categories = terms.get("allowed_category_ids")
+    allowed_groups = terms.get("allowed_group_ids")
     return [c for c in categories if c.is_active and c.group_id is not None
-            and (tariff is None or tariff.allowed_category_ids is None
-                 or c.id in tariff.allowed_category_ids)
-            and (tariff is None or tariff.allowed_group_ids is None
-                 or c.group_id in tariff.allowed_group_ids)]
+            and (allowed_categories is None or c.id in allowed_categories)
+            and (allowed_groups is None or c.group_id in allowed_groups)]
 
 
 def _parse_page_status(value: str | None, default_status: str = "all") -> tuple[int, str]:
@@ -238,6 +238,8 @@ async def _show_edit_menu(
     if note:
         lines.append(note)
         lines.append("")
+    if ad.status == AdStatus.PENDING:
+        lines.append("🕓 Tahrirni admin qayta tasdiqlamaguncha post yuborilmaydi.")
     lines.append("Qaysi maydonni o'zgartirasiz?")
 
     await render(target, "\n".join(lines), edit_kb(ad, page=page, status=status))
@@ -263,7 +265,8 @@ async def _show_preview(
         f"🖼 Rasmlar: <b>{photos}</b> ta  ·  📌 {ad_service.status_title(ad.status)}",
         "<i>Guruhda: rasmlar albom bo'lib, yuqoridagi matn izoh sifatida chiqadi.</i>",
     ]
-    await render(target, "\n".join(lines)[:4000], preview_kb(ad_id=ad.id, from_edit=from_edit))
+    await render(target, "\n".join(lines)[:4000], preview_kb(
+        ad_id=ad.id, from_edit=from_edit, can_submit=ad.status == AdStatus.DRAFT))
 
 
 async def _finish_wizard(
@@ -470,6 +473,13 @@ async def on_card(callback: CallbackQuery, callback_data: AdCB, session: AsyncSe
         lines.append(f"🕘 Oxirgi joylash: {fmt_date(stats['last_posted_at'])}")
     if ad.description:
         lines.append(f"\n📝 {escape_html(truncate(ad.description, 300))}")
+    if ad.status == AdStatus.PAUSED:
+        if ad.admin_paused:
+            lines.append("\n⏸ Admin pauzasi: admin yechmaguncha Start ishlamaydi.")
+        elif ad.approved_at is not None:
+            lines.append("\n▶️ Tasdiqlangan: «Boshlash»dan keyin birinchi post tarif oralig'ida ketadi.")
+        else:
+            lines.append("\n🕓 Tahrirni admin qayta tasdiqlashi kerak; Start eski tasdiqni tiklamaydi.")
     if ad.status == AdStatus.REJECTED and ad.reject_reason:
         lines.append(f"\n❌ <b>Rad etish sababi:</b> {escape_html(ad.reject_reason)}")
         lines.append("<i>Tahrirlab, qaytadan yuborishingiz mumkin.</i>")
@@ -819,6 +829,8 @@ async def on_photo(message: Message, session: AsyncSession, state: FSMContext) -
         )
         return
 
+    if flow == FLOW_EDIT:
+        await ad_service.edited(session, ad)
     count = await ad_service.photo_count(session, ad.id)
     await state.set_state(SellerAdStates.waiting_photos)
     await state.update_data(step="photos", photo_count=count, photo_limit=limit)
@@ -1122,6 +1134,8 @@ async def on_photo_delete(
         position = 0
 
     removed = await ad_service.remove_photo(session, ad, position)
+    if removed:
+        await ad_service.edited(session, ad)
     data = await state.get_data()
     limit = _limit_of(data)
     count = await ad_service.photo_count(session, ad.id)

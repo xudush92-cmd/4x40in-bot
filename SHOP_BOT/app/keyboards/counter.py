@@ -1,11 +1,11 @@
-"""Phase 7: guruhga xos sanoqchi va kanal boshqaruvi tugmalari."""
+"""Phase 7: guruhga xos sanoqchi boshqaruvi tugmalari."""
 
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.constants import CounterMode, InviteSource
-from app.db.models import CounterSetting, Group, RequiredChannel
+from app.db.models import CounterSetting, Group
 from app.keyboards.callbacks import AdminCB, CounterAdminCB, GroupCB, PolicyCB
 
 
@@ -24,10 +24,9 @@ def choose_kb(groups: list[Group], page: int, pages: int) -> InlineKeyboardMarku
     nav.append(_button(f"{page + 1}/{pages} 🔄", "choose", 0, str(page)))
     if page + 1 < pages:
         nav.append(_button("▶️", "choose", 0, str(page + 1)))
-    rows += [nav, [_button("🌐 Umumiy kanallar", "channels", 0)],
-             [InlineKeyboardButton(text="◀️ Boshqaruv paneli", callback_data=AdminCB(
-                 action="menu",
-             ).pack())]]
+    rows += [nav, [InlineKeyboardButton(text="◀️ Boshqaruv paneli", callback_data=AdminCB(
+        action="menu",
+    ).pack())]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -43,20 +42,10 @@ def home_kb(group: Group, row: CounterSetting, *, can_edit: bool) -> InlineKeybo
                      "mode", gid, CounterMode.SOFT if row.mode == CounterMode.HARD else CounterMode.HARD)],
             [_button(f"👥 N = {row.required_n}", "number", gid, "required_n"),
              _button(f"⏳ Qolish: {row.min_stay_minutes} min", "number", gid, "min_stay_minutes")],
-            [_button(f"📆 Kunlik: {row.max_per_day}", "number", gid, "max_per_day"),
-             _button(f"🔗 Havola limiti: {row.link_member_limit}", "number", gid, "link_member_limit")],
-            [_button(f"{'✅' if (row.count_sources or {}).get(InviteSource.LINK) else '⬜️'} Havola orqali",
-                     "source", gid, InviteSource.LINK),
-             _button(f"{'✅' if (row.count_sources or {}).get(InviteSource.ADDED_BY) else '⬜️'} Qo'lda qo'shish",
+            [_button(f"{'✅' if (row.count_sources or {}).get(InviteSource.ADDED_BY) else '⬜️'} Qo'lda qo'shish",
                      "source", gid, InviteSource.ADDED_BY)],
-            [_button(f"{'✅' if row.require_subscription else '⬜️'} Majburiy kanal", "toggle", gid,
-                     "require_subscription"),
-             _button(f"{'✅' if row.notify_inviter else '⬜️'} DM xabar", "toggle", gid,
-                     "notify_inviter")],
         ]
     rows += [
-        [_button("📣 Shu guruh kanallari", "channels", gid),
-         _button("🌐 Umumiy kanallar", "channels", 0)],
         [_button("👤 A'zo hisobi (+/−/0)", "user", gid),
          _button("📋 Hisob va sozlama tarixi", "log", gid)],
         [InlineKeyboardButton(text="🔑 Istisnolar", callback_data=PolicyCB(
@@ -69,26 +58,10 @@ def home_kb(group: Group, row: CounterSetting, *, can_edit: bool) -> InlineKeybo
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def channels_kb(group_id: int, channels: list[RequiredChannel], *, can_edit: bool) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    if can_edit:
-        for channel in channels[:20]:
-            if (channel.group_id or 0) == group_id:
-                rows.append([_button(f"❌ {channel.title or channel.username or channel.channel_tg_id}"[:55],
-                                     "channel_ask", group_id, str(channel.id))])
-        rows.append([_button("➕ Kanal qo'shish", "channel_add", group_id)])
-    if group_id:
-        rows.append([_button("🌐 Umumiy kanallar", "channels", 0)])
-        rows.append([_button("◀️ Sanoqchi", "home", group_id)])
-    else:
-        rows.append([_button("◀️ Sanoqchi guruhlari", "choose", 0, "0")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 def confirm_kb(action: str, group_id: int, value: str = "-") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_button("🔴 Tasdiqlayman", action, group_id, value)],
-        [_button("◀️ Bekor qilish", "channels" if action == "channel_remove" else "home", group_id)],
+        [_button("◀️ Bekor qilish", "home", group_id)],
     ])
 
 

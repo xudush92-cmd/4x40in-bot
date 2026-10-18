@@ -43,13 +43,13 @@ async def render_home(target: Message | CallbackQuery, session: AsyncSession,
     text = ("🤝 <b>Referal (guruh sanoqchisidan alohida)</b>\n"
             f"Holat: {'🟢 YOQILGAN' if enabled else '⏸ PAUZA (standart)'}\n"
             f"Shart: {escape_html(str(conf['trigger']))} · tur: {escape_html(str(conf['bonus_type']))}\n"
-            f"Bonus: {escape_html(str(conf['bonus_value']))} · kunlik taklif limiti: {conf['daily_limit']}\n"
+            f"Bonus: {escape_html(str(conf['bonus_value']))}\n"
             f"Birinchi chek min.: {conf['min_payment']} UZS\n"
             f"👥 Keldi: {sum(data.values())} · 🎉 Bonus: {data.get('applied', 0)} "
             f"· ⏳ Kutmoqda: {data.get('pending', 0)} · ❌ Rad: {data.get('rejected', 0)}\n"
             f"📋 Bonus jurnali: {spent}\n\n"
             "Faqat yangi /start ref_<kod> qabul qilinadi. Kod egasi sotuvchi bo'lishi kerak. "
-            "Bir odam uchun bir marta, kunlik limit. Birinchi to'lovni faqat admin tasdiqlaydi. "
+            "Bir odam uchun bir marta. Birinchi to'lovni faqat admin tasdiqlaydi. "
             "Faol tarifi yo'q sotuvchining 'kun' bonusi navbatda saqlanadi.")
     rows = []
     if _edit(role):
@@ -60,8 +60,7 @@ async def render_home(target: Message | CallbackQuery, session: AsyncSession,
             [_btn("📆 Kun", "type", BonusType.DAYS),
              _btn("💰 Balans", "type", BonusType.BALANCE),
              _btn("% Chegirma", "type", BonusType.DISCOUNT)],
-            [_btn("🎁 Bonus miqdori", "number", "bonus_value"),
-             _btn("📆 Kunlik limit", "number", "daily_limit")],
+            [_btn("🎁 Bonus miqdori", "number", "bonus_value")],
             [_btn("💳 Minimal chek (UZS)", "number", "min_payment")],
         ]
     rows += [[_btn("🏆 Top-10", "top")],
@@ -115,7 +114,7 @@ async def signup_ask(callback: CallbackQuery, role: str | None) -> None:
         return
     await render(callback, "⚠️ <b>Signup bonusini tasdiqlash</b>\n"
                  "Har bir yangi akkaunt (to'lovsiz ham) bonusga olib keladi! "
-                 "Firibgarlik xavfi bor. Kunlik limit va miqdorni tekshiring.",
+                 "Firibgarlik xavfi bor. Bonus qiymati va taklif yozuvlarini tekshiring.",
                  InlineKeyboardMarkup(inline_keyboard=[
                      [_btn("✅ Signup'ni tasdiqlayman", "trigger", ReferralTrigger.SIGNUP)],
                      [_btn("◀️ Bekor", "home")],
@@ -142,7 +141,7 @@ async def select_config(callback: CallbackQuery, callback_data: ReferralAdminCB,
 @router.callback_query(ReferralAdminCB.filter(F.action == "number"))
 async def ask_number(callback: CallbackQuery, callback_data: ReferralAdminCB,
                      state: FSMContext, role: str | None) -> None:
-    if not _edit(role) or callback_data.value not in {"bonus_value", "daily_limit", "min_payment"}:
+    if not _edit(role) or callback_data.value not in {"bonus_value", "min_payment"}:
         await alert(callback, "⛔️ Ruxsat yoki sozlama noto'g'ri.", show=True)
         return
     await state.set_state(AdminReferralStates.waiting_value)
@@ -151,7 +150,6 @@ async def ask_number(callback: CallbackQuery, callback_data: ReferralAdminCB,
                  f"Kun: 1–{referral_service.MAX_BONUS_DAYS:.0f}, "
                  f"balans UZS: 1000–{referral_service.MAX_BONUS_BALANCE:.0f}, "
                  f"chegirma: 1–{referral_service.MAX_DISCOUNT_PERCENT:.0f}% (xavfsizlik chegarasi), "
-                 f"kunlik limit: 1–{referral_service.MAX_DAILY_REFERRALS}, "
                  f"minimal chek: 0–{referral_service.MAX_MIN_PAYMENT:.0f} UZS.\n"
                  "/cancel — bekor qilish.")
     await alert(callback, "")
@@ -171,7 +169,7 @@ async def save_number(message: Message, state: FSMContext, session: AsyncSession
         await state.clear()
         return
     key = (await state.get_data()).get("ref_field", "-")
-    if key not in {"bonus_value", "daily_limit", "min_payment"} or len(message.text) > 20:
+    if key not in {"bonus_value", "min_payment"} or len(message.text) > 20:
         await message.answer("⚠️ Qiymat noto'g'ri. /cancel — bekor qilish.")
         return
     try:

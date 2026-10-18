@@ -10,9 +10,6 @@ from sqlalchemy import select
 
 from app.constants import (
     BROADCAST_RATE_PER_SEC,
-    MAX_DAILY_POST_LIMIT,
-    MAX_INTERVAL_SEC,
-    MAX_JITTER_PERCENT,
     MAX_PHOTOS_PER_ALBUM,
     AdminRole,
     PaymentStatus,
@@ -21,7 +18,7 @@ from app.constants import (
 )
 from app.db.models import ActionLog, Admin, GroupSettings, Permission, Seller
 from app.keyboards.admin import admin_main_kb
-from app.keyboards.callbacks import AdminCB, GroupCB, GuideCB, SellerPanelCB
+from app.keyboards.callbacks import AdminCB, GroupCB, GuideCB, SellerPanelCB, TariffCB
 from app.keyboards.guide import GUIDES, guide_kb, user_start_kb
 from app.keyboards.seller_panel import seller_menu_kb
 from app.services import (
@@ -38,7 +35,6 @@ from app.services import (
     subscription_service,
     tariff_service,
 )
-from app.services.settings_service import settings_service
 from tests.fake_telegram import (
     ADMIN_ID,
     FakeSession,
@@ -51,12 +47,10 @@ from tests.fake_telegram import (
 
 
 def test_group_boundaries_and_hard_limits_unchanged() -> None:
-    assert MAX_INTERVAL_SEC == 864000
-    assert MAX_DAILY_POST_LIMIT == 5000
-    assert group_service.validate_interval_minutes(14400) == MAX_INTERVAL_SEC
-    assert group_service.validate_daily_limit(5000) == MAX_DAILY_POST_LIMIT
-    # Jitter 300%, albomda 100 rasm, 250 xabar/s mantiqan/texnik jihatdan mumkin emas.
-    assert MAX_JITTER_PERCENT == 30
+    assert tariff_service.validate_interval(600) == 600
+    with pytest.raises(ValueError):
+        tariff_service.validate_interval(86401)
+    # Botda Telegram albom/broadcast texnik himoyasi saqlanadi.
     assert MAX_PHOTOS_PER_ALBUM == tariff_service.MAX_PHOTOS == 10
     assert BROADCAST_RATE_PER_SEC == 25
 
@@ -89,8 +83,11 @@ async def test_policy_bounds_are_ten_times_larger_and_group_local(session) -> No
         with pytest.raises(ValueError):
             await counters.edit_counter(session, one, key, str(maximum + 1), actor)
         assert minimum in {0, 1}
-    assert counters.NUMBERS == {"required_n": (0, 1000), "min_stay_minutes": (0, 100800),
-                                "max_per_day": (1, 1000), "link_member_limit": (1, 1000)}
+    assert counters.NUMBERS == {"required_n": (0, 1000), "min_stay_minutes": (0, 100800)}
+    with pytest.raises(ValueError):
+        await counters.edit_counter(session, one, "link_member_limit", 20, actor)
+    with pytest.raises(ValueError):
+        await counters.edit_counter(session, one, "source", "link", actor)
     assert (await counters.ensure_counter(session, two.id)).required_n == 3
     assert (await policies.ensure_guard(session, two.id)).warn_limit == 3
     assert (await policies.ensure_cleaner(session, two.id)).keep_last_ads == 1
@@ -156,9 +153,8 @@ async def test_tariff_price_checkout_and_subscription_new_limits(session) -> Non
 
 def test_referral_new_bounds_but_discount_stays_safe() -> None:
     refs = referral_service
-    assert refs.validate("daily_limit", "500") == 500
-    with pytest.raises(ValueError):
-        refs.validate("daily_limit", "501")
+    with pytest.raises(ValueError, match="sozlamasi yo.q"):
+        refs.validate("daily_limit", "500")
     for bonus, allowed, rejected in (("days", "3650", "3651"),
                                      ("balance", "10000000", "10000001"),
                                      ("discount", "50", "51")):
@@ -170,12 +166,13 @@ def test_referral_new_bounds_but_discount_stays_safe() -> None:
         refs.validate("min_payment", str(tariff_service.MAX_PRICE + 1))
 
 
-async def test_admin_group_and_global_interval_limits_via_dispatcher(session) -> None:
+async def test_tariff_interval_is_editable_but_old_group_control_is_not(session) -> None:
     session.add(Admin(user_id=ADMIN_ID, role=AdminRole.SUPER))
     group = await group_service.get_or_create_group(
         session, Chat(id=-10012220004, type="supergroup", title="Sinov intervali")
     )
-    group_id = group.id
+    tariff = await tariff_service.create_tariff(session, name="Oraliq", price=123000)
+    group_id, tariff_id = group.id, tariff.id
     await session.commit()
     await reset_dispatcher_state()
     fake = FakeSession()
@@ -188,25 +185,14 @@ async def test_admin_group_and_global_interval_limits_via_dispatcher(session) ->
 
     try:
         await feed(callback_update(GroupCB(action="interval", group_id=group_id).pack(), update_id=30))
-        assert "14400" in fake.edited_texts()[-1]
-        await feed(text_update("14400", update_id=31))
-        assert (await session.get(GroupSettings, group_id)).interval_sec == MAX_INTERVAL_SEC
+        await feed(text_update("600", update_id=31))
+        assert (await session.get(GroupSettings, group_id)).interval_sec == 1800
 
-        await feed(callback_update(GroupCB(action="limit", group_id=group_id).pack(), update_id=32))
-        await feed(text_update("5000", update_id=33))
-        assert (await session.get(GroupSettings, group_id)).daily_post_limit == 5000
-        await feed(callback_update(GroupCB(action="limit", group_id=group_id).pack(), update_id=34))
-        await feed(text_update("5001", update_id=35))
-        assert (await session.get(GroupSettings, group_id)).daily_post_limit == 5000
-        assert "1–5000" in fake.sent_texts()[-1]
-
-        await feed(callback_update(AdminCB(action="edit", value="default_interval_sec").pack(), update_id=36))
-        await feed(text_update("14400", update_id=37))
-        assert await settings_service.get("default_interval_sec", 0, session) == MAX_INTERVAL_SEC
-        await feed(callback_update(AdminCB(action="edit", value="default_interval_sec").pack(), update_id=38))
-        await feed(text_update("14401", update_id=39))
-        assert await settings_service.get("default_interval_sec", 0, session) == MAX_INTERVAL_SEC
-        assert "14400" in fake.sent_texts()[-1]
+        await feed(callback_update(TariffCB(action="interval", tariff_id=tariff_id).pack(), update_id=32))
+        await feed(text_update("1441", update_id=33))
+        assert any("1–1440" in text for text in fake.sent_texts())
+        await feed(text_update("10", update_id=34))
+        assert (await tariff_service.get_tariff(session, tariff_id)).interval_sec == 600
     finally:
         await bot.session.close()
         await reset_dispatcher_state()
@@ -248,7 +234,7 @@ async def test_guide_dispatch_reads_real_role_not_callback_page(session) -> None
         await dp.feed_update(bot, callback_update(GuideCB(page="sales").pack(), user_id=user_id, update_id=2))
         assert "foydalanuvchi" in fake.edited_texts()[-1] and "botni boshqarish" not in fake.edited_texts()[-1].lower()
         await dp.feed_update(bot, callback_update(GuideCB(page="counter").pack(), user_id=user_id, update_id=3))
-        assert "Guruh shartlarini" in fake.edited_texts()[-1]
+        assert "Guruhga qo'shilgan a'zolar" in fake.edited_texts()[-1]
         await dp.feed_update(bot, callback_update(GuideCB(page="back").pack(), user_id=user_id, update_id=4))
         assert "Assalomu" in fake.edited_texts()[-1]
 

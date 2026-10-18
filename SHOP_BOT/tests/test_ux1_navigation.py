@@ -66,7 +66,9 @@ async def test_admin_hubs_queue_and_legacy_callbacks_and_moderator_denial(sessio
         assert "Guruhlar" in fake.edited_texts()[-1]
         await dp.feed_update(bot, callback_update(GroupCB(action="card", group_id=group_id).pack(), update_id=5))
         markup = str(fake.called("EditMessageText")[-1]["reply_markup"])
-        assert "N kishi sharti" in markup and "Kanal a'zoligi" in markup and "Nega ishlamayapti?" in markup
+        assert "Odam qo'shish sharti / Sanoqchi" in markup
+        assert "Tozalash" in markup and "Xavfsizlik" in markup
+        assert "Kanal a'zoligi" not in markup and "Nega ishlamayapti?" in markup
         await dp.feed_update(bot, callback_update(GroupCB(action="diagnostic", group_id=group_id).pack(), update_id=6))
         assert "Savdo guruh" in fake.edited_texts()[-1] and "huquqlari" in fake.edited_texts()[-1]
 

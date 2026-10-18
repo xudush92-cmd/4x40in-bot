@@ -47,6 +47,7 @@ FIELD_TITLES = {
     "duration_days": "📅 Muddat",
     "max_ads": "📢 E'lon limiti",
     "max_photos": "🖼 Rasm limiti",
+    "interval_sec": "⏱ Joylash oralig'i",
 }
 
 # callback action → (so'raladigan matn, FSM holati, yangilanadigan maydon)
@@ -78,9 +79,14 @@ FIELD_PROMPTS: dict[str, tuple[str, Any, str]] = {
         "max_ads",
     ),
     "photos": (
-        "🖼 <b>Rasm limiti</b> — har e'londa nechta rasm?\n1–10 (Telegram albom chegarasi)",
+        "🖼 <b>Rasm limiti</b> — har e'londa nechta rasm? (1–10)",
         AdminTariffStates.waiting_photos,
         "max_photos",
+    ),
+    "interval": (
+        "⏱ <b>Joylash oralig'i</b> — necha daqiqa? (1–1440, masalan 5 yoki 10)",
+        AdminTariffStates.waiting_interval,
+        "interval_sec",
     ),
 }
 
@@ -108,7 +114,8 @@ def _list_text(tariffs: list[Tariff], total: int, active: int) -> str:
             lines.append(
                 f"{mark} <b>{escape_html(tariff.name)}</b>{trial}\n"
                 f"   └ 💰 {tariff_service.format_price(tariff)} · 📅 {tariff.duration_days} kun · "
-                f"📢 {tariff.max_ads} · 🖼 {tariff.max_photos}"
+                f"📢 {tariff.max_ads} · 🖼 {tariff.max_photos} · "
+                f"⏱ {tariff_service.format_interval(tariff.interval_sec)}"
             )
         lines.append("\n<i>Sotuvchiga tarif berish: 🛒 Sotuvchilar → kartochka → «💳 Tarif berish».</i>")
     return "\n".join(lines)
@@ -123,6 +130,7 @@ def _card_text(tariff: Tariff, stats: dict[str, int]) -> str:
         f"📅 Muddat: <b>{tariff.duration_days} kun</b>",
         f"📢 E'lon limiti: <b>{tariff.max_ads}</b> ta",
         f"🖼 Rasm limiti: <b>{tariff.max_photos}</b> ta",
+        f"⏱ Shaxsiy oralig'i: <b>{tariff_service.format_interval(tariff.interval_sec)}</b>",
         f"🔢 Tartib: <b>#{tariff.position}</b>",
         ("🎯 Toifalar: <b>" + ("hammasi" if tariff.allowed_category_ids is None else
                                truncate(", ".join(map(str, tariff.allowed_category_ids)), 160) if tariff.allowed_category_ids else "hech biri") + "</b>"),
@@ -204,9 +212,8 @@ async def render_restrictions(target: CallbackQuery, session: AsyncSession,
     selected_text = "hammasi (cheklovsiz)" if selected is None else f"{len(selected)} ta ruxsat etilgan"
     text = (f"🎯 <b>{escape_html(tariff.name)}</b> · {label}lar cheklovi\n"
             f"Holat: <b>{selected_text}</b> · {page + 1}/{pages}\n"
-            "Tugmani bosish bilan sozlama darhol kuchga kiradi. "
-            "Tanlanganlar soni 0 bo'lsa, shu turdagi joylash to'xtaydi. "
-            "Mavjud guruh siyosati va oldingi postlar o'zgarmaydi.")
+            "O'zgarish faqat keyingi chek/tarif berishga tatbiq etiladi. "
+            "Oldingi xarid, guruh siyosati va postlar o'zgarmaydi.")
     buttons = [[InlineKeyboardButton(
         text=f"{'☑️' if selected is not None and item.id in selected else '▫️'} "
              f"{truncate(item.name if scope == 'c' else item.display, 39)} (#{item.id})",
@@ -332,7 +339,7 @@ async def step_name(message: Message, state: FSMContext, session: AsyncSession) 
     await state.set_state(AdminTariffStates.waiting_price)
     await message.answer(
         f"2️⃣ Narxni yuboring (so'm, 0–{tariff_service.MAX_PRICE:.0f}).\n"
-        "Masalan: <code>150000</code> — bepul bo'lsa <code>0</code>\n"
+        "Masalan: <code>150000</code>. Bepul reja alohida boshqariladi.\n"
         "Bekor qilish uchun /cancel"
     )
 
@@ -356,9 +363,9 @@ async def step_price(message: Message, state: FSMContext, session: AsyncSession)
         await _finish_edit(message, session, tariff, "price", price)
         return
 
-    if price is None:
+    if price is None or price <= 0:
         await message.answer(
-            f"⚠️ Narxni 0–{tariff_service.MAX_PRICE:.0f} so'm oralig'ida yuboring. /cancel"
+            f"⚠️ Pullik tarif narxini 1–{tariff_service.MAX_PRICE:.0f} so'm oralig'ida yuboring. /cancel"
         )
         return
     await state.update_data(price=str(price))
@@ -448,24 +455,43 @@ async def step_photos(message: Message, state: FSMContext, session: AsyncSession
         await message.answer("⚠️ 1–10 orasida son yuboring. Bekor qilish: /cancel")
         return
 
+    await state.update_data(max_photos=int(raw))
+    await state.set_state(AdminTariffStates.waiting_interval)
+    await message.answer("6️⃣ Joylash oralig'i necha daqiqa? (1–1440; masalan 5 yoki 10).\n"
+                         "Ilk post Startdan shu vaqt o'tgach ketadi. /cancel")
+
+
+@router.message(StateFilter(AdminTariffStates.waiting_interval), F.text)
+async def step_interval(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    raw = (message.text or "").strip()
+    if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= 1440:
+        await message.answer("⚠️ 1–1440 orasida daqiqa yuboring. /cancel")
+        return
+    seconds = int(raw) * 60
+    if data.get("flow") == "edit":
+        tariff = await tariff_service.get_tariff(session, int(data.get("tariff_id") or 0))
+        await state.clear()
+        if tariff is None:
+            await message.answer("⚠️ Tarif topilmadi.")
+            return
+        await _finish_edit(message, session, tariff, "interval_sec", seconds)
+        return
     await state.clear()
     tariff = await tariff_service.create_tariff(
-        session,
-        name=str(data.get("name") or ""),
+        session, name=str(data.get("name") or ""),
         price=str(data.get("price") or "0"),
         duration_days=int(data.get("duration_days") or 30),
         max_ads=int(data.get("max_ads") or 5),
-        max_photos=int(raw),
-        created_by=message.from_user.id,
+        max_photos=int(data.get("max_photos") or 3),
+        interval_sec=seconds, created_by=message.from_user.id,
     )
     if tariff is None:
         await message.answer("⚠️ Tarifni yaratib bo'lmadi. Qaytadan urinib ko'ring.")
         await render_list(message, session, 0)
         return
-
     await message.answer(f"✅ Tarif yaratildi: <b>{escape_html(tariff.name)}</b>")
     await render_card(message, session, tariff.id)
-
 
 @router.message(StateFilter(AdminTariffStates.waiting_description), F.text)
 async def step_description(message: Message, state: FSMContext, session: AsyncSession) -> None:
@@ -493,18 +519,6 @@ async def on_toggle_active(callback: CallbackQuery, callback_data: TariffCB, ses
     await tariff_service.set_active(session, tariff, active)
     await render_card(callback, session, tariff.id)
     await alert(callback, "🟢 Yoqildi" if active else "⏸ To'xtatildi")
-
-
-@router.callback_query(TariffCB.filter(F.action == "trial"))
-async def on_toggle_trial(callback: CallbackQuery, callback_data: TariffCB, session: AsyncSession) -> None:
-    tariff = await tariff_service.get_tariff(session, callback_data.tariff_id)
-    if tariff is None:
-        await alert(callback, "⚠️ Tarif topilmadi", show=True)
-        return
-
-    await tariff_service.update_tariff(session, tariff, is_trial=not tariff.is_trial)
-    await render_card(callback, session, tariff.id)
-    await alert(callback, "🎁 Sinov tarifi: ✅" if tariff.is_trial else "🎁 Sinov belgisi olindi")
 
 
 @router.callback_query(TariffCB.filter(F.action.in_({"up", "down"})))

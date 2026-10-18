@@ -5,7 +5,7 @@ Imkoniyatlar:
   * qo'shish yo'riqnomasi (bot guruhga qo'shilganda avtomatik paydo bo'ladi)
   * ❚ pauza / yoqish, huquqlarni qo'lda tekshirish, o'chirish
   * funksiya tumbleri (e'lon joylash, sanoqchi, posbon, tozalovchi, salomlashuv)
-  * interval, jitter, kunlik limit, tinch soatlar
+  * tijoriy interval tarifda, guruhda faqat mustaqil siyosatlar
   * 🎛 Matritsa — barcha guruhlar × funksiyalar bir ekranda
 """
 
@@ -14,9 +14,7 @@ from __future__ import annotations
 from math import ceil
 
 from aiogram import F, Router
-from aiogram.filters import Command, StateFilter
-from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,10 +22,6 @@ from app.constants import (
     FEATURE_LABELS,
     FEATURE_PHASES,
     FEATURE_SHORT,
-    MAX_DAILY_POST_LIMIT,
-    MAX_INTERVAL_SEC,
-    MAX_JITTER_PERCENT,
-    MIN_INTERVAL_SEC,
     AdminRole,
     GroupFeature,
 )
@@ -38,7 +32,6 @@ from app.keyboards.callbacks import FeatureCB, GroupCB
 from app.keyboards.common import PER_PAGE_GROUPS, PER_PAGE_MATRIX
 from app.keyboards.groups import (
     add_group_kb,
-    cancel_kb,
     delete_confirm_kb,
     group_card_kb,
     group_diagnostic_kb,
@@ -48,21 +41,10 @@ from app.keyboards.groups import (
     matrix_kb,
 )
 from app.services import group_service
-from app.services.group_service import (
-    RightsCheck,
-    apply_rights_check,
-    check_group_rights,
-    validate_daily_limit,
-    validate_interval_minutes,
-    validate_jitter,
-)
-from app.states import AdminGroupStates
+from app.services.group_service import RightsCheck, apply_rights_check, check_group_rights
 from app.utils.text import (
     escape_html,
-    fmt_interval,
-    fmt_quiet_hours,
     human_int,
-    parse_quiet_hours,
     truncate,
 )
 from app.utils.tg import alert, render
@@ -130,7 +112,6 @@ def _card_text(group: Group, stats: dict[str, int]) -> str:
         marks = [
             f"{'🗑' if group.bot_rights.get('can_delete_messages') else '🚫🗑'}",
             f"{'🚫' if group.bot_rights.get('can_restrict_members') else '🚫❌'}",
-            f"{'🔗' if group.bot_rights.get('can_invite_users') else '🔗❌'}",
         ]
         lines.append("🔑 Huquqlar: " + " · ".join(marks))
 
@@ -139,10 +120,7 @@ def _card_text(group: Group, stats: dict[str, int]) -> str:
         lines += [
             "━━━━━━━━━━━━━━━━━━━━",
             f"🧩 Yoqilgan funksiyalar: {' '.join(features) if features else '— yo‘q'}",
-            f"⏱ Interval: <b>{fmt_interval(s.interval_sec)}</b> (±{s.jitter_percent}%)",
-            f"📆 Kunlik limit: <b>{s.daily_post_limit}</b>",
             f"🎁 Bepul e'lon: {'🟢 yoqilgan' if s.free_ads_enabled else '🔴 o‘chiq'}",
-            f"🌙 Tinch soatlar: <b>{fmt_quiet_hours(s.quiet_start, s.quiet_end)}</b>",
         ]
 
     lines += [
@@ -156,7 +134,7 @@ def _card_text(group: Group, stats: dict[str, int]) -> str:
             + (fmt_dt(group.rotation.last_post_at) if group.rotation.last_post_at else "—")
         )
         if group.rotation.next_post_at:
-            lines.append(f"📅 Keyingi joylash: {fmt_dt(group.rotation.next_post_at)}")
+            lines.append(f"🛠 Texnik navbat: {fmt_dt(group.rotation.next_post_at)}")
 
     if warnings:
         lines += ["", "━━━━━━━━━━━━━━━━━━━━"] + warnings
@@ -197,18 +175,13 @@ def _settings_text(group: Group, *, old_ads_enabled: bool = False,
                     if old_ads_dry_run else "🟢 faqat eng oxirgisi qoladi"
                     if old_ads_enabled else "🔴 o‘chirilmaydi")
     return (
-        f"⚙️ <b>{escape_html(group.display)}</b> — joylash sozlamalari\n"
+        f"⚙️ <b>{escape_html(group.display)}</b> — guruh amallari\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏱ Interval: <b>{fmt_interval(s.interval_sec)}</b>\n"
-        f"🔀 Jitter: <b>±{s.jitter_percent}%</b>\n"
-        f"📆 Kunlik limit: <b>{s.daily_post_limit}</b> xabar\n"
-        f"🌙 Tinch soatlar: <b>{fmt_quiet_hours(s.quiet_start, s.quiet_end)}</b>\n"
+        "⏱ Pullik e'lon oralig'i tarifda, bepul e'lon oralig'i yagona bepul rejada.\n"
+        "Kunlik kvota yoki guruhning tijoriy oralig'i yo'q.\n"
         f"🧹 Eski e'lon nusxalari: {old_ads_text}\n"
         f"👋 Salomlashuv: {'🟢' if s.welcome_enabled else '🔴'}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Minimal interval: {MIN_INTERVAL_SEC // 60} daqiqa "
-        f"(Telegram limiti: guruhga 20 xabar/daqiqa)</i>\n"
-        "Qiymatni o'zgartirish uchun tugmani bosing."
+        "Tozalash uchun alohida siyosat va xavfsiz sinov→jonli tasdiq mavjud."
     )
 
 
@@ -556,189 +529,6 @@ async def on_group_categories(
 
     await render_group_categories(callback, session, callback_data.group_id)
     await alert(callback, "")
-
-
-# ═══════════════════ FSM: qiymatlarni qo'lda kiritish ═══════════════
-@router.callback_query(GroupCB.filter(F.action.in_({"interval", "jitter", "limit", "quiet"})))
-async def start_edit(
-    callback: CallbackQuery, callback_data: GroupCB, state: FSMContext, session: AsyncSession
-) -> None:
-    group = await group_service.get_group(session, callback_data.group_id)
-    if group is None or group.settings is None:
-        await alert(callback, "⚠️ Guruh topilmadi", show=True)
-        return
-
-    await state.update_data(group_id=group.id)
-    s = group.settings
-
-    prompts = {
-        "interval": (
-            AdminGroupStates.waiting_interval,
-            f"⏱ <b>Joylash intervali</b>\nHozirgi: <b>{fmt_interval(s.interval_sec)}</b>\n\n"
-            f"Yangi qiymatni <b>daqiqada</b> yuboring "
-            f"({MIN_INTERVAL_SEC // 60}–{MAX_INTERVAL_SEC // 60}).\n"
-            "Bekor qilish uchun /cancel",
-        ),
-        "jitter": (
-            AdminGroupStates.waiting_jitter,
-            f"🔀 <b>Jitter (tasodifiy siljish)</b>\nHozirgi: <b>±{s.jitter_percent}%</b>\n\n"
-            f"0–{MAX_JITTER_PERCENT} orasida foiz yuboring (masalan 10).\n"
-            "Jitter guruhlar bir sekundda post qilmasligi uchun kerak.\n"
-            "Bekor qilish uchun /cancel",
-        ),
-        "limit": (
-            AdminGroupStates.waiting_limit,
-            f"📆 <b>Kunlik limit</b>\nHozirgi: <b>{s.daily_post_limit}</b> xabar\n\n"
-            f"1–{MAX_DAILY_POST_LIMIT} orasida son yuboring.\n"
-            "Bekor qilish uchun /cancel",
-        ),
-        "quiet": (
-            AdminGroupStates.waiting_quiet,
-            f"🌙 <b>Tinch soatlar</b>\nHozirgi: <b>{fmt_quiet_hours(s.quiet_start, s.quiet_end)}</b>\n\n"
-            "Masalan: <code>23:00-08:00</code>\n"
-            "O'chirish uchun: <code>off</code>\n"
-            "Bekor qilish uchun /cancel",
-        ),
-    }
-
-    # Tugma `action` yuboradi (eski variantlarda `value` ham bo'lishi mumkin)
-    entry = prompts.get(callback_data.action) or prompts.get(callback_data.value)
-    if entry is None:
-        await alert(callback, "⚠️ Noma'lum sozlama", show=True)
-        return
-
-    next_state, text = entry
-    await state.set_state(next_state)
-    await render(callback, text, cancel_kb(group.id))
-    await alert(callback, "")
-
-
-@router.message(StateFilter(AdminGroupStates), Command("cancel"))
-async def cancel_input(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    data = await state.get_data()
-    await state.clear()
-    group_id = int(data.get("group_id") or 0)
-    if group_id:
-        await render_card(message, session, group_id)
-    else:
-        await render_list(message, session, 0)
-
-
-async def _group_from_state(state: FSMContext, session: AsyncSession) -> Group | None:
-    data = await state.get_data()
-    group_id = int(data.get("group_id") or 0)
-    if not group_id:
-        return None
-    return await group_service.get_group(session, group_id)
-
-
-@router.message(StateFilter(AdminGroupStates.waiting_interval), F.text)
-async def apply_interval(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    group = await _group_from_state(state, session)
-    raw = (message.text or "").strip()
-
-    if not raw.isdigit():
-        await message.answer("⚠️ Faqat raqam yuboring (daqiqada). Bekor qilish: /cancel")
-        return
-
-    minutes = int(raw)
-    if not (MIN_INTERVAL_SEC // 60) <= minutes <= (MAX_INTERVAL_SEC // 60):
-        await message.answer(
-            f"⚠️ Qiymat {MIN_INTERVAL_SEC // 60}–{MAX_INTERVAL_SEC // 60} daqiqa orasida bo'lishi kerak."
-        )
-        return
-
-    if group is None or group.settings is None:
-        await state.clear()
-        await message.answer("⚠️ Guruh topilmadi. /start ni bosing.")
-        return
-
-    await group_service.set_setting(session, group, "interval_sec", validate_interval_minutes(minutes))
-    await state.clear()
-    await message.answer(f"✅ Interval saqlandi: <b>{minutes} daqiqa</b>")
-    await render_card(message, session, group.id)
-
-
-@router.message(StateFilter(AdminGroupStates.waiting_jitter), F.text)
-async def apply_jitter(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    group = await _group_from_state(state, session)
-    raw = (message.text or "").strip()
-
-    if not raw.isdigit():
-        await message.answer("⚠️ Faqat raqam yuboring (foizda). Bekor qilish: /cancel")
-        return
-
-    percent = int(raw)
-    if not 0 <= percent <= MAX_JITTER_PERCENT:
-        await message.answer(f"⚠️ Qiymat 0–{MAX_JITTER_PERCENT} orasida bo'lishi kerak.")
-        return
-
-    if group is None or group.settings is None:
-        await state.clear()
-        await message.answer("⚠️ Guruh topilmadi.")
-        return
-
-    await group_service.set_setting(session, group, "jitter_percent", validate_jitter(percent))
-    await state.clear()
-    await message.answer(f"✅ Jitter saqlandi: <b>±{percent}%</b>")
-    await render_card(message, session, group.id)
-
-
-@router.message(StateFilter(AdminGroupStates.waiting_limit), F.text)
-async def apply_limit(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    group = await _group_from_state(state, session)
-    raw = (message.text or "").strip()
-
-    if not raw.isdigit():
-        await message.answer("⚠️ Faqat raqam yuboring. Bekor qilish: /cancel")
-        return
-
-    limit = int(raw)
-    if not 1 <= limit <= MAX_DAILY_POST_LIMIT:
-        await message.answer(f"⚠️ Qiymat 1–{MAX_DAILY_POST_LIMIT} orasida bo'lishi kerak.")
-        return
-
-    if group is None or group.settings is None:
-        await state.clear()
-        await message.answer("⚠️ Guruh topilmadi.")
-        return
-
-    await group_service.set_setting(session, group, "daily_post_limit", validate_daily_limit(limit))
-    await state.clear()
-    await message.answer(f"✅ Kunlik limit saqlandi: <b>{limit}</b>")
-    await render_card(message, session, group.id)
-
-
-@router.message(StateFilter(AdminGroupStates.waiting_quiet), F.text)
-async def apply_quiet(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    group = await _group_from_state(state, session)
-    raw = (message.text or "").strip()
-
-    try:
-        parsed = parse_quiet_hours(raw)
-    except ValueError:
-        await message.answer(
-            "⚠️ Format noto'g'ri. Masalan: <code>23:00-08:00</code> yoki <code>off</code>"
-        )
-        return
-
-    if group is None or group.settings is None:
-        await state.clear()
-        await message.answer("⚠️ Guruh topilmadi.")
-        return
-
-    if parsed is None:
-        await group_service.set_setting(session, group, "quiet_start", None)
-        await group_service.set_setting(session, group, "quiet_end", None)
-        await message.answer("✅ Tinch soatlar o'chirildi.")
-    else:
-        start, end = parsed
-        await group_service.set_setting(session, group, "quiet_start", start)
-        await group_service.set_setting(session, group, "quiet_end", end)
-        await message.answer(f"✅ Tinch soatlar saqlandi: <b>{start} – {end}</b>")
-
-    await state.clear()
-    await render_card(message, session, group.id)
 
 
 def _page(value: str) -> int:

@@ -9,7 +9,7 @@ from app.services.settings_service import DEFAULTS, settings_service
 
 async def test_defaults_available(session) -> None:
     values = await settings_service.get_all(session)
-    assert values["default_interval_sec"] == DEFAULTS["default_interval_sec"]
+    assert values["free_interval_sec"] == DEFAULTS["free_interval_sec"]
     assert values["kill_switch"] is False
 
 

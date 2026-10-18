@@ -93,7 +93,7 @@ async def test_new_seller_has_dashboard_but_not_tariff_or_new_ad(session, tg) ->
     assert "Katalogdan tarifni tanlang" in text
     keyboard = actions(fake.called("SendMessage")[-1])
     assert SellerPanelCB(action="ads").pack() in keyboard  # eski e'lonlar ham ko'rinadi
-    assert SellerPanelCB(action="profile").pack() in keyboard
+    assert SellerPanelCB(action="profile").pack() not in keyboard  # ortiqcha profil menyusi yo'q
     assert SellerPanelCB(action="payments").pack() in keyboard
     assert SellerPanelCB(action="tariffs").pack() in keyboard
     assert SellerPanelCB(action="new_ad").pack() not in keyboard
@@ -224,7 +224,7 @@ async def test_blocked_seller_and_stranger_cannot_open_dashboard_or_profile(sess
     await seller_service.set_status(session, await session.get(Seller, seller_id), SellerStatus.BLOCKED)
     await session.commit()
     await start(session, bot, dp)
-    assert "Sotuvchi hisobingiz cheklangan" in fake.sent_texts()[-1]
+    assert "Hisobingiz cheklangan" in fake.sent_texts()[-1]
     assert SellerPanelCB(action="profile").pack() not in actions(fake.called("SendMessage")[-1])
     await click(session, bot, dp, "profile", update_id=2)
     await click(session, bot, dp, "menu", update_id=3)

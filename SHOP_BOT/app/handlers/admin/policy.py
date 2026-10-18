@@ -99,7 +99,7 @@ async def render_policy(
             f"· mute: <b>{row.mute_minutes} min</b>\n"
             f"🕒 Hisob oynasi: <b>{(row.escalate or {}).get('warn_window_hours', 24)} soat</b> "
             f"· Adminlar istisno: {'ha' if row.exemption_for_admins else 'yo‘q'}\n\n"
-            "ℹ️ Sanoqchi/N va majburiy kanal alohida shartlar; posbonning ogohlantirish soniga qo‘shilmaydi. "
+            "ℹ️ Sanoqchi/N alohida shart; posbonning ogohlantirish soniga qo‘shilmaydi. "
             "Bot Privacy Mode o‘chirilgan bo‘lishi kerak."
         )
         kb = guard_kb(group, row, can_edit=_can_edit(role))

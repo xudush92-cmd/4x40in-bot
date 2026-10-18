@@ -2,23 +2,24 @@
 
 from __future__ import annotations
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import __version__
-from app.constants import AdminRole, ApplicationStatus, SellerStatus
-from app.db.models import Seller, User
+from app.constants import AdminRole, SellerStatus
+from app.db.models import FreeAd, FreeEntitlement, Group, Seller, User
 from app.filters import PrivateChat
 from app.keyboards import AdminCB, GuideCB, admin_main_kb
 from app.keyboards.guide import GUIDES, guide_kb, user_start_kb
 from app.keyboards.seller_panel import seller_menu_kb
 from app.services import (
-    application_service,
     broadcast_service,
+    free_ad_service,
     referral_service,
     seller_dashboard,
 )
@@ -44,39 +45,48 @@ UNKNOWN_CB_TEXT = "⚠️ Bu tugma eskirgan. /start ni bosing."
 
 async def user_home(
     session: AsyncSession, user_id: int, name: str, seller: Seller | None = None,
+    bot: Bot | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Oddiy /start va yo'riqnoma «bosh sahifa»si bir xil ariza holatiga ega."""
+    """Oddiy /start: bepul davr va tekshirilgan navbat (shaxsiy chat)."""
     support = str(await settings_service.get("support_contact", "@admin", session))
     text = await text_service.get("start.user", ism=name, yordam=escape_html(support))
-    # Oldingi seed bazaga standart matnni saqlagan bo'lishi mumkin; faqat o'sha
-    # iborani yangilaymiz, adminning boshqa matni va qolgan ma'lumotlar qoladi.
-    old_hint = "📌 Sotuvchi bo'lish uchun administrator bilan bog'laning."
-    new_hint = "📌 Sotuvchi bo'lish uchun pastdagi arizani yuboring; admin ko'rib chiqadi."
-    if seller is not None:  # BLOCKED yoki DELETED; yangi ariza bilan aylanib o'tolmaydi
-        text = text.replace(old_hint, "").replace(new_hint, "")
+    for old in ("📌 Sotuvchi bo'lish uchun administrator bilan bog'laning.",
+                "📌 Sotuvchi bo'lish uchun pastdagi arizani yuboring; admin ko'rib chiqadi."):
+        text = text.replace(old, "")  # eski seed matni, admin matnining qolgan qismi saqlanadi
+    if seller is not None:  # BLOCKED/DELETED: yangi xarid bilan aylanib o'tolmaydi
         reason = f" Sabab: {escape_html(seller.blocked_reason)}" if seller.blocked_reason else ""
-        text += f"\n\n🚫 Sotuvchi hisobingiz cheklangan.{reason} Tiklash uchun adminga yozing."
+        text += f"\n\n🚫 Hisobingiz cheklangan.{reason} Tiklash uchun adminga yozing."
         return text, user_start_kb(support, can_apply=False)
-    text = text.replace(old_hint, new_hint)
-    text += "\n\n🎁 Bepul e'lon uchun sotuvchilik arizasi shart emas: quyida guruhni tanlang."
-    application = await application_service.latest_for(session, user_id)
-    if application is None:
-        text += "\n\n🛒 Sotuvchi bo'lishni istasangiz, shaxsiy ariza yuboring; /start ochiq qoladi."
-    elif application.status == ApplicationStatus.PENDING:
-        text += f"\n\n📋 Ariza #{application.id} admin qarorini kutmoqda."
-    elif application.status == ApplicationStatus.REJECTED:
-        text += (f"\n\n❌ Ariza #{application.id} rad etildi. "
-                 f"Sabab: {escape_html(application.reject_reason or 'Admin bilan bog‘laning.')}. "
-                 "Sababni tuzatib, 1 soatdan keyin qayta yuborishingiz mumkin.")
-    else:
-        text += "\n\n✅ Oldingi ariza tasdiqlangan, ammo sotuvchi yozuvi topilmadi. Adminga yozing."
-    can_apply = application is None or (
-        application.status == ApplicationStatus.REJECTED
-        and (application.decided_at is None or
-             ensure_aware(application.decided_at) + application_service.RETRY_AFTER <= utcnow())
-    )
-    return text, user_start_kb(support, application_status=application.status if application else None,
-                               can_apply=can_apply)
+    ads = (await session.execute(select(FreeAd, Group)
+        .join(Group, Group.id == FreeAd.group_id)
+        .where(FreeAd.user_id == user_id))).all()
+    access = {row.group_id: row for row in (await session.execute(select(FreeEntitlement).where(
+        FreeEntitlement.user_id == user_id,
+    ))).scalars()}
+    now = utcnow()
+    values = await settings_service.get_all(session)
+    global_on = not (values["kill_switch"] or values["maintenance_mode"])
+    global_on = global_on and values["posting_enabled_global"] and values["free_plan_enabled"]
+    running = 0
+    for ad, group in ads:
+        ent = access.get(ad.group_id)
+        if (global_on and bot and ad.desired_running and not ad.admin_paused
+                and ad.next_post_at and ad.review_status == "approved"
+                and ent and ensure_aware(ent.expires_at) > now
+                and free_ad_service.ready_group(group)
+                and await free_ad_service.is_member(bot, group.tg_chat_id, user_id)):
+            running += 1
+    remaining = [int((ensure_aware(ent.expires_at) - now).total_seconds() // 86400)
+                 for ent in access.values() if ensure_aware(ent.expires_at) > now]
+    interval = int(await settings_service.get("free_interval_sec", 1800, session)) // 60
+    text += (f"\n\n🎁 Bepul: <b>{len(ads)}</b> e'lon / <b>{len({ad.group_id for ad, _ in ads})}</b> guruh "
+             f"· huquq muddati <b>{max(remaining) if remaining else 0} kun</b> "
+             f"· shaxsiy oralig'i <b>{interval} min</b>.\n"
+             f"▶️ Hozir ishlayotgan: <b>{running}</b> ta "
+             "(a'zolik, admin, muddat, Stop va guruh holati tekshirildi).\n"
+             "💳 Pullik tarifga oldindan sotuvchilik arizasi shart emas; "
+             "guruhni tanlab tarif xarid qilasiz.")
+    return text, user_start_kb(support, can_apply=False)
 
 
 @router.message(CommandStart(), PrivateChat())
@@ -86,6 +96,7 @@ async def cmd_start(
     is_admin: bool,
     role: str | None,
     session: AsyncSession,
+    bot: Bot,
     user_is_new: bool = False,
     command: CommandObject | None = None,
     state: FSMContext | None = None,
@@ -125,7 +136,7 @@ async def cmd_start(
 
     seller = await get_seller(session, message.from_user.id)
     if seller is not None and seller.status in {SellerStatus.PENDING, SellerStatus.ACTIVE}:
-        overview = await seller_dashboard.get_overview(session, seller)
+        overview = await seller_dashboard.get_overview(session, seller, bot=bot)
         text = await text_service.get("start.seller", ism=name, tarif_holati=overview.text)
         await message.answer(
             text + referral_note,
@@ -136,7 +147,7 @@ async def cmd_start(
         )
         return
 
-    text, markup = await user_home(session, message.from_user.id, name, seller)
+    text, markup = await user_home(session, message.from_user.id, name, seller, bot)
     await message.answer(text + referral_note, reply_markup=markup, disable_web_page_preview=True)
 
 
@@ -163,7 +174,7 @@ async def cmd_help(message: Message, is_admin: bool) -> None:
         "/help — yordam",
         "/id — Telegram ID'ingizni ko'rish",
         "/ping — bot ishlayotganini tekshirish",
-        "/takliflarim — guruh sanoqchisi, obuna holati va shaxsiy havola",
+        "/takliflarim — har guruhdagi haqiqiy takliflar va N holati",
         "/xabarlar_stop — ommaviy xabarlardan chiqish (qayta /xabarlar_on)",
         f"☎️ Yordam: {escape_html(str(support))}",
     ]
@@ -175,7 +186,7 @@ async def cmd_help(message: Message, is_admin: bool) -> None:
 @router.callback_query(GuideCB.filter(), PrivateChat())
 async def open_guide(
     callback: CallbackQuery, callback_data: GuideCB, session: AsyncSession,
-    user: User | None, is_admin: bool, role: str | None,
+    user: User | None, is_admin: bool, role: str | None, bot: Bot,
 ) -> None:
     """Faqat haqiqiy rolning yo'riqnomasi; callback'dagi sahifaga ishonilmaydi."""
     if is_admin:
@@ -184,10 +195,15 @@ async def open_guide(
         seller = await get_seller(session, callback.from_user.id)
         profile = "seller" if seller and seller.status in {SellerStatus.PENDING, SellerStatus.ACTIVE} else "user"
 
-    if callback_data.page == "back" and profile == "user":
+    if callback_data.page == "support" and profile == "user":
+        support = str(await settings_service.get("support_contact", "@admin", session))
+        await render(callback, "☎️ <b>Aloqa va yordam</b>\n\n"
+                     f"Admin bilan bog'lanish: {escape_html(support)}",
+                     user_start_kb(support))
+    elif callback_data.page == "back" and profile == "user":
         name = escape_html((user.first_name if user else None) or callback.from_user.first_name or "do'st")
         seller = await get_seller(session, callback.from_user.id)
-        text, markup = await user_home(session, callback.from_user.id, name, seller)
+        text, markup = await user_home(session, callback.from_user.id, name, seller, bot)
         await render(callback, text, markup)
     else:
         pages = GUIDES[profile]

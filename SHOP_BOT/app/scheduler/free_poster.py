@@ -30,7 +30,7 @@ from app.services import free_ad_service as free_ads
 from app.services.group_service import pause_group
 from app.services.notify import notify_admins
 from app.services.posting_limiter import posting_limiter
-from app.services.posting_service import local_day, quiet_until, timezone_for, tomorrow
+from app.services.posting_service import local_day, timezone_for
 from app.services.settings_service import settings_service
 from app.utils.time import ensure_aware, utcnow
 
@@ -59,7 +59,8 @@ async def claim_one(session: AsyncSession, ad_id: int, now: datetime) -> FreeCla
     """Guruh qatorini qulflash: paid/free va ikki free worker bir-birini kutadi."""
     gid = (await session.execute(select(FreeAd.group_id).where(
         FreeAd.id == ad_id, FreeAd.desired_running.is_(True),
-        FreeAd.review_status == "approved", FreeAd.next_post_at <= now,
+        FreeAd.review_status == "approved", FreeAd.admin_paused.is_(False),
+        FreeAd.next_post_at <= now,
     ))).scalar_one_or_none()
     if gid is None:
         return None
@@ -70,12 +71,14 @@ async def claim_one(session: AsyncSession, ad_id: int, now: datetime) -> FreeCla
         return None
     ad = (await session.execute(select(FreeAd).where(FreeAd.id == ad_id)
                                 .with_for_update(skip_locked=True))).scalar_one_or_none()
-    if (ad is None or not ad.desired_running or ad.review_status != "approved"
+    if (ad is None or not ad.desired_running or ad.admin_paused
+            or ad.review_status != "approved"
             or not ad.approved_photo_id or not ad.approved_caption or ad.next_post_at is None
             or ensure_aware(ad.next_post_at) > now):
         return None
     group = await free_ads.group_for(session, gid)
-    if group is None or not free_ads.ready_group(group):
+    if (group is None or not free_ads.ready_group(group)
+            or not await settings_service.get("free_plan_enabled", True, session)):
         return None
     access = await free_ads.entitlement(session, ad.user_id, gid)
     if access is None or ensure_aware(access.expires_at) <= now:
@@ -89,23 +92,13 @@ async def claim_one(session: AsyncSession, ad_id: int, now: datetime) -> FreeCla
             FreePostLog.group_id == gid, FreePostLog.status == "sending",
     ).limit(1))).scalar_one_or_none() is not None:
         return None
-    assert group.settings is not None
-    settings = group.settings
-    tz = await _group_tz(session, group)
-    used = rotation.today_count if rotation.today_date == local_day(now, tz) else 0
-    defer = quiet_until(now, settings.quiet_start, settings.quiet_end, tz)
-    if used >= max(1, settings.daily_post_limit):
-        defer = max(defer or now, tomorrow(now, tz))
-        defer = quiet_until(defer, settings.quiet_start, settings.quiet_end, tz) or defer
-    if defer is not None:
-        ad.next_post_at = defer if defer < ensure_aware(access.expires_at) else None
-        return None
     old = ad.next_post_at
     lease_until = now + LEASE
     # SQLite testda FOR UPDATE yo'q; shartli UPDATE ikkinchi claim'ni bloklaydi.
     row = await session.execute(update(FreeAd).where(
         FreeAd.id == ad.id, FreeAd.next_post_at == old,
-        FreeAd.desired_running.is_(True), FreeAd.review_status == "approved",
+        FreeAd.desired_running.is_(True), FreeAd.admin_paused.is_(False),
+        FreeAd.review_status == "approved",
     ).values(next_post_at=lease_until).execution_options(synchronize_session=False))
     if row.rowcount != 1:
         return None
@@ -117,7 +110,8 @@ async def claim_one(session: AsyncSession, ad_id: int, now: datetime) -> FreeCla
 
 
 async def _preflight(bot: Bot, claim: FreeClaim, now: datetime) -> tuple[str, str, bool] | None:
-    if not await settings_service.is_feature_enabled_fresh("posting"):
+    if (not await settings_service.is_feature_enabled_fresh("posting")
+            or not await settings_service.get("free_plan_enabled", True)):
         return None
     async with session_scope() as session:
         ad = await session.get(FreeAd, claim.ad_id)
@@ -125,7 +119,7 @@ async def _preflight(bot: Bot, claim: FreeClaim, now: datetime) -> tuple[str, st
         group = await free_ads.group_for(session, claim.group_id)
         access = await free_ads.entitlement(session, claim.user_id, claim.group_id)
         if (log is None or log.status != "sending" or ad is None
-                or not ad.desired_running or ad.review_status != "approved"
+                or not ad.desired_running or ad.admin_paused or ad.review_status != "approved"
                 or ad.revision != claim.revision
                 or not ad.approved_photo_id or not ad.approved_caption
                 or ensure_aware(ad.next_post_at) != claim.lease_until
@@ -134,12 +128,6 @@ async def _preflight(bot: Bot, claim: FreeClaim, now: datetime) -> tuple[str, st
                 or await free_ads.is_blocked(session, claim.user_id)):
             return None
         assert group.settings is not None
-        tz = await _group_tz(session, group)
-        if quiet_until(now, group.settings.quiet_start, group.settings.quiet_end, tz):
-            return None
-        rotation = group.rotation
-        if rotation and rotation.today_date == local_day(now, tz) and rotation.today_count >= max(1, group.settings.daily_post_limit):
-            return None
         photo, caption, protect = ad.approved_photo_id, ad.approved_caption, group.settings.protect_content
     return (photo, caption, protect) if await free_ads.is_member(bot, claim.chat_id, claim.user_id) else None
 
@@ -183,14 +171,15 @@ async def _finish(session: AsyncSession, claim: FreeClaim, now: datetime,
                 rotation.last_post_at = now
     if ad is not None and ensure_aware(ad.next_post_at) == claim.lease_until:
         access = await free_ads.entitlement(session, ad.user_id, ad.group_id)
-        if (status == "sent" and ad.desired_running and ad.review_status == "approved"
+        if (status == "sent" and ad.desired_running and not ad.admin_paused
+                and ad.review_status == "approved"
                 and access and ensure_aware(access.expires_at) > now and group
                 and free_ads.ready_group(group)):
-            ad.next_post_at = now + free_ads.interval(group)
+            ad.next_post_at = now + await free_ads.interval(session)
         elif status == "retry" and retry_after is not None:
             ad.next_post_at = now + timedelta(seconds=max(60, retry_after))
-        elif status == "skipped" and group and free_ads.ready_group(group):
-            ad.next_post_at = now + free_ads.interval(group)
+        elif status == "skipped" and group and free_ads.ready_group(group) and not ad.admin_paused:
+            ad.next_post_at = now + await free_ads.interval(session)
         else:
             ad.next_post_at = None
     if status in {"error", "uncertain"}:
@@ -297,5 +286,5 @@ async def rebase_paused(now: datetime, *, limit: int = 200) -> None:
             group = await session.get(Group, ad.group_id) if ad else None
             access = await free_ads.entitlement(session, ad.user_id, ad.group_id) if ad else None
             if ad and ad.next_post_at and ensure_aware(ad.next_post_at) <= now:
-                ad.next_post_at = (now + free_ads.interval(group) if group and group.settings
+                ad.next_post_at = (now + await free_ads.interval(session) if group and group.settings
                                    and access and ensure_aware(access.expires_at) > now else None)

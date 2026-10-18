@@ -3,30 +3,36 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from math import ceil
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.constants import AdminRole
 from app.db.models import (
     ActionLog,
+    Ad,
     Admin,
+    Category,
+    FreeAd,
+    FreeEntitlement,
     Group,
     GroupAdmin,
     Permission,
     Restriction,
+    Seller,
     User,
     Violation,
     Warning,
 )
 from app.filters import IsAdmin
-from app.keyboards.callbacks import AdminCB, PolicyCB
+from app.keyboards.callbacks import AdminCB, FreeModCB, PolicyCB, SellerCB
 from app.keyboards.policy import (
     PERMISSION_LABELS,
     confirm_kb,
@@ -34,7 +40,7 @@ from app.keyboards.policy import (
     permission_types_kb,
 )
 from app.services import group_policy_service as policy
-from app.services import group_service
+from app.services import group_service, subscription_service, user_directory
 from app.services.settings_service import settings_service
 from app.states import AdminPolicyStates
 from app.utils.text import clean_text, escape_html, truncate
@@ -299,20 +305,86 @@ async def render_user(target: CallbackQuery | Message, session: AsyncSession,
     filter_group = (Warning.group_id == group_id,) if group_id else ()
     warnings = (await session.execute(select(Warning).where(
         Warning.user_id == user_id, *filter_group,
-    ).order_by(Warning.group_id).limit(10))).scalars().all()
+    ).order_by(Warning.group_id).limit(6))).scalars().all()
     restrictions = (await session.execute(select(Restriction).where(
         Restriction.user_id == user_id, Restriction.is_active.is_(True),
         or_(Restriction.until_at.is_(None), Restriction.until_at > utcnow()),
         *((Restriction.group_id == group_id,) if group_id else ()),
-    ).order_by(Restriction.id.desc()).limit(10))).scalars().all()
+    ).order_by(Restriction.id.desc()).limit(6))).scalars().all()
     violations = (await session.execute(select(Violation).where(
         Violation.user_id == user_id,
         *((Violation.group_id == group_id,) if group_id else ()),
-    ).order_by(Violation.id.desc()).limit(8))).scalars().all()
+    ).order_by(Violation.id.desc()).limit(6))).scalars().all()
+    seller = (await session.execute(select(Seller).where(
+        Seller.user_id == user_id,
+    ))).scalar_one_or_none()
+    active = await subscription_service.active_for(session, seller.id) if seller else None
+    latest = await subscription_service.latest_for(session, seller.id) if seller else None
+    paid = (await session.execute(select(Ad, Category, Group).join(
+        Category, Category.id == Ad.category_id).outerjoin(
+        Group, Group.id == Category.group_id).where(
+        Ad.seller_id == seller.id if seller else Ad.id < 0,
+    ).order_by(Ad.id.desc()).limit(6))).all()
+    free = (await session.execute(select(FreeAd, FreeEntitlement, Group)
+        .outerjoin(FreeEntitlement,
+            (FreeEntitlement.user_id == FreeAd.user_id)
+            & (FreeEntitlement.group_id == FreeAd.group_id))
+        .join(Group, Group.id == FreeAd.group_id)
+        .where(FreeAd.user_id == user_id)
+        .order_by(FreeAd.id.desc()).limit(6))).all()
+    if user is None and seller is None and not free and not warnings and not restrictions:
+        await render(target, "⚠️ Foydalanuvchi topilmadi. Ism/@username yoki ID bilan qayta qidiring.")
+        return
     label = f"{escape_html(group.display)}" if group else "🌐 barcha guruhlar"
     text = (f"👤 <b>Foydalanuvchi: {user_id}</b> · {label}\n"
-            f"Profil: {escape_html(user.first_name) if user else 'botga kirmagan'}\n\n"
+            f"Profil: {escape_html(' '.join(filter(None, (user.first_name, user.last_name))) if user else seller.display_name if seller else 'botga kirmagan')} "
+            f"{escape_html('@' + user.username) if user and user.username else ''}\n\n"
             "<b>Ogohlantirishlar (guruh bo‘yicha):</b>\n")
+    plan = subscription_service.terms_for(active or latest) if (active or latest) else None
+    if seller:
+        text += f"💳 Sotuvchi: <b>{escape_html(seller.status)}</b>"
+        if plan and (active or latest):
+            sub = active or latest
+            text += (f" · tarif <b>{escape_html(str(plan.get('name') or '—'))}</b> "
+                     f"({'faol' if active else escape_html(sub.status)})\n"
+                     f"⏳ Tugash: {fmt_dt(sub.expires_at)} · "
+                     f"e'lon kvotasi {sub.ads_used}/{sub.ads_limit} · "
+                     f"oralig'i {int(plan.get('interval_sec') or 1800) // 60} min\n")
+        else:
+            text += " · tarif yo'q\n"
+    else:
+        text += "💳 Pullik tarif yo'q.\n"
+    paid_total = int((await session.execute(select(func.count()).select_from(Ad).where(
+        Ad.seller_id == seller.id if seller else Ad.id < 0,
+    ))).scalar_one())
+    free_total = int((await session.execute(select(func.count()).select_from(FreeAd).where(
+        FreeAd.user_id == user_id,
+    ))).scalar_one())
+    group_ids = union(
+        select(Category.group_id.label("gid")).join(Ad, Ad.category_id == Category.id)
+            .where((Ad.seller_id == seller.id if seller else Ad.id < 0),
+                   Category.group_id.is_not(None)),
+        select(FreeAd.group_id.label("gid")).where(FreeAd.user_id == user_id),
+    ).subquery()
+    group_total = int((await session.execute(select(func.count()).select_from(group_ids))).scalar_one())
+    text += (f"📢 Pullik e'lonlar: {paid_total} ta · "
+             f"🎁 bepul: {free_total} ta · 👥 guruhlar: {group_total} ta\n")
+    if paid:
+        text += "<b>Pullik e'lonlar:</b>\n" + "\n".join(
+            f"• #{ad.id} · {escape_html(truncate(chat.display, 48) if chat else 'guruh yo‘q')} "
+            f"· {escape_html(ad.status)}{' · ⏸ admin' if ad.admin_paused else ''}"
+            f" · {fmt_dt(ad.next_eligible_at) if ad.next_eligible_at else 'navbat yo‘q'}"
+            for ad, category, chat in paid
+        ) + "\n"
+    if free:
+        text += "<b>Bepul e'lonlar:</b>\n" + "\n".join(
+            f"• #{ad.id} · {escape_html(truncate(chat.display, 48))} · "
+            f"{escape_html(ad.review_status)} · "
+            f"{'⏸ admin' if ad.admin_paused else '▶️ user Start' if ad.desired_running else '⏹ user Stop'}"
+            f" · {fmt_dt(access.expires_at) if access else 'huquq hali yo‘q'}"
+            for ad, access, chat in free
+        ) + "\n"
+    text += "<i>Haqiqiy joylash uchun guruh switchi, moderatsiya, N, muddat va a'zolik ham tekshiriladi.</i>\n\n"
     text += "\n".join(f"• #{w.group_id}: {w.count} ta ({fmt_dt(w.last_at)})" for w in warnings) or "—"
     text += "\n\n<b>Faol cheklovlar:</b>\n"
     text += "\n".join(f"• #{r.id} · guruh #{r.group_id} · {r.kind} · "
@@ -332,6 +404,16 @@ async def render_user(target: CallbackQuery | Message, session: AsyncSession,
                          _btn("🚫 Qo'lda ban", "manual_ask", group.id, f"{user_id}.ban")])
             if any(w.count for w in warnings):
                 rows.append([_btn("♻️ Ogohlantirishni nollash", "warning_ask", group.id, str(user_id))])
+    if seller:
+        rows.append([InlineKeyboardButton(
+            text="💳 Sotuvchi / tarifni boshqarish",
+            callback_data=SellerCB(action="card", seller_id=seller.id).pack(),
+        )])
+    for ad, _, chat in free[:6]:
+        rows.append([InlineKeyboardButton(
+            text=f"🎁 {truncate(chat.display, 25)} · e'lon #{ad.id} / pauza",
+            callback_data=FreeModCB(action="card", ad_id=ad.id).pack(),
+        )])
     if group:
         rows.append([_btn("🛡 Guruh siyosati", "home", group.id, "guard")])
     else:
@@ -339,34 +421,55 @@ async def render_user(target: CallbackQuery | Message, session: AsyncSession,
         for gid in dict.fromkeys([*(w.group_id for w in warnings), *(v.group_id for v in violations)]):
             rows.append([_btn(f"👥 Guruh #{gid}da ko'rish", "user_profile", gid, str(user_id))])
     rows.extend([[_btn("🔄 Yangilash", "user_profile", group_id, str(user_id))],
+                 [_btn("◀️ Foydalanuvchilar ro'yxati", "users", 0, "q0")],
                  [InlineKeyboardButton(text="◀️ Boshqaruv paneli", callback_data=AdminCB(action="menu").pack())]])
-    await render(target, text[:3900], InlineKeyboardMarkup(inline_keyboard=rows))
+    # Telegram HTML teglarini kesib tashlamaslik uchun qatorlarni cheklaymiz.
+    await render(target, text, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-async def render_users_home(target: CallbackQuery | Message, session: AsyncSession) -> None:
-    restrictions = (await session.execute(select(Restriction).where(
-        Restriction.is_active.is_(True),
-        or_(Restriction.until_at.is_(None), Restriction.until_at > utcnow()),
-    ).order_by(Restriction.id.desc()).limit(10))).scalars().all()
-    text = ("👤 <b>Foydalanuvchilar / jazo tarixi</b>\n\n"
-            "Telegram raqamli ID bo‘yicha qidiring yoki faol mute/ban ro'yxatidan tanlang. "
-            "Qo'lda jazo faqat guruh tanlanib, alohida tasdiqlangandan keyin beriladi.\n\n"
-            "<b>Faol cheklovlar:</b>\n")
-    text += "\n".join(
-        f"• <code>{r.user_id}</code> · guruh #{r.group_id} · {r.kind} "
-        f"· {escape_html(truncate(r.reason, 55))}" for r in restrictions
-    ) or "—"
-    rows = [[_btn(f"👤 {r.user_id} · #{r.group_id} · {r.kind}",
-                  "user_profile", r.group_id, str(r.user_id))] for r in restrictions]
-    rows += [[_btn("🔍 Telegram ID bo'yicha qidirish", "user_find")],
+async def render_users_home(target: CallbackQuery | Message, session: AsyncSession,
+                            page: int = 0, search: str = "") -> None:
+    """Ro'yxat birinchi ochiladi; ID izlash majburiy emas."""
+    entries, total = await user_directory.list_users(session, page=page, search=search)
+    pages = max(1, ceil(total / user_directory.PAGE_SIZE))
+    valid_page = max(0, min(page, pages - 1))
+    if valid_page != page:
+        entries, _ = await user_directory.list_users(session, page=valid_page, search=search)
+    page = valid_page
+    title = f" · qidiruv: {escape_html(search[:45])}" if search else ""
+    text = (f"👤 <b>Foydalanuvchilar</b>{title}\n"
+            f"Jami: {total} · sahifa {page + 1}/{pages}\n"
+            "Ro'yxatdan kartani tanlang: tarif, e'lonlar, guruhlar va bepul holat.\n")
+    if not entries:
+        text += "\nHozircha foydalanuvchi yo'q."
+    rows = [[_btn(f"👤 {truncate(row.name, 25)}"
+                  + (f" @{truncate(row.username, 14)}" if row.username else "")
+                  + f" · {row.user_id}",
+                  "user_profile", 0, str(row.user_id))] for row in entries]
+    value_prefix = "q" if search else ""
+    nav = []
+    if page:
+        nav.append(_btn("◀️", "users", 0, f"{value_prefix}{page - 1}"))
+    nav.append(_btn(f"{page + 1}/{pages} 🔄", "users", 0, f"{value_prefix}{page}"))
+    if page + 1 < pages:
+        nav.append(_btn("▶️", "users", 0, f"{value_prefix}{page + 1}"))
+    rows.append(nav)
+    rows += [[_btn("🔍 Ism / @username / ID bilan qidirish", "user_find")],
              [_btn("🔑 Ruxsatlar", "perm")],
              [InlineKeyboardButton(text="◀️ Boshqaruv paneli", callback_data=AdminCB(action="menu").pack())]]
     await render(target, text, InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(PolicyCB.filter(F.action == "users"))
-async def users_home(callback: CallbackQuery, session: AsyncSession) -> None:
-    await render_users_home(callback, session)
+async def users_home(callback: CallbackQuery, callback_data: PolicyCB,
+                     session: AsyncSession, state: FSMContext) -> None:
+    raw = callback_data.value
+    search = str((await state.get_data()).get("user_directory_query") or "") if raw.startswith("q") else ""
+    page_text = raw[1:] if raw.startswith("q") else raw
+    page = int(page_text) if page_text.isascii() and page_text.isdigit() else 0
+    if not search:
+        await state.update_data(user_directory_query=None)
+    await render_users_home(callback, session, page, search)
     await alert(callback, "")
 
 
@@ -379,7 +482,7 @@ async def find_user(callback: CallbackQuery, callback_data: PolicyCB, session: A
     await state.clear()
     await state.set_state(AdminPolicyStates.waiting_user_search)
     await state.update_data(policy_group_id=callback_data.group_id)
-    await render(callback, "🔍 Foydalanuvchining raqamli Telegram ID sini yuboring.\n"
+    await render(callback, "🔍 Ism, @username yoki Telegram ID yuboring.\n"
                  f"Qamrov: {'guruh #' + str(callback_data.group_id) if callback_data.group_id else 'barcha guruhlar'}\n"
                  "Bekor qilish: /cancel")
     await alert(callback, "")
@@ -393,12 +496,16 @@ async def search_user(message: Message, state: FSMContext, session: AsyncSession
         await render_users_home(message, session)
         return
     raw = (message.text or "").strip()
-    if not raw.isascii() or not raw.isdigit() or not 0 < int(raw) < 10**17:
-        await message.answer("⚠️ Musbat Telegram ID yuboring. /cancel")
+    if not raw or len(raw) > 64:
+        await message.answer("⚠️ 1–64 belgili ism, @username yoki ID yuboring. /cancel")
         return
     data = await state.get_data()
     await state.clear()
-    await render_user(message, session, int(raw), int(data.get("policy_group_id") or 0), role)
+    await state.update_data(user_directory_query=raw if not raw.isdigit() else None)
+    if raw.isascii() and raw.isdigit() and 0 < int(raw) < 10**17:
+        await render_user(message, session, int(raw), int(data.get("policy_group_id") or 0), role)
+    else:
+        await render_users_home(message, session, search=raw)
 
 
 @router.callback_query(PolicyCB.filter(F.action == "user_profile"))

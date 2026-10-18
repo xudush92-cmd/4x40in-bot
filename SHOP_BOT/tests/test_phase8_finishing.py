@@ -55,10 +55,16 @@ async def test_tariff_click_restrictions_immediately_filter_seller_wizard(sessio
     tariff = await session.get(Tariff, tid)
     assert tariff.allowed_group_ids == [ga_id]
     seller = await session.get(__import__("app.db.models", fromlist=["Seller"]).Seller, sid)
-    assert [c.id for c in await _active_categories(session, seller)] == [ca_id]
+    # Xarid PAYTIdagi cheklovlar snapshotda: keyingi katalog tahriri
+    # mavjud xaridorning e'lon/toifalarini yashirincha qisqartirmaydi.
+    assert [c.id for c in await _active_categories(session, seller)] == [ca_id, cb_id]
+    new_buyer, _ = await seller_service.get_or_create_seller(session, 8002, display_name="Yangi")
+    await subscription_service.grant(session, new_buyer, tariff)
+    await session.commit()
+    assert [c.id for c in await _active_categories(session, new_buyer)] == [ca_id]
     await dp.feed_update(bot, callback_update(AdCB(action="wiz_cat", value=str(cb_id)).pack(),
-                                              user_id=seller.user_id, update_id=4))
-    assert any("ruxsat bermaydi" in s for s in fake.answers())
+                                              user_id=new_buyer.user_id, update_id=4))
+    assert any("ruxsat bermaydi" in text for text in fake.answers())
     assert not (await session.execute(select(Ad))).scalars().all()
     await click(5, "unlimit", "c|0")
     await click(6, "unlimit", "g|0")

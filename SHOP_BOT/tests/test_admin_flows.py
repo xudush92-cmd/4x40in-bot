@@ -134,7 +134,10 @@ async def test_groups_list_and_card(session, tg) -> None:
     assert "📱 Telefonlar bozori" in card
     assert "🆔 <code>-1002003004000</code>" in card
     assert "supergroup ✅" in card
-    assert "30 daqiqa" in card
+    assert "Kunlik kvota" not in card
+    kb = fake.called("EditMessageText")[-1]["reply_markup"]
+    labels = {button["text"] for row in kb["inline_keyboard"] for button in row}
+    assert {"👥 Odam qo'shish sharti / Sanoqchi", "🧹 Tozalash", "🛡 Xavfsizlik"} <= labels
     assert "Toifalar: <b>0</b>" in card
 
 
@@ -170,62 +173,32 @@ async def test_feature_toggle_rerenders_correct_screen(session, tg) -> None:
     assert "Funksiyalar matritsasi" in fake.edited_texts()[-1]
 
 
-async def test_interval_fsm(session, tg) -> None:
+async def test_old_group_commercial_callbacks_cannot_change_settings(session, tg) -> None:
     fake, bot, dp = tg
     await _feed(session, dp, bot, 1, bot_added_update())
-    group_id = (await _group(session)).id
-
-    # «⏱ Interval» → FSM holat
-    await _feed(session, dp, bot, 2, callback_update(GroupCB(action="interval", group_id=group_id).pack()))
-    assert "intervali" in fake.edited_texts()[-1].lower()
-
-    # To'g'ri qiymat (daqiqada)
-    await _feed(session, dp, bot, 3, text_update("45"))
-    assert (await _settings(session, group_id)).interval_sec == 45 * 60
-    assert any("45 daqiqa" in text for text in fake.sent_texts())
-
-    # Noto'g'ri qiymat (0) → saqlanmaydi
-    await _feed(session, dp, bot, 4, callback_update(GroupCB(action="interval", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 5, text_update("0"))
-    assert (await _settings(session, group_id)).interval_sec == 45 * 60
-
-    # Son bo'lmagan matn
-    await _feed(session, dp, bot, 6, text_update("salom"))
-    assert (await _settings(session, group_id)).interval_sec == 45 * 60
+    gid = (await _group(session)).id
+    before = await _settings(session, gid)
+    old = (before.interval_sec, before.daily_post_limit, before.jitter_percent,
+           before.quiet_start, before.quiet_end)
+    for n, action in enumerate(("interval", "limit", "jitter", "quiet"), start=2):
+        await _feed(session, dp, bot, n, callback_update(GroupCB(action=action, group_id=gid).pack()))
+        await _feed(session, dp, bot, n + 10, text_update("9999"))
+    after = await _settings(session, gid)
+    assert (after.interval_sec, after.daily_post_limit, after.jitter_percent,
+            after.quiet_start, after.quiet_end) == old
+    assert not any("14400" in text for text in fake.edited_texts())
 
 
-async def test_jitter_limit_quiet_fsm(session, tg) -> None:
+async def test_group_technical_protect_toggle_stays_local(session, tg) -> None:
     fake, bot, dp = tg
     await _feed(session, dp, bot, 1, bot_added_update())
-    group_id = (await _group(session)).id
-
-    # Jitter
-    await _feed(session, dp, bot, 2, callback_update(GroupCB(action="jitter", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 3, text_update("25"))
-    assert (await _settings(session, group_id)).jitter_percent == 25
-
-    # Kunlik limit
-    await _feed(session, dp, bot, 4, callback_update(GroupCB(action="limit", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 5, text_update("20"))
-    assert (await _settings(session, group_id)).daily_post_limit == 20
-
-    # Tinch soatlar
-    await _feed(session, dp, bot, 6, callback_update(GroupCB(action="quiet", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 7, text_update("23:00-08:00"))
-    settings = await _settings(session, group_id)
-    assert (settings.quiet_start, settings.quiet_end) == ("23:00", "08:00")
-
-    # Noto'g'ri format — o'zgarmaydi
-    await _feed(session, dp, bot, 8, callback_update(GroupCB(action="quiet", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 9, text_update("25:00-99:00"))
-    settings = await _settings(session, group_id)
-    assert (settings.quiet_start, settings.quiet_end) == ("23:00", "08:00")
-
-    # O'chirish
-    await _feed(session, dp, bot, 10, callback_update(GroupCB(action="quiet", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 11, text_update("off"))
-    settings = await _settings(session, group_id)
-    assert settings.quiet_start is None and settings.quiet_end is None
+    gid = (await _group(session)).id
+    other = await _settings(session, gid)
+    assert not other.protect_content
+    await _feed(session, dp, bot, 2, callback_update(GroupCB(
+        action="toggle", group_id=gid, value="protect").pack()))
+    assert (await _settings(session, gid)).protect_content
+    assert "Kontentni himoya" in fake.edited_texts()[-1]
 
 
 async def test_pause_resume_and_delete(session, tg) -> None:
@@ -324,7 +297,7 @@ async def test_category_create_attach_detach(session, tg) -> None:
     assert (await _rotation(session, category_id)).is_paused is True
 
 
-async def test_category_rename_interval_and_toggles(session, tg) -> None:
+async def test_category_rename_old_interval_and_mandatory_moderation(session, tg) -> None:
     fake, bot, dp = tg
     await _feed(session, dp, bot, 1, bot_added_update())
     await _feed(session, dp, bot, 2, callback_update(CategoryCB(action="create", category_id=0, value="0").pack()))
@@ -337,22 +310,13 @@ async def test_category_rename_interval_and_toggles(session, tg) -> None:
     category = await _category(session, category_id)
     assert (category.emoji, category.name) == ("🚗", "Avto bozori")
 
-    # Alohida interval
+    # Eski toifa oralig'i/moderatsiya toggle'lari endi tijoriy shart emas.
     await _feed(session, dp, bot, 6, callback_update(CategoryCB(action="interval", category_id=category_id).pack()))
     await _feed(session, dp, bot, 7, text_update("120"))
-    assert (await _category(session, category_id)).interval_override == 120 * 60
-
-    # Guruh intervaliga qaytarish
-    await _feed(session, dp, bot, 8, callback_update(CategoryCB(action="interval", category_id=category_id).pack()))
-    await _feed(session, dp, bot, 9, text_update("0"))
     assert (await _category(session, category_id)).interval_override is None
-
-    # Faol/pauza
-    await _feed(session, dp, bot, 10, callback_update(CategoryCB(action="active", category_id=category_id).pack()))
+    await _feed(session, dp, bot, 8, callback_update(CategoryCB(action="active", category_id=category_id).pack()))
     assert (await _category(session, category_id)).is_active is False
-
-    # Moderatsiya rejimi
-    await _feed(session, dp, bot, 11, callback_update(CategoryCB(action="moderation", category_id=category_id).pack()))
+    await _feed(session, dp, bot, 9, callback_update(CategoryCB(action="moderation", category_id=category_id).pack()))
     assert (await _category(session, category_id)).moderation_required is True
 
 
@@ -385,14 +349,15 @@ async def test_category_order_and_delete(session, tg) -> None:
     assert [c.name for c in await _categories(session)] == ["Birinchi"]
 
 
-async def test_cancel_fsm_returns_to_card(session, tg) -> None:
+async def test_cancel_category_rename_fsm_returns_to_card(session, tg) -> None:
     fake, bot, dp = tg
-    await _feed(session, dp, bot, 1, bot_added_update())
-    group_id = (await _group(session)).id
-
-    await _feed(session, dp, bot, 2, callback_update(GroupCB(action="limit", group_id=group_id).pack()))
-    await _feed(session, dp, bot, 3, text_update("/cancel"))
-    assert "📱 Telefonlar bozori" in fake.sent_texts()[-1]
+    await _feed(session, dp, bot, 1, callback_update(CategoryCB(action="create").pack()))
+    await _feed(session, dp, bot, 2, text_update("Telefonlar"))
+    category = (await _categories(session))[0]
+    await _feed(session, dp, bot, 3, callback_update(CategoryCB(
+        action="rename", category_id=category.id).pack()))
+    await _feed(session, dp, bot, 4, text_update("/cancel"))
+    assert "Telefonlar" in fake.sent_texts()[-1]
 
 
 # ═══════════════════════ 4. Asosiy panel ═══════════════════════════

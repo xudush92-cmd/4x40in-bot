@@ -31,7 +31,7 @@ def menu_text(counts: dict[str, int], role: str | None) -> str:
     lines.append(f"📢 Moderatsiya: <b>{counts.get('moderation', 0)}</b>")
     if role in {AdminRole.ADMIN, AdminRole.SUPER}:
         lines.append(f"🧾 Cheklar: <b>{counts.get('payments', 0)}</b>")
-    lines.append("\n👥 Guruhlar → har bir guruhning joylash/N/kanal/qoidalari alohida.")
+    lines.append("\n👥 Guruhlar → har bir guruhning joylash/N/tozalash/xavfsizlik qoidalari alohida.")
     lines.append("🛒 Savdo · 📢 Kontent · 📊 Nazorat · ⚙️ Tizim")
     lines.append("<i>Global o'chirgich guruh qoidasini o'zgartirmaydi.</i>")
     return "\n".join(lines)
@@ -60,7 +60,7 @@ async def open_hub(callback: CallbackQuery, callback_data: AdminCB,
     text = f"{title} — <b>bo'limlar</b>\n\n"
     if key == "system":
         text += ("Global pauza (⚙️ Sozlamalar) <b>guruh qoidalarini o'zgartirmaydi</b>. "
-                 "Majburiy kanallarni guruh kartasidan alohida sozlang.")
+                 "Pullik interval tarifda, bepul interval alohida bepul rejada sozlanadi.")
     else:
         text += "Kerakli tugmani tanlang; eski bo'limlar va huquq tekshiruvlari saqlangan."
     await render(callback, text, admin_hub_kb(key, role, counts))

@@ -207,6 +207,7 @@ async def submit_receipt(
         digest = hashlib.sha256(file_unique_id.encode("utf-8")).hexdigest()
     values = dict(
         seller_id=seller.id, tariff_id=tariff.id, amount=amount,
+        terms=subscription_service.tariff_terms(tariff),
         base_amount=quote.base if quote else amount,
         discount_amount=quote.discount if quote else Decimal("0"),
         balance_used=quote.balance if quote else Decimal("0"),
@@ -307,7 +308,8 @@ async def decide(
                                           or coupon.redeemed_at is not None):
             return Decision("invalid", payment)  # noaniq chegirma bilan tarif berilmaydi
         subscription = await subscription_service.grant(
-            session, seller, tariff, granted_by=admin_id, payment_id=payment.id
+            session, seller, tariff, granted_by=admin_id, payment_id=payment.id,
+            terms_override=payment.terms,
         )
         payment.subscription_id = subscription.id
         payment.status = PaymentStatus.APPROVED

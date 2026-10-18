@@ -43,7 +43,6 @@ async def tg(session):
     session.add(Admin(user_id=ADMIN_ID, role=AdminRole.SUPER))
     await session.commit()
     await reset_dispatcher_state()
-    handler._membership_cache.clear()
     fake = FakeSession()
     bot = make_bot(fake)
     dp = make_dispatcher()

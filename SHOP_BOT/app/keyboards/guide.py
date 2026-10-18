@@ -1,15 +1,14 @@
 """Shaxsiy chatdagi rollarga mos, qisqa foydalanish yo'riqnomalari.
 
 Bu matnlar faqat ishlayotgan imkoniyatlarni tushuntiradi. Oddiy /start
-ariza tasdig'ini talab qilmaydi; sotuvchi paneli talab qiladi.
+va pullik xarid uchun avvaldan sotuvchilik arizasi talab qilinmaydi.
 """
 
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.constants import ApplicationStatus
-from app.keyboards.callbacks import AdminCB, ApplicationCB, FreeCB, GuideCB, SellerPanelCB
+from app.keyboards.callbacks import AdminCB, FreeCB, GuideCB, SellerPanelCB
 
 # Kalit → (tugma, qisqa Telegram HTML matni). Mavjud amallar bilan mos saqlang.
 GUIDES: dict[str, dict[str, tuple[str, str]]] = {
@@ -22,33 +21,31 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "surat+izoh, admin tasdig'i, 30 kun. Sotuvchilik arizasi shart emas.\n"
             "3️⃣ Guruhda qo'lda yozish uchun bot menyusi shart emas: Telegram "
             "guruhida «A'zo qo'shish»dan foydalaning.\n"
-            "4️⃣ Eski pullik sotuvchi kabinetini ochish uchun «🛒 Sotuvchi bo'lish» "
-            "arizasini yuboring. Oddiy pullik xarid keyin ochiladi.\n\n"
+            "4️⃣ Pullik tarif uchun shu guruhdagi «Pullik imkoniyat»ni tanlang; "
+            "ariza shart emas. Chekni admin tasdiqlagach e'lon yuboring.\n\n"
             "/help — buyruqlar · /id — Telegram ID · /xabarlar_stop — ommaviy DMni to'xtatish."
         )),
-        "counter": ("🧮 Taklif va kanal", (
-            "🧮 <b>Guruh shartlarini bajarish</b>\n\n"
-            "/takliflarim → guruhni tanlang → N soni, qolgan takliflar, "
-            "shaxsiy havola va kanal holatini tekshiring.\n"
-            "Havoladan kelgan a'zo guruhda admin belgilagan muddat qolsa hisoblanadi. "
-            "Guruh admini qo'lda qo'shishni ham ruxsat etishi mumkin.\n"
-            "📣 Majburiy kanalga obuna N kishini taklif qilishdan <b>alohida shart</b>. "
-            "Bot a'zolikni aniqlay olmasa, avtomatik jazo qo'llamaydi.\n\n"
-            "A'zolik/to'lov savolida guruh administratoridan yordam so'rang."
+        "counter": ("🧮 Takliflar", (
+            "🧮 <b>Guruhga qo'shilgan a'zolar</b>\n\n"
+            "Bepul e'lon uchun aynan kerakli guruhning o'zida Telegramdagi "
+            "«A'zo qo'shish» orqali N ta haqiqiy odam qo'shing. Ular guruhda "
+            "admin belgilagan muddat qolsa hisoblanadi.\n"
+            "/takliflarim → guruhni tanlang → shu guruhdagi hisob va N ni ko'ring. "
+            "Havola orqali qo'shilish N uchun hisoblanmaydi; kanal sharti yo'q. "
+            "Pullik xarid qamralgan guruhdagi N talabidan ozod qiladi."
         )),
     },
     "seller": {
         "home": ("📖 Boshlash", (
             "📖 <b>Botdan foydalanish — sotuvchi</b>\n\n"
             "/start → kabinet: tarif/muddat, e'lon limiti, e'lonlar va oxirgi chek "
-            "holati hamda keyingi qadam. «📅 Mening tarifim»da rasm chegarasi ham bor.\n"
+            "holati, shaxsiy interval va keyingi qadamni ko'rsatadi.\n"
             "«📢 Mening e'lonlarim» tarifsiz ham eski pullik e'lonlarni ko'rsatadi; "
             "yangi pullik e'lon uchun faol tarif va bo'sh limit zarur. "
             "«🎁 Guruh uchun bepul e'lon» alohida, N do'st+admin tasdig'i bilan. "
-            "«👤 Aloqa ma'lumotlari» "
-            "faqat o'zingizga ko'rinadi, tahrir uchun adminga yozing.\n"
+            "«☎️ Aloqa va yordam»da kontaktni ko'ring; tahrir/savol uchun adminga yozing.\n"
             "Tarif yo'q yoki muddati o'tgan bo'lsa, «💳 Tariflarni ko'rish / olish»dan "
-            "tarifni tanlang yoki «☎️ Yordam» orqali adminga yozing.\n"
+            "tarifni tanlang yoki «☎️ Aloqa va yordam» orqali adminga yozing.\n"
             "Tarif tasdiqlanmaguncha yangi e'lonni yuborib bo'lmaydi.\n\n"
             "Batafsil yo'lni pastdagi tugmalardan tanlang."
         )),
@@ -57,11 +54,11 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "«➕ Yangi e'lon» → toifa → sarlavha → tavsif → narx → "
             "aloqa → rasmlar → ko'rib chiqish → yuborish.\n"
             "Tarifdagi e'lon/rasm chegaralari amal qiladi; bitta albomga "
-            "ko'pi bilan 10 rasm. Toifada moderatsiya yoqilgan bo'lsa, "
-            "e'lon admin qarorini kutadi.\n"
+            "rasm limiti; har yangi e'lonni admin mazmun bo'yicha tasdiqlaydi.\n"
             "«📢 Mening e'lonlarim»da holatni ko'ring, tahrirlang, "
-            "pauza/yoqish yoki tasdiq bilan o'chirish mumkin. "
-            "Rad etilsa sababni o'qing, tuzating va qayta yuboring."
+            "pauza/boshlash yoki tasdiq bilan o'chirish mumkin. "
+            "Admin tasdig'i Start emas: «▶️ Boshlash»dan keyin tarif oralig'i o'tgach ilk post ketadi. "
+            "Rad etilsa sababni o'qing, tuzating va qayta yuboring; tahrir ham qayta tasdiqlanadi."
         )),
         "payments": ("💳 Tarif va to'lov", (
             "💳 <b>Tarif va chek</b>\n\n"
@@ -92,8 +89,9 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "Telegram Privacy Mode o'chirilgan bo'lsin.\n"
             "«🧩 Funksiyalar»da joylashni yoqing; bepul oqimni har guruhda "
             "alohida yoqing (default o'chiq, jonli direct-add Sanoqchi ham kerak). "
-            "Guruh sozlamalarida interval, kunlik limit, jitter va tinch soatlarni kiriting. "
-            "«🗂 Toifalar»da shu guruhga toifa ulang; unga alohida interval berish mumkin.\n"
+            "Pullik interval tarifda, bepul interval yagona bepul rejada boshqariladi. "
+            "Guruh kartasidagi «Odam qo'shish sharti / Sanoqchi», «Tozalash» va "
+            "«Xavfsizlik»ni har guruh uchun alohida sozlang.\n"
             "«📋 E'lonlar navbati»dan tekshiring. «🚀 Hoziroq» — haqiqiy xabar: "
             "faqat sinov guruhida ishlating."
         )),
@@ -103,16 +101,16 @@ GUIDES: dict[str, dict[str, tuple[str, str]]] = {
             "Global switch, guruh switchi va 🧪 sinov rejimi uch xil daraja.\n"
             "Posbon: havola/so'z, ogohlantirish va jazo. "
             "Tozalovchi: xabar turini, eski e'lon va kechikishni belgilang.\n"
-            "Sanoqchi: N kishi, hisob manbalari, minimal qolish va havola; "
-            "majburiy kanal sharti alohida yoqiladi. Bot kanal admini bo'lsin.\n"
+            "Sanoqchi: shu guruhga bevosita qo'shilgan N kishi va minimal qolish; "
+            "havola orqali kelganlar Nga qo'shilmaydi, kanal sharti yo'q.\n"
             "Avval 🧪 jurnalni ko'ring, keyin xavfsiz guruhda 🔴 JONLI tasdiqlang. "
             "Xatoda guruh yoki global switchni pauzalang; boshqa guruhlarga tegmang."
         )),
         "sales": ("🛒 Sotuvchi va chek", (
             "🛒 <b>Tarif · sotuvchi · moderatsiya · to'lov</b>\n\n"
-            "«💳 Tariflar»da narx, muddat, e'lon va 10 tagacha rasmni belgilang. "
-            "«🛒 Savdo → Arizalar»da ism/aloqani tekshirib, sotuvchilikka qaror bering. "
-            "Qo'lda Telegram ID bilan qo'shish ham saqlangan; tarif alohida beriladi.\n"
+            "«💳 Tariflar»da narx, muddat, e'lon, rasm va shaxsiy intervalni belgilang. "
+            "Foydalanuvchi arizasiz chek yubora oladi; «👤 Foydalanuvchilar»da "
+            "ro'yxat/qidiruv va kartochkalarni ko'ring.\n"
             "«✅ Moderatsiya»da e'lonni tekshirib tasdiqlang yoki sabab bilan rad eting. "
             "«💰 To'lovlar»da chek va <b>haqiqiy bank kirimini</b> solishtirib tasdiqlang; "
             "chek kelishi o'zi tarif bermaydi.\n"
@@ -151,18 +149,11 @@ def user_start_kb(
     rows: list[list[InlineKeyboardButton]] = [[InlineKeyboardButton(
         text="📢 E'lon joylash — guruhni tanlash", callback_data=FreeCB(action="list").pack(),
     )]]
-    if can_apply and application_status in (None, ApplicationStatus.REJECTED):
-        rows.append([InlineKeyboardButton(
-            text="🛒 Qayta ariza" if application_status else "🛒 Sotuvchi bo'lish",
-            callback_data=ApplicationCB(action="new").pack(),
-        )])
-    if application_status:
-        rows.append([InlineKeyboardButton(
-            text="📋 Arizam holati", callback_data=ApplicationCB(action="status").pack(),
-        )])
+    # Pullik xarid / soha guruhi orqali arizasiz ochiladi; eski ariza tarixi
+    # o'chmaydi, ammo bosh oynada majburiy bosqich sifatida ko'rsatilmaydi.
     rows += [
         [InlineKeyboardButton(text="📖 Foydalanish yo'riqnomasi", callback_data=GuideCB().pack())],
-        [InlineKeyboardButton(text="☎️ Yordam", url=f"https://t.me/{str(support).lstrip('@')}")],
+        [InlineKeyboardButton(text="☎️ Aloqa va yordam", callback_data=GuideCB(page="support").pack())],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

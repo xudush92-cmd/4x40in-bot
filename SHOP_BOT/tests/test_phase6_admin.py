@@ -63,7 +63,7 @@ async def test_group_guard_ui_isolated_live_confirm_and_emergency_pause(session,
     fake, bot, dp = tg
     one, two = await setup_group(session), await setup_group(session, chat_id=OTHER_CHAT_ID)
     await dp.feed_update(bot, callback_update(GroupCB(action="card", group_id=one).pack()))
-    assert "Posbon" in str(fake.called("EditMessageText")[-1]["reply_markup"])
+    assert "Xavfsizlik" in str(fake.called("EditMessageText")[-1]["reply_markup"])
 
     await click(session, bot, dp, "home", one, "guard", n=2)
     assert "sinov" in fake.edited_texts()[-1]

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from aiogram.types import Chat
 
-from app.db.models import Ad, Category, CategoryRotation, Group, GroupSettings
+from app.db.models import Ad, CategoryRotation, Group, GroupSettings
 from app.services import category_service, group_service
 
 TENANT = -1001111222333
@@ -130,11 +131,14 @@ async def test_toggles(session) -> None:
     await category_service.set_moderation(session, category, True)
     assert category.moderation_required is True
 
-    await category_service.set_interval_override(session, category, 600)
-    assert category.interval_override == 600
-
-    await category_service.set_interval_override(session, category, None)
+    with pytest.raises(ValueError, match="tarifda"):
+        await category_service.set_interval_override(session, category, 600)
     assert category.interval_override is None
+    category.moderation_required = False  # tarixiy qatordagi eski qiymat
+    with pytest.raises(ValueError, match="majburiy"):
+        await category_service.set_moderation(session, category, False)
+    await category_service.set_moderation(session, category, True)
+    assert category.moderation_required is True
 
 
 async def test_stats_and_counts(session) -> None:

@@ -219,6 +219,11 @@ async def on_approve(
             "ad.approved",
             elon=escape_html(truncate(ad.title or "", 60)),
         )
+        # Avvalgi seed matni bazada qolgan bo'lishi mumkin; eski avtomatik
+        # navbat va'dasi yangi, foydalanuvchi bosadigan Startga zid.
+        text = text.replace("E'lon navbatga qo'shildi — navbati kelganda guruhlarga joylanadi.", "")
+        text += ("\n\n▶️ «Mening e'lonlarim»dagi <b>Boshlash</b>ni bosing. "
+                 "Birinchi post Startdan keyin tarif oralig'i o'tgach yuboriladi.")
         await _notify_seller(bot, seller, text)
 
     page, _ = _parse_page_status(callback_data.value, "pending")
@@ -480,8 +485,8 @@ async def on_admin_resume(
     if ad is None:
         return
 
-    if not await ad_service.resume(session, ad):
-        await alert(callback, "⚠️ Bu e'lon pauzada emas.", show=True)
+    if not await ad_service.admin_resume(session, ad, callback.from_user.id):
+        await alert(callback, "⚠️ Bu e'lon admin pauzasida emas.", show=True)
         return
 
     page, status = _parse_page_status(callback_data.value, "all")

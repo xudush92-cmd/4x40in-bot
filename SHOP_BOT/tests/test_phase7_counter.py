@@ -76,7 +76,6 @@ async def tg(session):
     session.add(Admin(user_id=ADMIN_ID, role=AdminRole.SUPER))
     await session.commit()
     await reset_dispatcher_state()
-    handler._membership_cache.clear()
     fake = FakeSession()
     bot = make_bot(fake)
     dp = make_dispatcher()
@@ -185,7 +184,7 @@ async def test_settings_are_scoped_safe_and_audited(session):
     ))).scalars().all()) >= 5
 
 
-async def test_join_request_fallback_link_priority_once_stay_and_daily_quota(session):
+async def test_join_request_fallback_link_priority_once_stay_without_daily_quota(session):
     gid = await setup_group(session)
     setting = await enable(session, gid)
     setting.count_sources = {"link": True, "added_by": True}
@@ -216,33 +215,27 @@ async def test_join_request_fallback_link_priority_once_stay_and_daily_quota(ses
     await session.commit()
     assert await counters.claim_due() == []  # minimal qolish muddati hali o'tmagan
 
+    # Eski link dalili yozuvda qoladi, ammo N uchun sanalmaydi.
     final.created_at = utcnow() - timedelta(minutes=5)
     final.updated_at = utcnow() - timedelta(minutes=5)
     await session.commit()
-    assert await counters.claim_due() == [final.id]
-    assert await counters.claim_due() == []  # CAS: worker bir marta oladi
-    assert await counters.credit_join(session, final.id, still_member=True) == 1
-    assert await counters.credit_join(session, final.id, still_member=True) is None
-    await session.commit()
-    assert await counters.total_for(session, gid, INVITER) == 1
+    assert final.reject_reason == "source_disabled"
+    assert await counters.claim_due() == []
+    assert await counters.total_for(session, gid, INVITER) == 0
 
-    second = await counters.reserve_join(session, group_id=gid, inviter_id=INVITER,
-                                         invitee_id=INVITEE + 1, source=InviteSource.LINK,
-                                         invite_link=link.invite_link)
-    second.created_at = utcnow() - timedelta(minutes=5)
-    second.updated_at = utcnow() - timedelta(minutes=5)
-    await session.commit()
-    assert await counters.claim_due() == [second.id]
-    assert await counters.credit_join(session, second.id, still_member=True) == 0
-    assert second.reject_reason == "daily_limit"
-
-    third = await counters.reserve_join(session, group_id=gid, inviter_id=INVITER,
-                                        invitee_id=INVITEE + 2, source=InviteSource.LINK,
-                                        invite_link=link.invite_link)
-    assert await counters.abandon_early(session, group_id=gid, invitee_id=third.invitee_id)
-    assert not await counters.abandon_early(session, group_id=gid, invitee_id=third.invitee_id)
-    assert third.reject_reason == "left_early"
-    assert await counters.total_for(session, gid, INVITER) == 1
+    # N faqat bevosita qo'shilgan ikki boshqa a'zo bilan, eski max_per_day=1ga qaramay.
+    setting.count_sources = {"link": True, "added_by": True}
+    for ix in (1, 2):
+        direct = await counters.reserve_join(session, group_id=gid, inviter_id=INVITER,
+                                             invitee_id=INVITEE + ix,
+                                             source=InviteSource.ADDED_BY)
+        direct.created_at = direct.updated_at = utcnow() - timedelta(minutes=5)
+        await session.commit()
+        assert await counters.claim_due() == [direct.id]
+        assert await counters.credit_join(session, direct.id, still_member=True) == ix
+        assert await counters.credit_join(session, direct.id, still_member=True) is None
+        await session.commit()
+    assert await counters.total_for(session, gid, INVITER) == 2
 
 
 async def test_links_reservation_unique_audit_and_api_fails_closed(session, tg):
@@ -341,57 +334,31 @@ async def test_counter_dry_run_soft_delete_guard_overlap_duplicate_and_pause(ses
     assert len(fake.called("DeleteMessage")) == 1
 
 
-async def test_channel_n_unknown_permissions_and_global_kill(session, tg):
+async def test_archived_channel_ignored_but_group_n_and_global_stop_work(session, tg):
     fake, bot, dp = tg
     gid = await setup_group(session)
     await enable(session, gid, dry_run=False, subscribe=True, n=1)
-    await counters.add_channel(session, group_id=None, channel_id=CHANNEL,
-                               username="kanalnam", title="Global kanal",
-                               invite_link="https://t.me/kanalnam", actor_id=ADMIN_ID)
+    session.add(RequiredChannel(group_id=None, channel_tg_id=CHANNEL,
+                                username="arxiv", is_active=True))
     await session.commit()
-
-    def status(payload):
-        uid = payload["user_id"]
-        if uid == BOT_ID:
-            return bot_member()
-        if payload["chat_id"] == CHANNEL:
-            return ChatMemberLeft(user=user(uid), status="left")
-        return ChatMemberMember(user=user(uid), status="member")
-    fake.overrides["GetChatMember"] = status
+    subscribed(fake)
     await send(session, dp, bot, message(110))
     assert len(fake.called("DeleteMessage")) == 1
     check = (await session.execute(select(CounterMessageCheck).where(
         CounterMessageCheck.message_id == 110,
     ))).scalar_one()
-    assert check.issue == "not_subscribed"
-    fake.errors["GetChatMember"] = TelegramBadRequest(DeleteMessage(chat_id=CHANNEL, message_id=1),
-                                                      "not admin")
-    await send(session, dp, bot, message(111))
-    assert len(fake.called("DeleteMessage")) == 1  # noma'lum holatda jazo yo'q
-    fake.errors.clear()
-    subscribed(fake)
-    await send(session, dp, bot, message(112))
-    assert len(fake.called("DeleteMessage")) == 2
-    check = (await session.execute(select(CounterMessageCheck).where(
-        CounterMessageCheck.message_id == 112,
-    ))).scalar_one()
     assert check.issue == "counter_not_done"
+    assert all(call["chat_id"] != CHANNEL for call in fake.called("GetChatMember"))
 
     session.add(Permission(group_id=gid, user_id=INVITER, kind=PermissionKind.COUNTER_EXEMPT,
                            reason="tekshirildi", granted_by=ADMIN_ID, is_active=True))
     await session.commit()
     await send(session, dp, bot, message(113))
-    assert len(fake.called("DeleteMessage")) == 2
-    fake.overrides["GetChatMember"] = status
-    await send(session, dp, bot, message(114))
-    assert len(fake.called("DeleteMessage")) == 2  # ijobiy kesh: 60s fail-open
-    handler._membership_cache.clear()  # TTL o'tishini simulyatsiya qilish
-    await send(session, dp, bot, message(115))
-    assert len(fake.called("DeleteMessage")) == 3  # counter_exempt kanalni bekor qilmaydi
+    assert len(fake.called("DeleteMessage")) == 1
     session.add(Setting(key="kill_switch", value=True, updated_by=ADMIN_ID))
     await session.commit()
     await send(session, dp, bot, message(116))
-    assert len(fake.called("DeleteMessage")) == 3
+    assert len(fake.called("DeleteMessage")) == 1
 
 
 async def test_hard_member_event_scheduler_credit_unlock_and_external_mute(session, tg):
@@ -413,6 +380,17 @@ async def test_hard_member_event_scheduler_credit_unlock_and_external_mute(sessi
     assert len((await session.execute(select(InviteEvent))).scalars().all()) == 1
     join.created_at = utcnow() - timedelta(minutes=5)
     join.updated_at = utcnow() - timedelta(minutes=5)
+    await session.commit()
+    assert await handler.process_due(bot) == 0
+    assert await counters.total_for(session, gid, INVITER) == 0
+    # Eski test guruhida direct manba ham alohida yoqiladi.
+    (await session.get(CounterSetting, gid)).count_sources = {"link": True, "added_by": True}
+    await session.commit()
+    # Link posterni ochmadi; haqiqiy direct-add esa HARD cheklovni ham ochadi.
+    await send(session, dp, bot, membership(INVITEE + 1, update_id=4002))
+    direct = (await session.execute(select(InviteEvent).where(
+        InviteEvent.invitee_id == INVITEE + 1))).scalar_one()
+    direct.created_at = direct.updated_at = utcnow() - timedelta(minutes=5)
     await session.commit()
     assert await handler.process_due(bot) == 1
     session.expire_all()
@@ -469,7 +447,7 @@ async def test_member_self_fallback_request_and_service_cleaner(session, tg):
     assert join.inviter_id == INVITER and join.source == "link"
     join_id = join.id
     await send(session, dp, bot, membership(INVITEE, old=True, update_id=2002))
-    assert (await session.get(InviteEvent, join_id)).reject_reason == "left_early"
+    assert (await session.get(InviteEvent, join_id)).reject_reason == "source_disabled"
 
 
 async def test_admin_ui_live_confirmation_channels_adjust_and_global_scope(session, tg):
@@ -527,25 +505,15 @@ async def test_admin_ui_live_confirmation_channels_adjust_and_global_scope(sessi
     changes = (await session.execute(select(CounterAudit).where(CounterAudit.group_id == gid))).scalars().all()
     assert [c.delta for c in changes] == [3, -3]
 
-    fake.overrides["GetChat"] = lambda p: (Chat(id=CHANNEL, type="channel", title="Tasdiq",
-                                              username="tasdiqkanal")
-                                            if p["chat_id"] == "@tasdiqkanal" or p["chat_id"] == CHANNEL
-                                            else group_chat())
+    # Kanal boshqaruvi UI'dan chiqarilgan; eski callback tarixni o'zgartirmaydi.
+    archived = RequiredChannel(group_id=None, channel_tg_id=CHANNEL, is_active=True)
+    session.add(archived)
+    await session.commit()
+    archived_id = archived.id
     await send(session, dp, bot, callback_update(CounterAdminCB(
-        action="channel_add", group_id=0,
-    ).pack(), update_id=915))
-    await send(session, dp, bot, text_update("@tasdiqkanal", update_id=916))
-    channel = (await session.execute(select(RequiredChannel))).scalar_one()
-    channel_id = channel.id
-    assert channel.group_id is None and channel.channel_tg_id == CHANNEL
-    assert len(await counters.applicable_channels(session, gid)) == 1
-    await send(session, dp, bot, callback_update(CounterAdminCB(
-        action="channel_ask", group_id=0, value=str(channel_id),
-    ).pack(), update_id=917))
-    await send(session, dp, bot, callback_update(CounterAdminCB(
-        action="channel_remove", group_id=0, value=str(channel_id),
+        action="channel_remove", group_id=0, value=str(archived_id),
     ).pack(), update_id=918))
-    assert not (await session.get(RequiredChannel, channel_id)).is_active
+    assert (await session.get(RequiredChannel, archived_id)).is_active
 
     scheduler = build_scheduler(get_settings(), bot)
     assert scheduler.get_job("counter") is not None
@@ -566,7 +534,7 @@ async def test_group_matrix_switch_requires_admin_and_resets_dry_run(session, tg
     assert (await session.get(CounterSetting, gid)).dry_run
     assert not fake.called("DeleteMessage")
 
-async def test_user_private_command_and_personal_link_owner_only(session, tg):
+async def test_user_private_status_hides_old_link_and_stale_callback_cannot_create(session, tg):
     fake, bot, dp = tg
     gid = await setup_group(session)
     await enable(session, gid)
@@ -577,35 +545,16 @@ async def test_user_private_command_and_personal_link_owner_only(session, tg):
         action="mine", group_id=gid,
     ).pack(), user_id=INVITER, update_id=2201))
     assert any("Takliflar:" in text for text in fake.edited_texts())
+    assert "Havola olish" not in str(fake.called("EditMessageText")[-1]["reply_markup"])
     await send(session, dp, bot, callback_update(CounterCB(
         action="link", group_id=gid,
     ).pack(), user_id=INVITER, update_id=2202))
-    assert len(fake.called("CreateChatInviteLink")) == 1
-    assert any("Shaxsiy havola" in text for text in fake.edited_texts())
-    await send(session, dp, bot, callback_update(CounterCB(
-        action="link", group_id=gid,
-    ).pack(), user_id=INVITER, update_id=2203))
-    assert len(fake.called("CreateChatInviteLink")) == 1
-    link = (await session.execute(select(InviteLink).where(
-        InviteLink.group_id == gid, InviteLink.user_id == INVITER,
-    ))).scalar_one()
-    assert link.is_active
-    url = link.invite_link
-    # Guruhdagi buyruq xususiy URLni hammaga oshkor qilmaydi.
+    assert not fake.called("CreateChatInviteLink")
+    assert not (await session.execute(select(InviteLink))).scalars().all()
+    # Guruhdagi buyruq N matnini yoki havolani oshkor qilmaydi.
     await send(session, dp, bot, message(2204, text="/takliflarim", uid=INVITER))
     group_replies = [p["text"] for p in fake.called("SendMessage") if p["chat_id"] == GROUP_CHAT_ID]
     assert any("shaxsiy chatda" in text for text in group_replies)
-    assert not any(url in text for text in group_replies)
-    # Boshqa odamning tugmasini bosish link egasini almashtirmaydi.
-    fake.overrides["GetChatMember"] = lambda p: (
-        ChatMemberLeft(user=user(p["user_id"]), status="left") if p["user_id"] == INVITEE
-        else ChatMemberMember(user=user(p["user_id"]), status="member")
-    )
-    await send(session, dp, bot, callback_update(CounterCB(
-        action="link", group_id=gid,
-    ).pack(), user_id=INVITEE, update_id=2205))
-    assert len(fake.called("CreateChatInviteLink")) == 1
-    assert len((await session.execute(select(InviteLink))).scalars().all()) == 1
 
 
 async def test_admin_menu_global_stop_and_role_guard(session, tg):
@@ -646,32 +595,20 @@ async def test_admin_menu_global_stop_and_role_guard(session, tg):
     assert not (await session.get(CounterSetting, gid)).enabled
 
 
-async def test_live_validation_missing_channel_and_bot_rights(session, tg):
+async def test_live_validation_checks_group_bot_rights_not_channel(session, tg):
     fake, bot, dp = tg
     gid = await setup_group(session)
     row = await enable(session, gid, hard=True, subscribe=True)
     revision = row.updated_at.strftime("%Y%m%d%H%M%S%f")
-    subscribed(fake)
     code = CounterAdminCB(action="live_confirm", group_id=gid, value=revision).pack()
+    fake.overrides["GetChatMember"] = lambda p: bot_member(is_admin=False)
     await send(session, dp, bot, callback_update(code, update_id=2401))
-    assert (await session.get(CounterSetting, gid)).dry_run
-    assert any("kanal" in text.lower() for text in fake.answers())
-
-    await counters.add_channel(session, group_id=gid, channel_id=CHANNEL,
-                               username="tasdiqkanal", title="Tasdiq",
-                               invite_link="https://t.me/tasdiqkanal", actor_id=ADMIN_ID)
-    await session.commit()
-    fake.overrides["GetChat"] = lambda p: (Chat(id=CHANNEL, type="channel", title="Tasdiq")
-                                            if p["chat_id"] == CHANNEL else group_chat())
-    fake.overrides["GetChatMember"] = lambda p: (
-        ChatMemberMember(user=user(BOT_ID), status="member") if p["chat_id"] == CHANNEL
-        and p["user_id"] == BOT_ID else bot_member())
-    await send(session, dp, bot, callback_update(code, update_id=2402))
     assert (await session.get(CounterSetting, gid)).dry_run
     assert any("admin" in text.lower() for text in fake.answers())
     subscribed(fake)
-    await send(session, dp, bot, callback_update(code, update_id=2403))
+    await send(session, dp, bot, callback_update(code, update_id=2402))
     assert not (await session.get(CounterSetting, gid)).dry_run
+    assert all(p["chat_id"] != CHANNEL for p in fake.called("GetChatMember"))
 
 
 async def test_counter_failure_pause_and_reconcile_mute(session, tg):
@@ -734,27 +671,19 @@ async def test_counter_retention_only_completed_logs(session):
     assert not (await session.execute(select(CounterJoinRequest))).scalars().all()
     assert (await session.execute(select(InviteEvent))).scalars().all()  # bir-marta sanash saqlanadi
 
-async def test_lost_channel_admin_fails_open_before_delete(session, tg):
+async def test_legacy_channel_row_does_not_create_hidden_subscription_gate(session, tg):
     fake, bot, dp = tg
     gid = await setup_group(session)
     await enable(session, gid, subscribe=True, dry_run=False)
-    await counters.add_channel(session, group_id=gid, channel_id=CHANNEL,
-                               username="somechannel", title="Kanal",
-                               invite_link="https://t.me/somechannel", actor_id=ADMIN_ID)
+    session.add(RequiredChannel(group_id=gid, channel_tg_id=CHANNEL,
+                                username="somechannel", is_active=True))
     await session.commit()
-
-    def user_or_bot(payload):
-        if payload["chat_id"] == CHANNEL and payload["user_id"] == BOT_ID:
-            return ChatMemberMember(user=user(BOT_ID), status="member")  # adminlik yo'q
-        if payload["chat_id"] == CHANNEL:
-            return ChatMemberLeft(user=user(payload["user_id"]), status="left")
-        return ChatMemberMember(user=user(payload["user_id"]), status="member")
-    fake.overrides["GetChatMember"] = user_or_bot
+    subscribed(fake)
     await send(session, dp, bot, message(3500))
-    assert not fake.called("DeleteMessage")
+    assert len(fake.called("DeleteMessage")) == 1  # faqat N sabab
     check = (await session.execute(select(CounterMessageCheck))).scalar_one()
-    assert check.status == "skipped"  # tekshiruv API oldidan qayta o'tdi
-    assert (await session.execute(select(GroupMessageAction))).scalar_one().status == "skipped"
+    assert check.issue == "counter_not_done"
+    assert all(p["chat_id"] != CHANNEL for p in fake.called("GetChatMember"))
 
 
 async def test_large_manual_reset_stays_group_scoped(session):

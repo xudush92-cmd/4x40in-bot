@@ -66,15 +66,12 @@ async def tg(session, monkeypatch):
     await reset_dispatcher_state()
 
 
-async def setup_free(session, *, n: int = 2, chat_id: int = GROUP_CHAT_ID,
-                     interval: int = 300) -> int:
+async def setup_free(session, *, n: int = 2, chat_id: int = GROUP_CHAT_ID) -> int:
     gid = await setup_group(session, chat_id=chat_id)
     await enable_direct(session, gid, n=n)
     group = await group_service.get_group(session, gid)
     group.settings.posting_enabled = True
     group.settings.free_ads_enabled = True
-    group.settings.interval_sec = interval
-    group.settings.jitter_percent = 0
     session.add(Category(name="Telefonlar" if chat_id == GROUP_CHAT_ID else "Ustalar",
                          group_id=gid, is_active=True))
     await session.commit()
@@ -120,7 +117,7 @@ async def test_user_flow_group_buttons_admin_gate_and_real_direct_members(sessio
     assert "2 ta haqiqiy" in fake.edited_texts()[-1] and "Pullik" in fake.edited_texts()[-1]
     await send(session, dp, bot, callback_update(FreeCB(action="paid", group_id=gid).pack(),
                                                  user_id=INVITER, update_id=13))
-    assert "hali ochilmagan" in fake.edited_texts()[-1]
+    assert "Hozircha faol tarif yo'q" in fake.edited_texts()[-1]
     assert (await session.execute(select(FreeAd))).scalars().all() == []
 
     await send(session, dp, bot, callback_update(FreeCB(action="photo", group_id=gid).pack(),
@@ -279,11 +276,11 @@ async def test_stop_start_owned_user_and_independent_timers(session, tg):
     assert not fake.called("CreateChatInviteLink")
 
 
-async def test_daily_limit_and_stale_sending_do_not_duplicate_posts(session, tg):
+async def test_no_daily_quota_and_stale_sending_do_not_duplicate_posts(session, tg):
     fake, bot, _ = tg
     gid = await setup_free(session, n=1)
     group = await session.get(Group, gid)
-    group.settings.daily_post_limit = 1
+    group.settings.daily_post_limit = 1  # tarixiy qiymat postga to'siq emas
     a = await free_draft(session, gid, INVITER)
     b = await free_draft(session, gid, INVITER + 7, caption="Boshqa odamning tasdiqlangan matni")
     await credit(session, gid, INVITER, 1, start=73000)
@@ -300,11 +297,10 @@ async def test_daily_limit_and_stale_sending_do_not_duplicate_posts(session, tg)
     await free_poster.post_one(bot, b_id)
     b = await session.get(FreeAd, b_id)
     assert ensure_aware(b.next_post_at) > utcnow() + timedelta(minutes=5)
-    assert len([p for p in fake.called("SendPhoto") if p["chat_id"] == GROUP_CHAT_ID]) == 1
+    assert len([p for p in fake.called("SendPhoto") if p["chat_id"] == GROUP_CHAT_ID]) == 2
 
     # Oldingi sending log noma'lum natija: restartda qayta yuborilmaydi.
     group = await session.get(Group, gid)
-    group.settings.daily_post_limit = 50
     b.next_post_at = utcnow() - timedelta(seconds=1)
     session.add(FreePostLog(free_ad_id=b.id, group_id=gid, user_id=b.user_id,
                             status="sending", created_at=utcnow() - timedelta(minutes=6)))
@@ -314,9 +310,9 @@ async def test_daily_limit_and_stale_sending_do_not_duplicate_posts(session, tg)
     assert (await session.get(Group, gid)).paused_reason == "error"
     assert (await session.get(FreeAd, b_id)).desired_running is False
     await free_poster.post_one(bot, b_id)
-    assert len([p for p in fake.called("SendPhoto") if p["chat_id"] == GROUP_CHAT_ID]) == 1
+    assert len([p for p in fake.called("SendPhoto") if p["chat_id"] == GROUP_CHAT_ID]) == 2
     assert (await session.execute(select(FreePostLog).where(
-        FreePostLog.free_ad_id == b_id,
+        FreePostLog.free_ad_id == b_id, FreePostLog.status == "uncertain",
     ))).scalar_one().status == "uncertain"
 
 
@@ -334,7 +330,7 @@ async def test_empty_paid_queue_does_not_pause_group_with_free_draft(session, tg
     session.expire_all()
     group = await session.get(Group, gid)
     assert group.is_active and group.settings.posting_enabled
-    assert ensure_aware(group.rotation.next_post_at) > utcnow()
+    assert group.rotation.next_post_at is None  # hech qanday pullik e'lon yo'q
 
 
 async def test_free_unavailable_when_counter_is_dry_run_and_off(session, tg):
@@ -391,16 +387,17 @@ async def test_group_free_opt_in_and_moderator_cannot_switch(session, tg):
         await reset_dispatcher_state()
 
 
-async def test_group_interval_change_and_global_pause_rebase_free_due(session, tg):
-    fake, bot, _ = tg
-    gid = await setup_free(session, n=1, interval=300)
+async def test_free_rule_interval_change_and_global_pause_rebase_free_due(session, tg):
+    fake, bot, dp = tg
+    gid = await setup_free(session, n=1)
     ad = await free_draft(session, gid, INVITER)
     await credit(session, gid, INVITER, 1, start=86000)
     await free_ads.maybe_activate(session, ad, utcnow(), member_ok=True)
     await session.commit()
-    group = await session.get(Group, gid)
-    await group_service.set_setting(session, group, "interval_sec", 600)
-    await session.commit()
+    await send(session, dp, bot, callback_update(FreeModCB(action="rule_interval").pack(),
+                                                 update_id=900))
+    await send(session, dp, bot, text_update("10", update_id=901))
+    ad = await free_ads.get_ad(session, INVITER, gid)
     assert ensure_aware(ad.next_post_at) > utcnow() + timedelta(minutes=9)
 
     ad_id = ad.id

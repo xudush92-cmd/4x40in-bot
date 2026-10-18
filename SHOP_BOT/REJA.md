@@ -1,4 +1,7 @@
 # SHOP-BOT — Onlayn do'kon uslubidagi e'lonlar boti
+
+> **ARXIV — 2026-10-15 dagi v1 texnik reja.** Quyidagi guruh/toifa intervali, kunlik kvota, majburiy kanal, ariza sharti va oldingi Start/Stop oqimlari joriy dasturga tatbiq etilmaydi. Ularga tayanib deploy qilmang. Amaldagi qoidalar: [docs/YANGI_ELON_OQIMI.md](docs/YANGI_ELON_OQIMI.md); admin amallari: [docs/ADMIN_QOLLANMA.md](docs/ADMIN_QOLLANMA.md); joriy holat: [HOLAT.md](HOLAT.md). Tarixiy reja ma’lumot yo‘qotmaslik va avvalgi qarorlarni tushunish uchun saqlangan.
+
 ## To'liq texnik reja (v1.0) — kelishilgan bosqichlar va qamrov
 
 > **Amaldagi holat (2026-10-15):** Phase 0–9 kod/oflayn ishlar bajarildi.

@@ -75,7 +75,7 @@ class CounterCB(CallbackData, prefix="mine"):
 
 
 class CounterAdminCB(CallbackData, prefix="acnt"):
-    """Admin sanoqchi amallari (group_id=0: umumiy kanallar)."""
+    """Admin sanoqchi amallari (har guruh mustaqil)."""
 
     action: str
     group_id: int = 0

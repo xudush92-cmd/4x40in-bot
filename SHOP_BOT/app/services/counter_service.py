@@ -1,4 +1,4 @@
-"""Phase 7: guruhlar kesimidagi takliflar, muddatli sanash va kanal siyosati.
+"""Phase 7: guruhlar kesimidagi haqiqiy takliflar va muddatli sanash.
 
 Telegram API bu servisda yo'q. `invite_events(group_id,invitee_id)` foydalanuvchi
 qayta kirsa yoki update ikki marta kelsa ham ikkinchi marta sanamaslikka xizmat qiladi.
@@ -6,16 +6,14 @@ qayta kirsa yoki update ikki marta kelsa ham ikkinchi marta sanamaslikka xizmat 
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from urllib.parse import urlsplit
+from datetime import timedelta
+from decimal import Decimal
 from uuid import uuid4
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.constants import CounterMode, InviteSource, PermissionKind, SellerStatus, SubscriptionStatus
 from app.db.models import (
     ActionLog,
@@ -27,7 +25,6 @@ from app.db.models import (
     Group,
     InviteEvent,
     InviteLink,
-    RequiredChannel,
     Seller,
     Subscription,
     Tariff,
@@ -36,10 +33,10 @@ from app.services.group_policy_service import permission_kinds
 from app.utils.text import clean_text
 from app.utils.time import ensure_aware, utcnow
 
-SOURCES = (InviteSource.LINK, InviteSource.ADDED_BY)
-BOOLEANS = frozenset({"enabled", "dry_run", "require_subscription", "notify_inviter"})
-NUMBERS = {"required_n": (0, 1000), "min_stay_minutes": (0, 100800),
-           "max_per_day": (1, 1000), "link_member_limit": (1, 1000)}
+# N sharti uchun faqat Telegramdagi «A'zo qo'shish». Eski link eventlari arxivda.
+SOURCES = (InviteSource.ADDED_BY,)
+BOOLEANS = frozenset({"enabled", "dry_run"})
+NUMBERS = {"required_n": (0, 1000), "min_stay_minutes": (0, 100800)}
 MAX_MANUAL_ADJUST = 10000  # faqat admin, sabab va audit bilan
 
 
@@ -47,12 +44,12 @@ def safe_counter(group_id: int) -> CounterSetting:
     """Yangi guruhda sanash/jazo o'chiq, jonli rejim alohida tasdiqlanadi."""
     return CounterSetting(
         group_id=group_id, enabled=False, dry_run=True, required_n=3, mode=CounterMode.SOFT,
-        min_stay_minutes=10, max_per_day=20, link_member_limit=20,
+        min_stay_minutes=10, link_member_limit=20,
         # Yangi guruhga Telegramdagi «A'zo qo'shish» yetarli; bot havolasi
         # yoki uning invite huquqi shart emas. Eski guruhning manbalari
         # saqlanadi, linkni admin xohlasa alohida yoqishi mumkin.
         count_sources={"link": False, "added_by": True},
-        require_subscription=False, notify_inviter=False,
+        notify_inviter=False,
     )
 
 
@@ -133,21 +130,21 @@ async def edit_counter(session: AsyncSession, group: Group, field: str, value: o
 async def paid_for_group(session: AsyncSession, group_id: int, user_id: int) -> bool:
     """Faol pullik tarif qamrab olgan guruhda taklif talabini qo'llama.
 
-    Obuna hozircha Seller orqali saqlanadi; oddiy odamga tarif ochish oqimi
-    keyingi bosqich. Katalogdagi bepul/sinov tarifi istisno bo'la olmaydi.
+    Obuna Seller orqali saqlanadi; oddiy odam ham tarif sotib oladi.
+    Faqat pullik/sinov bo'lmagan tarif taklifdan ozod etadi.
     """
     if group_id <= 0 or user_id <= 0:
         return False
     now = utcnow()
     subscriptions = (await session.execute(
-        select(Tariff.allowed_group_ids, Tariff.allowed_category_ids)
+        select(Subscription.terms, Tariff.allowed_group_ids, Tariff.allowed_category_ids,
+               Tariff.price, Tariff.is_trial)
         .join(Subscription, Subscription.tariff_id == Tariff.id)
         .join(Seller, Seller.id == Subscription.seller_id)
         .where(
             Seller.user_id == user_id, Seller.status == SellerStatus.ACTIVE,
             Subscription.status == SubscriptionStatus.ACTIVE,
             Subscription.starts_at <= now, Subscription.expires_at > now,
-            Tariff.price > 0, Tariff.is_trial.is_(False),
         )
     )).all()
     if not subscriptions:
@@ -163,66 +160,14 @@ async def paid_for_group(session: AsyncSession, group_id: int, user_id: int) -> 
                                  and (target in value or str(target) in value))
 
     return any(
-        allows(groups, group_id) and
-        (allowed_categories is None or
-         any(allows(allowed_categories, category_id) for category_id in categories))
-        for groups, allowed_categories in subscriptions
+        Decimal(str((terms or {}).get("price", price) or 0)) > 0
+        and not (terms or {}).get("is_trial", trial)
+        and allows((terms or {}).get("allowed_group_ids", groups), group_id) and
+        ((terms or {}).get("allowed_category_ids", allowed_categories) is None or
+         any(allows((terms or {}).get("allowed_category_ids", allowed_categories),
+                    category_id) for category_id in categories))
+        for terms, groups, allowed_categories, price, trial in subscriptions
     )
-
-
-async def applicable_channels(session: AsyncSession, group_id: int) -> list[RequiredChannel]:
-    return list((await session.execute(select(RequiredChannel).where(
-        RequiredChannel.is_active.is_(True),
-        or_(RequiredChannel.group_id == group_id, RequiredChannel.group_id.is_(None)),
-    ).order_by(RequiredChannel.group_id, RequiredChannel.id))).scalars())
-
-
-async def add_channel(session: AsyncSession, *, group_id: int | None, channel_id: int,
-                      username: str | None, title: str, invite_link: str,
-                      actor_id: int) -> RequiredChannel:
-    """Telegram'dagi getChat/getChatMember tashqarida muvaffaqiyatli tekshiriladi."""
-    if group_id is not None and await session.get(Group, group_id) is None:
-        raise ValueError("Guruh topilmadi.")
-    url = urlsplit(invite_link) if isinstance(invite_link, str) else None
-    if (not isinstance(channel_id, int) or channel_id >= 0 or url is None
-            or url.scheme != "https" or url.netloc != "t.me"
-            or not url.path.strip("/") or url.query or url.fragment or len(invite_link) > 255):
-        raise ValueError("Kanal ID yoki taklif havolasi noto'g'ri.")
-    existing = (await session.execute(select(RequiredChannel).where(
-        RequiredChannel.group_id == group_id if group_id is not None
-        else RequiredChannel.group_id.is_(None),
-        RequiredChannel.channel_tg_id == channel_id,
-    ).order_by(RequiredChannel.id.desc()))).scalars().first()
-    if existing is not None:
-        was = existing.is_active
-        existing.is_active = True
-        existing.username, existing.title, existing.invite_link = username, title[:255], invite_link
-        row = existing
-    else:
-        was = False
-        row = RequiredChannel(
-            scope="group" if group_id is not None else "global", group_id=group_id,
-            channel_tg_id=channel_id, username=username, title=title[:255],
-            invite_link=invite_link, created_by=actor_id, is_active=True,
-        )
-        session.add(row)
-        await session.flush()
-    session.add(ActionLog(actor_id=actor_id, action="channel_add", entity="required_channel",
-                          entity_id=row.id, group_id=group_id,
-                          before={"active": was}, after={"channel_id": channel_id, "active": True}))
-    await session.flush()
-    return row
-
-
-async def remove_channel(session: AsyncSession, row: RequiredChannel, actor_id: int) -> bool:
-    if not row.is_active:
-        return False
-    row.is_active = False
-    session.add(ActionLog(actor_id=actor_id, action="channel_remove", entity="required_channel",
-                          entity_id=row.id, group_id=row.group_id,
-                          before={"active": True}, after={"active": False}))
-    await session.flush()
-    return True
 
 
 async def reserve_personal_link(session: AsyncSession, group_id: int, user_id: int,
@@ -531,15 +476,6 @@ async def retry_check(session: AsyncSession, entry: InviteEvent) -> None:
         entry.updated_at = utcnow()
 
 
-def _local_day_start(group: Group, now: datetime) -> datetime:
-    try:
-        tz = ZoneInfo(group.settings.timezone or get_settings().timezone)
-    except ZoneInfoNotFoundError:
-        tz = ZoneInfo("Asia/Tashkent")
-    local = now.astimezone(tz)
-    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(now.tzinfo)
-
-
 async def credit_join(session: AsyncSession, entry_id: int, *, still_member: bool) -> int | None:
     """A'zolik tekshiruvidan keyin aynan bir marta qo'shish; 0 = rad etildi."""
     stmt = (select(InviteEvent).where(InviteEvent.id == entry_id).with_for_update()
@@ -562,7 +498,7 @@ async def credit_join(session: AsyncSession, entry_id: int, *, still_member: boo
         event.reject_reason = None  # pauza yangi kreditni to'sadi, mavjud navbatni yo'qotmaydi
         event.updated_at = utcnow()
         return None
-    if not (setting.count_sources or {}).get(event.source):
+    if event.source not in SOURCES or not (setting.count_sources or {}).get(event.source):
         event.reject_reason = "source_disabled"
         return 0
     now = utcnow()
@@ -570,15 +506,7 @@ async def credit_join(session: AsyncSession, entry_id: int, *, still_member: boo
         event.reject_reason = None
         return None
     owner = await _total_locked(session, event.group_id, event.inviter_id)
-    day_start = _local_day_start(group, now)
-    today = (await session.execute(select(func.count(InviteEvent.id)).where(
-        InviteEvent.group_id == event.group_id, InviteEvent.inviter_id == event.inviter_id,
-        InviteEvent.counted.is_(True), InviteEvent.updated_at >= day_start,
-    ))).scalar_one()
-    if today >= setting.max_per_day:
-        event.reject_reason = "daily_limit"
-        return 0
-    # Har guruh/user qatori PG FOR UPDATE ostida, hisob ham, limit ham atomar.
+    # N har guruhda tarixiy haqiqiy a'zolar bo'yicha; kunlik kvota yo'q.
     owner.counted += 1
     owner.last_count_at = now
     owner.is_unlocked = owner.counted >= setting.required_n
@@ -603,8 +531,7 @@ async def counter_exempt(session: AsyncSession, group_id: int, user_id: int) -> 
 
 
 __all__ = [
-    "safe_counter", "ensure_counter", "edit_counter", "paid_for_group", "applicable_channels",
-    "add_channel", "remove_channel", "reserve_personal_link", "finish_personal_link",
+    "safe_counter", "ensure_counter", "edit_counter", "paid_for_group", "reserve_personal_link", "finish_personal_link",
     "cancel_personal_link", "total_for", "adjust", "reset_count", "record_request", "request_link",
     "reserve_join", "reject_unattributed_direct", "abandon_early", "claim_due", "retry_check", "credit_join",
     "recent_invites", "counter_exempt",

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 from aiogram.types import Chat
 
-from app.constants import GroupFeature, MAX_DAILY_POST_LIMIT, MAX_JITTER_PERCENT, MAX_INTERVAL_SEC
+from app.constants import GroupFeature
 from app.keyboards import admin_main_kb, settings_kb
 from app.keyboards.callbacks import FeatureCB
 from app.keyboards.groups import MATRIX_FEATURES, matrix_kb
@@ -51,28 +52,27 @@ async def test_set_feature_unknown_returns_false(session) -> None:
     assert await group_service.set_feature(session, group, "yoq_funksiya", True) is False
 
 
-async def test_posting_enable_schedules_next_post(session) -> None:
+async def test_posting_enable_without_ads_does_not_schedule_commercial_timer(session) -> None:
     group = await _group(session)
     assert group.rotation.next_post_at is None
 
     await group_service.set_feature(session, group, GroupFeature.POSTING, True)
-    assert group.rotation.next_post_at is not None
+    assert group.rotation.next_post_at is None
 
     await group_service.set_feature(session, group, GroupFeature.POSTING, False)
     assert group.rotation.next_post_at is None
 
 
-async def test_changing_interval_reschedules(session) -> None:
+async def test_group_commercial_interval_is_not_editable(session) -> None:
     group = await _group(session, posting=True)
     await group_service.recompute_next_post(session, group)
-    first = group.rotation.next_post_at
-    assert first is not None
-
-    await group_service.set_setting(session, group, "interval_sec", 60)
-    second = group.rotation.next_post_at
-    assert second is not None
-    # Yangi interval qisqaroq — keyingi joylash vaqti oldinga suriladi
-    assert second <= first
+    assert group.rotation.next_post_at is None
+    before = group.settings.interval_sec
+    with pytest.raises(ValueError, match="tarif"):
+        await group_service.set_setting(session, group, "interval_sec", 60)
+    assert group.settings.interval_sec == before
+    await group_service.set_setting(session, group, "protect_content", True)
+    assert group.settings.protect_content
 
 
 async def test_pause_clears_next_post(session) -> None:
@@ -88,19 +88,6 @@ async def test_pause_clears_next_post(session) -> None:
     assert group.is_active is True
     assert group.paused_reason is None
     assert group.settings.posting_enabled is True
-
-
-# ── Validatsiya ───────────────────────────────────────────────────
-def test_validators_clamp_values() -> None:
-    assert group_service.validate_interval_minutes(5) == 300
-    assert group_service.validate_interval_minutes(0) == 60          # minimal
-    assert group_service.validate_interval_minutes(100000) == MAX_INTERVAL_SEC
-
-    assert group_service.validate_jitter(-5) == 0
-    assert group_service.validate_jitter(100) == MAX_JITTER_PERCENT
-
-    assert group_service.validate_daily_limit(0) == 1
-    assert group_service.validate_daily_limit(10**6) == MAX_DAILY_POST_LIMIT
 
 
 # ── Matn yordamchilari ────────────────────────────────────────────

@@ -224,12 +224,12 @@ class GroupSettings(Base, TimestampMixin):
     guard_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     cleaner_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     welcome_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Joylash
+    # Tarixiy ustunlar: joriy posting ularni o'qimaydi; xavfsiz migratsiya uchun saqlanadi.
     interval_sec: Mapped[int] = mapped_column(Integer, default=1800)
     jitter_percent: Mapped[int] = mapped_column(Integer, default=10)
     daily_post_limit: Mapped[int] = mapped_column(Integer, default=50)
-    quiet_start: Mapped[Optional[str]] = mapped_column(String(5))  # "23:00"
-    quiet_end: Mapped[Optional[str]] = mapped_column(String(5))    # "08:00"
+    quiet_start: Mapped[Optional[str]] = mapped_column(String(5))  # eski "23:00"
+    quiet_end: Mapped[Optional[str]] = mapped_column(String(5))    # eski "08:00"
     timezone: Mapped[Optional[str]] = mapped_column(String(64))
     protect_content: Mapped[bool] = mapped_column(Boolean, default=False)
     extra: Mapped[Optional[Any]] = mapped_column(JSONType)  # kelgusi sozlamalar uchun
@@ -271,7 +271,7 @@ class Category(Base, TimestampMixin):
     description: Mapped[Optional[str]] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     position: Mapped[int] = mapped_column(Integer, default=1000)
-    interval_override: Mapped[Optional[int]] = mapped_column(Integer)  # guruh intervalini bekor qilish
+    interval_override: Mapped[Optional[int]] = mapped_column(Integer)  # tarixiy; interval faqat tarif/rejada
     moderation_required: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[Optional[int]] = mapped_column(BigInteger)
 
@@ -282,7 +282,7 @@ class Category(Base, TimestampMixin):
 
 
 class RequiredChannel(Base, TimestampMixin):
-    """Majburiy obuna kanallari (global yoki guruh bo'yicha)."""
+    """Tarixiy kanal yozuvlari: joriy runtime/UI talab qilmaydi, migratsiyada OFF."""
 
     __tablename__ = "required_channels"
 
@@ -413,6 +413,7 @@ class Tariff(Base, TimestampMixin):
     duration_days: Mapped[int] = mapped_column(Integer, default=30)
     max_ads: Mapped[int] = mapped_column(Integer, default=5)          # e'lonlar soni
     max_photos: Mapped[int] = mapped_column(Integer, default=3)       # har e'londa rasmlar
+    interval_sec: Mapped[int] = mapped_column(Integer, default=1800, server_default=text("1800"))
     allowed_category_ids: Mapped[Optional[Any]] = mapped_column(JSONType)  # None = hammasi
     allowed_group_ids: Mapped[Optional[Any]] = mapped_column(JSONType)     # None = hammasi
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -437,6 +438,8 @@ class Subscription(Base, TimestampMixin):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     ads_limit: Mapped[int] = mapped_column(Integer, default=0)
     ads_used: Mapped[int] = mapped_column(Integer, default=0)
+    # Xarid paytidagi shartlar: keyingi tarif tahriri eski obunani o'zgartirmaydi.
+    terms: Mapped[Optional[Any]] = mapped_column(JSONType)
     granted_by: Mapped[Optional[int]] = mapped_column(BigInteger)   # admin bergan bo'lsa
     payment_id: Mapped[Optional[int]] = mapped_column(Integer)
     reminder_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -464,6 +467,24 @@ class Subscription(Base, TimestampMixin):
 # ═══════════════════════════════════════════════════════════════════════
 #  4.4. E'LONLAR VA NAVBAT
 # ═══════════════════════════════════════════════════════════════════════
+class SubscriptionGrant(Base, TimestampMixin):
+    """Har bir xarid/berilgan davr uchun tahrirlanmaydigan tarif shartlari."""
+
+    __tablename__ = "subscription_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subscription_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("subscriptions.id", ondelete="SET NULL"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    tariff_id: Mapped[int] = mapped_column(Integer)
+    terms: Mapped[Any] = mapped_column(JSONType)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    payment_id: Mapped[Optional[int]] = mapped_column(Integer)
+    granted_by: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+
 class Ad(Base, TimestampMixin):
     """Sotuvchi e'lonlari."""
 
@@ -494,6 +515,8 @@ class Ad(Base, TimestampMixin):
     post_count: Mapped[int] = mapped_column(Integer, default=0)      # necha marta joylangan
     last_posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     next_eligible_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Adminning cheklovi foydalanuvchining Start/Stop va tasdiq holatidan mustaqil.
+    admin_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     approved_by: Mapped[Optional[int]] = mapped_column(BigInteger)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -639,6 +662,7 @@ class Payment(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id", ondelete="CASCADE"), index=True)
     tariff_id: Mapped[int] = mapped_column(ForeignKey("tariffs.id", ondelete="RESTRICT"))
+    terms: Mapped[Optional[Any]] = mapped_column(JSONType)  # chek yuborilgan paytdagi shartlar
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))  # bankka to'lanadigan qism
     base_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"),
                                                  server_default=text("0"))
@@ -738,7 +762,8 @@ class CounterSetting(Base, TimestampMixin):
     min_stay_minutes: Mapped[int] = mapped_column(Integer, default=10)  # soxta akkauntlarga qarshi
     max_per_day: Mapped[int] = mapped_column(Integer, default=20)
     count_sources: Mapped[Optional[Any]] = mapped_column(JSONType)  # {"link":true,"added_by":true}
-    require_subscription: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Tarixiy ustun: migratsiyada FALSE, UI va runtime undan foydalanmaydi.
+    require_subscription: Mapped[bool] = mapped_column(Boolean, default=False)
     notify_inviter: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -805,6 +830,7 @@ class FreeAd(Base, TimestampMixin):
     review_status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     revision: Mapped[int] = mapped_column(Integer, default=0)
     desired_running: Mapped[bool] = mapped_column(Boolean, default=True)
+    admin_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     next_post_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_post_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     post_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -1134,7 +1160,7 @@ __all__ = [
     # 4.2 Guruhlar / toifalar
     "Group", "GroupSettings", "GroupRotation", "Category", "RequiredChannel", "Permission",
     # 4.3 Sotuvchi / tarif
-    "Seller", "Tariff", "Subscription",
+    "Seller", "Tariff", "Subscription", "SubscriptionGrant",
     # 4.4 E'lon / navbat
     "Ad", "AdPhoto", "CategoryRotation", "PostedMessage", "ModerationLog", "PostLog",
     # 4.5 To'lov

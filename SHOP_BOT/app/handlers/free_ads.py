@@ -51,7 +51,7 @@ async def _choice(target: CallbackQuery, session: AsyncSession, group: Group) ->
         "30 kunlik huquq; shu muddatda e'lonni almashtirish mumkin. "
         "Keyingi 30 kun uchun yangi takliflar kerak.\n\n"
         "💳 <b>Pullik:</b> taklif talabi yo'q; tarif, suratlar va joylash oralig'i "
-        "narxga bog'liq. Oddiy foydalanuvchi uchun xarid keyingi bosqichda ochiladi."
+        "narxga bog'liq. «Pullik imkoniyat» orqali tarifni tanlab to'lash mumkin."
     )
     if group.settings and not group.settings.free_ads_enabled:
         text += "\n\n⚠️ Admin bu guruhda bepul e'lonni hali yoqmagan."
@@ -102,9 +102,11 @@ async def _card(target: CallbackQuery | Message, session: AsyncSession,
             lines.append(escape_html(ad.rejected_reason))
         lines.append("⏹ Siz to'xtatgansiz; muddat yurishda davom etadi." if not ad.desired_running else
                      "▶️ Avtomatik joylash so'ralgan.")
+        if ad.admin_paused:
+            lines.append("⏸ Admin shu e'lonni pauzalagan; Start buni bekor qilmaydi.")
         if ad.next_post_at and ad.review_status == "approved" and access and ensure_aware(access.expires_at) > now:
             lines.append(f"⏱ Navbatdagi shaxsiy vaqt: {fmt_dt(ad.next_post_at)} "
-                         "(tinch soat/kunlik limitda kechikishi mumkin).")
+                         "(Telegram texnik navbatida biroz kechikishi mumkin).")
         lines.append(f"📊 Joylangan: {ad.post_count} marta.")
     can_submit = bool(policy and (free_ads.ready_group(group) or group.paused_reason == "empty_queue"))
     await render(target, "\n".join(lines), free_card_kb(group.id, ad, can_submit=can_submit))
@@ -159,11 +161,35 @@ async def on_free_callback(callback: CallbackQuery, callback_data: FreeCB,
         if action == "group":
             await _choice(callback, session, group)
         elif action == "paid":
+            from sqlalchemy import select
+
+            from app.db.models import Category
+            from app.handlers.seller import _catalog_text
+            from app.keyboards.seller_panel import tariffs_catalog_kb
+            from app.services import seller_service, tariff_service
+
+            if await free_ads.is_blocked(session, user_id):
+                await alert(callback, "Hisob cheklangan; admin bilan bog'laning.", show=True)
+                return
+            # Sotuvchilik arizasi kerak emas: odam tarifni ko'rishi/to'lashi
+            # uchun oddiy kabinet avtomatik ochiladi. E'lon faqat admin tasdig'idan keyin.
+            await seller_service.get_or_create_seller(
+                session, user_id, display_name=callback.from_user.full_name,
+            )
+            tariffs = await tariff_service.list_all_active(session)
+            category_ids = set((await session.execute(select(Category.id).where(
+                Category.group_id == group.id, Category.is_active.is_(True),
+            ))).scalars())
+            allowed = [t for t in tariffs
+                       if (t.allowed_group_ids is None or group.id in t.allowed_group_ids)
+                       and (t.allowed_category_ids is None
+                            or bool(category_ids.intersection(t.allowed_category_ids)))]
             await render(callback,
-                f"💳 <b>{escape_html(group.display)}</b>\n"
-                "Pullik tarifda do'st qo'shish shart emas. Narx, suratlar va interval tarifga bog'liq.\n\n"
-                "Oddiy foydalanuvchi uchun xarid hali ochilmagan; mavjud sotuvchilar "
-                "avvalgi sotuvchi kabinetidan foydalanishi mumkin.", choice_kb(group.id))
+                         f"💳 <b>{escape_html(group.display)}</b> — pullik tariflar\n"
+                         "Do'st qo'shish shart emas. Xarid uchun chek yuboring; "
+                         "admin tasdiqlagach e'lon yuborish mumkin.\n\n"
+                         + await _catalog_text(session, allowed),
+                         tariffs_catalog_kb(allowed))
         elif action == "card":
             await _card(callback, session, bot, group, user_id)
         elif action == "photo":

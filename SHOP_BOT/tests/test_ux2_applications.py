@@ -207,7 +207,8 @@ async def feed(dp, bot, session, update) -> None:
 async def test_private_flow_admin_queue_approval_and_blocked_start(session, tg) -> None:
     fake, bot, dp = tg
     await feed(dp, bot, session, text_update("/start", user_id=APPLICANT_ID, update_id=1))
-    assert "Sotuvchi bo'lish" in str(fake.called("SendMessage")[-1]["reply_markup"])
+    assert "Sotuvchi bo'lish" not in str(fake.called("SendMessage")[-1]["reply_markup"])
+    assert "E'lon joylash" in str(fake.called("SendMessage")[-1]["reply_markup"])
     assert await seller_service.get_seller(session, APPLICANT_ID) is None
     user = await session.get(User, APPLICANT_ID)
     assert user.private_started_at is not None  # oddiy /start yopilmagan
@@ -236,11 +237,11 @@ async def test_private_flow_admin_queue_approval_and_blocked_start(session, tg) 
     await feed(dp, bot, session, callback_update(cb("submit"), user_id=APPLICANT_ID, update_id=9))
     assert await applications.count_pending(session) == 1
     await feed(dp, bot, session, text_update("/start", user_id=APPLICANT_ID, update_id=10))
-    assert f"Ariza #{app_id}" in fake.sent_texts()[-1]
+    assert "arizasi shart emas" in fake.sent_texts()[-1]
     assert "Qayta ariza" not in str(fake.called("SendMessage")[-1]["reply_markup"])
     await feed(dp, bot, session, callback_update(GuideCB(page="back").pack(), user_id=APPLICANT_ID,
                                                   update_id=11))
-    assert f"Ariza #{app_id}" in fake.edited_texts()[-1]
+    assert "arizasi shart emas" in fake.edited_texts()[-1]
 
     # Moderator uchun menyuda tugma yo'q, eski/soxta callback ham qaror qilmaydi.
     await feed(dp, bot, session, callback_update(AdminCB(action="menu").pack(), user_id=MOD_ID, update_id=12))
@@ -285,7 +286,7 @@ async def test_private_flow_admin_queue_approval_and_blocked_start(session, tg) 
     seller.blocked_reason = "Sinov sabab"
     await session.commit()
     await feed(dp, bot, session, text_update("/start", user_id=APPLICANT_ID, update_id=23))
-    assert "hisobingiz cheklangan" in fake.sent_texts()[-1]
+    assert "Hisobingiz cheklangan" in fake.sent_texts()[-1]
     assert "Sotuvchi bo'lish" not in str(fake.called("SendMessage")[-1]["reply_markup"])
     await feed(dp, bot, session, callback_update(cb("new"), user_id=APPLICANT_ID, update_id=24))
     assert "cheklangan" in fake.edited_texts()[-1]
@@ -321,7 +322,7 @@ async def test_reject_reason_dm_failure_and_retry_new_id(session, tg, monkeypatc
     assert await seller_service.get_seller(session, APPLICANT_ID) is None
     fake.reset()
     await feed(dp, bot, session, text_update("/start", user_id=APPLICANT_ID, update_id=10))
-    assert "&lt;Yaroqsiz &amp; aloqa&gt;" in fake.sent_texts()[-1]
+    assert "arizasi shart emas" in fake.sent_texts()[-1]
     await feed(dp, bot, session, callback_update(cb("new"), user_id=APPLICANT_ID, update_id=11))
     assert "1 soat" in fake.answers()[-1]
     assert await applications.count_pending(session) == 0
@@ -387,7 +388,7 @@ async def test_admin_notification_only_after_commit_and_private_only(session, tg
     await feed(dp, bot, session, callback_update(cb("submit"), user_id=APPLICANT_ID, update_id=6))
     assert len(seen) == 1  # qayta bosishda adminga takroriy DM yo'q
     await feed(dp, bot, session, text_update("/start", user_id=APPLICANT_ID, update_id=7))
-    assert "admin qarorini kutmoqda" in fake.sent_texts()[-1]
+    assert "arizasi shart emas" in fake.sent_texts()[-1]
 
 
 async def test_application_does_not_retrigger_referral_bonus(session, tg) -> None:

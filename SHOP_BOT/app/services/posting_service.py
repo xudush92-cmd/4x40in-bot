@@ -8,12 +8,12 @@ natijani avtomatik qayta yubormaslik uchun (Bot API idempotency key bermaydi).
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -21,10 +21,10 @@ from app.constants import MIN_INTERVAL_SEC, AdStatus, SellerStatus, Subscription
 from app.db.models import (
     Ad,
     Category,
+    CategoryRotation,
     CleanerSetting,
     CleanupLog,
     ErrorLog,
-    FreeAd,
     FreePostLog,
     Group,
     GroupRotation,
@@ -37,6 +37,7 @@ from app.db.models import (
 )
 from app.services.group_service import pause_group
 from app.services.settings_service import settings_service
+from app.services.subscription_service import interval_for
 from app.utils.time import ensure_aware
 
 LEASE_SECONDS = 300  # Telegram so'rovlaridan uzun; muddati o'tsa xavfsiz pauza
@@ -105,14 +106,6 @@ def tomorrow(now: datetime, tz: ZoneInfo) -> datetime:
     return datetime.combine(next_day, time.min, tzinfo=tz).astimezone(UTC)
 
 
-def next_interval(now: datetime, seconds: int | None, jitter_percent: int | None = 10) -> datetime:
-    """Jitterdan keyin HAM minimal 60 sekundni saqlaymiz."""
-    interval = max(MIN_INTERVAL_SEC, int(seconds or MIN_INTERVAL_SEC))
-    jitter = max(0, min(30, int(jitter_percent or 0))) / 100
-    delta = max(MIN_INTERVAL_SEC, round(interval * (1 + random.uniform(-jitter, jitter))))
-    return (ensure_aware(now) or now.replace(tzinfo=UTC)) + timedelta(seconds=delta)
-
-
 def _allowed(value: object, target_id: int) -> bool:
     """NULL = hammasi; bo'sh ro'yxat = hech biri (tarif cheklovi)."""
     if value is None:
@@ -123,16 +116,29 @@ def _allowed(value: object, target_id: int) -> bool:
 
 
 async def due_group_ids(session: AsyncSession, now: datetime, limit: int = DUE_BATCH) -> list[int]:
+    """Guruh soatiga emas, faol obunaning shaxsiy post vaqtiga qaraymiz."""
     rows = await session.execute(
-        select(GroupRotation.group_id)
-        .join(Group, Group.id == GroupRotation.group_id)
+        select(Category.group_id)
+        .join(Ad, Ad.category_id == Category.id)
+        .join(CategoryRotation, CategoryRotation.category_id == Category.id)
+        .join(Seller, Seller.id == Ad.seller_id)
+        .join(Subscription, Subscription.seller_id == Seller.id)
+        .join(Tariff, Tariff.id == Subscription.tariff_id)
+        .join(Group, Group.id == Category.group_id)
         .join(GroupSettings, GroupSettings.group_id == Group.id)
         .where(
             Group.is_active.is_(True), Group.is_supergroup.is_(True),
             Group.bot_is_admin.is_(True), GroupSettings.posting_enabled.is_(True),
-            GroupRotation.next_post_at.is_not(None), GroupRotation.next_post_at <= now,
+            Category.is_active.is_(True), CategoryRotation.is_paused.is_(False),
+            Ad.status == AdStatus.ACTIVE, Ad.admin_paused.is_(False),
+            Ad.next_eligible_at <= now,
+            Seller.status == SellerStatus.ACTIVE,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.starts_at <= now, Subscription.expires_at > now,
+            Subscription.ads_limit > 0, Subscription.ads_used <= Subscription.ads_limit,
         )
-        .order_by(GroupRotation.next_post_at, GroupRotation.group_id)
+        .group_by(Category.group_id)
+        .order_by(func.min(Ad.next_eligible_at), Category.group_id)
         .limit(limit)
     )
     return list(rows.scalars())
@@ -147,26 +153,33 @@ async def eligible_ad(
     oxirgi slotini ishlatganida ads_left=0, o'sha e'lon baribir post qilinishi kerak.
     """
     stmt = (
-        select(Ad.id, Ad.position, Tariff.allowed_category_ids, Tariff.allowed_group_ids)
+        select(Ad.id, Ad.position, Subscription.terms,
+               Tariff.allowed_category_ids, Tariff.allowed_group_ids,
+               Tariff.price, Tariff.is_trial)
         .join(Seller, Seller.id == Ad.seller_id)
         .join(Subscription, Subscription.seller_id == Seller.id)
         .join(Tariff, Tariff.id == Subscription.tariff_id)
         .where(
             Ad.category_id == category.id, Ad.status == AdStatus.ACTIVE,
-            (Ad.next_eligible_at.is_(None)) | (Ad.next_eligible_at <= now),
+            Ad.admin_paused.is_(False),
+            (Ad.next_eligible_at.is_(None)) | (Ad.next_eligible_at <= now)
+            | (Ad.id == force_ad_id if force_ad_id is not None else Ad.id < 0),
             Seller.status == SellerStatus.ACTIVE,
             Subscription.status == SubscriptionStatus.ACTIVE,
             Subscription.starts_at <= now, Subscription.expires_at > now,
             Subscription.ads_limit > 0, Subscription.ads_used <= Subscription.ads_limit,
         )
-        .order_by(Ad.position, Ad.id)
+        .order_by(Ad.next_eligible_at, Ad.position, Ad.id)
     )
     if force_ad_id is not None:
         stmt = stmt.where(Ad.id == force_ad_id)
     candidates = [
         (ad_id, position)
-        for ad_id, position, cats, groups in (await session.execute(stmt)).all()
-        if _allowed(cats, category.id) and _allowed(groups, category.group_id)
+        for ad_id, position, terms, cats, groups, price, trial in (await session.execute(stmt)).all()
+        if Decimal(str((terms or {}).get("price", price) or 0)) > 0
+        and not (terms or {}).get("is_trial", trial)
+        and _allowed((terms or {}).get("allowed_category_ids", cats), category.id)
+        and _allowed((terms or {}).get("allowed_group_ids", groups), category.group_id)
     ]
     if not candidates:
         return None, False
@@ -189,21 +202,26 @@ async def eligible_ad(
 async def _future_eligible(session: AsyncSession, category: Category, now: datetime) -> datetime | None:
     """Faqat next_eligible_at sabab kutayotgan e'lon bo'lsa uning vaqtini topish."""
     rows = await session.execute(
-        select(Ad.next_eligible_at, Tariff.allowed_category_ids, Tariff.allowed_group_ids)
+        select(Ad.next_eligible_at, Subscription.terms,
+               Tariff.allowed_category_ids, Tariff.allowed_group_ids,
+               Tariff.price, Tariff.is_trial)
         .join(Seller, Seller.id == Ad.seller_id)
         .join(Subscription, Subscription.seller_id == Seller.id)
         .join(Tariff, Tariff.id == Subscription.tariff_id)
         .where(
             Ad.category_id == category.id, Ad.status == AdStatus.ACTIVE,
-            Ad.next_eligible_at > now, Seller.status == SellerStatus.ACTIVE,
+            Ad.admin_paused.is_(False), Ad.next_eligible_at > now, Seller.status == SellerStatus.ACTIVE,
             Subscription.status == SubscriptionStatus.ACTIVE,
             Subscription.starts_at <= now, Subscription.expires_at > now,
             Subscription.ads_limit > 0, Subscription.ads_used <= Subscription.ads_limit,
         )
         .order_by(Ad.next_eligible_at)
     )
-    for when, cats, groups in rows:
-        if _allowed(cats, category.id) and _allowed(groups, category.group_id):
+    for when, terms, cats, groups, price, trial in rows:
+        if (Decimal(str((terms or {}).get("price", price) or 0)) > 0
+                and not (terms or {}).get("is_trial", trial)
+                and _allowed((terms or {}).get("allowed_category_ids", cats), category.id)
+                and _allowed((terms or {}).get("allowed_group_ids", groups), category.group_id)):
             return ensure_aware(when)
     return None
 
@@ -245,14 +263,8 @@ async def claim_post(
     settings = group.settings
     if not group.is_active or not group.is_supergroup or not group.bot_is_admin or not settings.posting_enabled:
         return None, PostingResult("unavailable", "Guruh faol supergroup va bot admin bo'lishi kerak.")
-    if force_ad_id is None and (
-        rotation.next_post_at is None or ensure_aware(rotation.next_post_at) > now
-    ):
-        return None, PostingResult("not_due", "Hali joylash vaqti kelmadi.")
-    if force_ad_id is not None and rotation.last_post_at and (
-        (now - ensure_aware(rotation.last_post_at)).total_seconds() < MIN_INTERVAL_SEC
-    ):
-        return None, PostingResult("deferred", "Bu guruhda postlar orasida kamida 60 sekund bo'lishi kerak.")
+    # Har bir e'lonning shaxsiy taymeri bor. GroupRotation faqat atomar
+    # texnik lease: eski next_post_at endi tijoriy interval/to'siq emas.
 
     # Oldingi yuborish yakunlanmagan. Lease o'tsa ham takroriy postga yo'l yo'q:
     # Telegram xabarni qabul qilgan bo'lishi mumkin. Adminga tekshirtiramiz.
@@ -277,19 +289,6 @@ async def claim_post(
     if free_sending is not None:
         return None, PostingResult("busy", "Bepul e'lon joylash davom etmoqda.")
 
-    zone_name = settings.timezone or str(await settings_service.get("timezone", "Asia/Tashkent", session))
-    tz = timezone_for(zone_name)
-    today = local_day(now, tz)
-    used = rotation.today_count if rotation.today_date == today else 0
-    defer = quiet_until(now, settings.quiet_start, settings.quiet_end, tz)
-    if used >= max(1, settings.daily_post_limit):
-        defer = max(defer or now, tomorrow(now, tz))
-        defer = quiet_until(defer, settings.quiet_start, settings.quiet_end, tz) or defer
-    if defer is not None:
-        if await _cas_next(session, rotation, defer):
-            return None, PostingResult("deferred", f"Tinch soat yoki kunlik limit: {defer.isoformat()}")
-        return None, PostingResult("busy")
-
     categories = list((await session.execute(
         select(Category).where(Category.group_id == group_id, Category.is_active.is_(True))
         .order_by(Category.position, Category.id)
@@ -300,50 +299,28 @@ async def claim_post(
         categories = [c for c in categories if forced_ad is not None and forced_ad.category_id == c.id]
         if not categories:
             return None, PostingResult("invalid", "E'lon shu guruhning faol toifasida emas.")
-    else:
-        categories.sort(key=lambda c: (
-            ensure_aware(c.rotation.next_post_at) or datetime.min.replace(tzinfo=UTC), c.position, c.id
-        ))
-
     next_times: list[datetime] = []
     selected: tuple[Category, int, bool] | None = None
+    selected_due: datetime | None = None
     for category in categories:
-        due = ensure_aware(category.rotation.next_post_at)
-        if force_ad_id is None and due is not None and due > now:
-            next_times.append(due)
-            continue
         ad_id, wrapped = await eligible_ad(session, category, now, force_ad_id=force_ad_id)
         if ad_id is not None:
-            selected = (category, ad_id, wrapped)
-            break
-        if force_ad_id is None:
+            candidate = await session.get(Ad, ad_id)
+            due = ensure_aware(candidate.next_eligible_at) if candidate is not None else None
+            if selected is None or (due or now, category.position, category.id) < (
+                    selected_due or now, selected[0].position, selected[0].id):
+                selected, selected_due = (category, ad_id, wrapped), due
+        elif force_ad_id is None:
             future = await _future_eligible(session, category, now)
             if future is not None:
                 next_times.append(future)
     if selected is None:
         if force_ad_id is not None:
-            return None, PostingResult("invalid", "E'lon faol emas, obuna yoki tarif ruxsati yo'q.")
-        if next_times:
-            later = max(min(next_times), (ensure_aware(rotation.last_post_at) or now - timedelta(seconds=MIN_INTERVAL_SEC)) + timedelta(seconds=MIN_INTERVAL_SEC))
-            if await _cas_next(session, rotation, later):
-                return None, PostingResult("deferred", f"Keyingi nomzod: {later.isoformat()}")
-            return None, PostingResult("busy")
-        # Bepul oqim eski Ad/Subscription navbatida ko'rinmaydi. Uni pullik
-        # navbat bo'sh deb guruh bilan birga to'xtatish xavfli: invite hisoblash
-        # ham o'chadi. Pullik soatni to'xtatamiz, bepul taymerlar alohida yuradi.
-        has_free = (await session.execute(select(FreeAd.id).where(
-            FreeAd.group_id == group_id,
-        ).limit(1))).scalar_one_or_none()
-        if has_free is not None:
-            # Pullik navbatni kelajakda yana tekshiramiz: keyinchalik Ad
-            # tasdiqlansa ushbu guruhning eski pullik postlari ham uyg'onsin.
-            # Bu vaqt bepul e'lonlarning alohida next_post_at'ini to'smaydi.
-            rotation.next_post_at = now + timedelta(seconds=max(MIN_INTERVAL_SEC, settings.interval_sec))
-            return None, PostingResult("empty", "Pullik navbat bo'sh; bepul e'lonlar alohida ishlaydi.")
-        await pause_group(session, group, reason="empty_queue")
-        group.last_error = "Navbatda obunasi faol e'lon yo'q"
-        session.add(PostLog(group_id=group_id, status="skipped", error=group.last_error))
-        return None, PostingResult("empty", group.last_error, notify=True)
+            return None, PostingResult("invalid", "E'lon faol emas, admin pauzada yoki obuna/ruxsat yo'q.")
+        # Bo'sh pullik navbat guruhni to'xtatmaydi: bepul e'lonlar va qo'shilgan
+        # a'zolar ishlashda davom etadi, yangi tasdiq darhol navbatga kiradi.
+        rotation.next_post_at = min(next_times) if next_times else None
+        return None, PostingResult("empty", "Hozircha tayyor pullik e'lon yo'q.")
 
     category, ad_id, wrapped = selected
     lease = now + timedelta(seconds=LEASE_SECONDS)
@@ -353,19 +330,6 @@ async def claim_post(
     session.add(log)
     await session.flush()
     return PostingClaim(group_id, group.tg_chat_id, category.id, ad_id, log.id, lease, wrapped), PostingResult("claimed", ad_id=ad_id)
-
-
-async def _next_group_time(session: AsyncSession, group: Group, now: datetime, tz: ZoneInfo) -> datetime:
-    settings = group.settings
-    assert settings is not None
-    categories = (await session.execute(
-        select(Category).where(Category.group_id == group.id, Category.is_active.is_(True))
-    )).scalars().all()
-    times = [ensure_aware(c.rotation.next_post_at) or now for c in categories if c.rotation and not c.rotation.is_paused]
-    later = max(now + timedelta(seconds=MIN_INTERVAL_SEC), min(times, default=next_interval(now, settings.interval_sec, settings.jitter_percent)))
-    if group.rotation and group.rotation.today_date == local_day(now, tz) and group.rotation.today_count >= max(1, settings.daily_post_limit):
-        later = max(later, tomorrow(now, tz))
-    return quiet_until(later, settings.quiet_start, settings.quiet_end, tz) or later
 
 
 async def finish_post(
@@ -420,11 +384,17 @@ async def finish_post(
     category.rotation.cursor_ad_id = ad.id
     category.rotation.last_post_at = now
     category.rotation.cycle_count = (category.rotation.cycle_count or 0) + int(claim.wrapped)
-    category.rotation.next_post_at = next_interval(
-        now, category.interval_override or settings.interval_sec, settings.jitter_percent
-    )
-    # `next_eligible_at` admin/kelgusi individual cheklovlar uchun: uni bu yerda
-    # avtomatik yozmaymiz, aks holda interval o'zgarsa eski muddat to'sib qo'yadi.
+    # Shaxsiy interval: guruh/toifa oralig'i va jitter o'qilmaydi.
+    subscription = (await session.execute(select(Subscription).where(
+        Subscription.seller_id == ad.seller_id,
+        Subscription.status == SubscriptionStatus.ACTIVE,
+        Subscription.starts_at <= now, Subscription.expires_at > now,
+    ).order_by(Subscription.expires_at.desc()).limit(1))).scalar_one_or_none()
+    # Agar aynan yuborish paytida obuna tugagan bo'lsa, yuborilgan post
+    # jurnalga tushadi, lekin obunasiz yangi davr rejalashtirilmaydi.
+    ad.next_eligible_at = (now + timedelta(seconds=interval_for(subscription))
+                           if subscription is not None else None)
+    category.rotation.next_post_at = ad.next_eligible_at
 
     today = local_day(now, tz)
     rotation.today_count = (rotation.today_count if rotation.today_date == today else 0) + 1
@@ -432,9 +402,14 @@ async def finish_post(
     rotation.last_post_at = now
     rotation.cycle_count = (rotation.cycle_count or 0) + int(claim.wrapped)
     rotation.error_streak = 0
-    # Admin post orasida pauza/tumbler/intervalni o'zgartirgan bo'lishi mumkin.
+    # Bu diagnostika va CAS uchun xolos, claim uni commercial to'siq sifatida
+    # ishlatmaydi. Boshqa e'lonning taymeri ertaroq bo'lishi mumkin.
     if group.is_active and settings.posting_enabled and ensure_aware(rotation.next_post_at) == claim.lease_until:
-        rotation.next_post_at = await _next_group_time(session, group, now, tz)
+        await session.flush()  # autoflush=False: yangi shaxsiy due SQL min()ga ko‘rinsin
+        rotation.next_post_at = (await session.execute(select(func.min(Ad.next_eligible_at))
+            .join(Category, Category.id == Ad.category_id)
+            .where(Category.group_id == group.id, Ad.status == AdStatus.ACTIVE,
+                   Ad.admin_paused.is_(False), Ad.next_eligible_at.is_not(None)))).scalar_one()
     return PostingResult("sent", "E'lon joylandi.", ad.id, tuple(message_ids))
 
 
@@ -473,7 +448,11 @@ async def fail_post(
     if retry_after is not None:
         log.status = "skipped"
         if group.is_active and group.settings.posting_enabled and ensure_aware(rotation.next_post_at) == claim.lease_until:
-            rotation.next_post_at = now + timedelta(seconds=max(1, retry_after))
+            due = now + timedelta(seconds=max(1, retry_after))
+            rotation.next_post_at = due
+            ad = await session.get(Ad, claim.ad_id)
+            if ad is not None and ad.status == AdStatus.ACTIVE:
+                ad.next_eligible_at = due
         return PostingResult("retry", f"Telegram FloodWait: {retry_after}s", claim.ad_id)
 
     log.status = "error"
@@ -484,7 +463,11 @@ async def fail_post(
     if paused:
         await pause_group(session, group, reason="error")
     elif group.is_active and group.settings.posting_enabled and ensure_aware(rotation.next_post_at) == claim.lease_until:
-        rotation.next_post_at = now + timedelta(seconds=max(MIN_INTERVAL_SEC, 60 * (2 ** min(rotation.error_streak, 5))))
+        due = now + timedelta(seconds=max(MIN_INTERVAL_SEC, 60 * (2 ** min(rotation.error_streak, 5))))
+        rotation.next_post_at = due
+        ad = await session.get(Ad, claim.ad_id)
+        if ad is not None and ad.status == AdStatus.ACTIVE:
+            ad.next_eligible_at = due
     return PostingResult("error", reason, claim.ad_id, notify=paused)
 
 
@@ -495,24 +478,42 @@ async def abandon_post(session: AsyncSession, claim: PostingClaim, now: datetime
     if log and log.status == "sending":
         log.status = "skipped"
         log.error = "Global/guruh pauzasi"
-    if group and group.rotation and group.settings and ensure_aware(group.rotation.next_post_at) == claim.lease_until:
-        group.rotation.next_post_at = next_interval(now, group.settings.interval_sec, group.settings.jitter_percent)
+    if group and group.rotation and ensure_aware(group.rotation.next_post_at) == claim.lease_until:
+        ad = await session.get(Ad, claim.ad_id)
+        sub = (await session.execute(select(Subscription).where(
+            Subscription.seller_id == ad.seller_id, Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.starts_at <= now, Subscription.expires_at > now,
+        ).limit(1))).scalar_one_or_none() if ad is not None else None
+        if ad is not None and ad.status == AdStatus.ACTIVE and sub is not None:
+            ad.next_eligible_at = now + timedelta(seconds=interval_for(sub))
+        group.rotation.next_post_at = ad.next_eligible_at if ad is not None else None
 
 
 async def rebase_paused(session: AsyncSession, now: datetime, limit: int = DUE_BATCH) -> int:
-    """Kill switch/texnik rejimda muddati o'tgan vaqtlarni siljitish (qarz yo'q)."""
-    changed = 0
-    for group_id in await due_group_ids(session, now, limit):
-        rotation = await _locked_rotation(session, group_id)
-        if rotation is None or rotation.next_post_at is None or ensure_aware(rotation.next_post_at) > now:
-            continue
+    """Global pauzada har bir aktiv reklamaning taymerini alohida qayta boshlash."""
+    rows = (await session.execute(select(Ad, Subscription).join(
+        Seller, Seller.id == Ad.seller_id).join(
+        Subscription, Subscription.seller_id == Seller.id).where(
+        Ad.status == AdStatus.ACTIVE, Ad.admin_paused.is_(False),
+        Ad.next_eligible_at <= now,
+        Subscription.status == SubscriptionStatus.ACTIVE,
+        Subscription.starts_at <= now, Subscription.expires_at > now,
+    ).order_by(Ad.next_eligible_at).limit(limit))).all()
+    affected_groups = set()
+    for ad, sub in rows:
+        ad.next_eligible_at = now + timedelta(seconds=interval_for(sub))
+        if ad.group_id is not None:
+            affected_groups.add(ad.group_id)
+    await session.flush()
+    # Guruh kartasidagi texnik/diaqnostik vaqtni ham shaxsiy due bilan moslang.
+    # In-flight lease bo'lsa recompute uni saqlaydi.
+    from app.services.group_service import recompute_next_post
+
+    for group_id in affected_groups:
         group = await session.get(Group, group_id)
-        if group is None or group.settings is None:
-            continue
-        new_time = next_interval(now, group.settings.interval_sec, group.settings.jitter_percent)
-        if await _cas_next(session, rotation, new_time):
-            changed += 1
-    return changed
+        if group is not None:
+            await recompute_next_post(session, group)
+    return len(rows)
 
 
 async def old_posts_for_cleanup(

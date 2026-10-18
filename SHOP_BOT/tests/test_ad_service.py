@@ -1,7 +1,7 @@
 """📢 E'lonlar servisi testlari (Phase 3).
 
 Qamrov: qoralama yaratish, maydonlarni tahrirlash, rasm limiti (tarif/global),
-yuborish (avto-tasdiq va moderatsiya), tasdiq/rad, pauza, o'chirish va limit
+yuborish (majburiy admin tasdig'i), qayta tahrir, pauza, o'chirish va limit
 qaytarilishi, navbat pozitsiyalari, holat nomlari.
 """
 
@@ -11,12 +11,13 @@ import itertools
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 from app.constants import AdStatus, SellerStatus
-from app.db.models import Ad, AdPhoto, Category, Group, ModerationLog, Seller
+from app.db.models import AdPhoto, Category, Group, ModerationLog, Seller
 from app.services import ad_service, seller_service, subscription_service, tariff_service
 from app.services.settings_service import settings_service
+from app.utils.time import ensure_aware, utcnow
 
 
 # ═══════════════════════════ Yordamchilar ═════════════════════════
@@ -233,7 +234,7 @@ async def test_submit_blocked_without_subscription(session) -> None:
     assert "tarif" in reason.lower()
 
 
-async def test_submit_goes_active_without_moderation(session) -> None:
+async def test_submit_always_waits_for_admin_even_with_old_category_flag(session) -> None:
     seller, tariff, subscription = await _seller_with_subscription(session)
     category = await _category(session, moderation=False)
     ad = await _draft(session, seller, category)
@@ -241,9 +242,15 @@ async def test_submit_goes_active_without_moderation(session) -> None:
 
     ok, result = await ad_service.submit(session, seller, ad)
 
-    assert ok is True and result == AdStatus.ACTIVE
+    assert ok is True and result == AdStatus.PENDING
+    assert ad.status == AdStatus.PENDING and ad.next_eligible_at is None
+    assert ad.approved_at is None
+    assert await ad_service.approve(session, ad, 777)
+    assert ad.status == AdStatus.PAUSED and ad.next_eligible_at is None
+    before_start = utcnow()
+    assert await ad_service.resume(session, ad)  # faqat sotuvchi Start'i taymerni boshlaydi
     assert ad.status == AdStatus.ACTIVE
-    assert ad.approved_at is not None
+    assert 0 <= (ensure_aware(ad.next_eligible_at) - before_start).total_seconds() < 1802
     assert subscription.ads_used == 1                    # limitdan hisoblandi
 
 
@@ -279,7 +286,7 @@ async def test_submit_stops_when_limit_exhausted(session) -> None:
 
 
 # ═══════════════════════ Moderatsiya (admin) ══════════════════════
-async def test_approve_activates_and_logs(session) -> None:
+async def test_approve_waits_for_seller_start_and_logs(session) -> None:
     seller, _, subscription = await _seller_with_subscription(session)
     category = await _category(session, moderation=True)
     ad = await _draft(session, seller, category)
@@ -287,7 +294,7 @@ async def test_approve_activates_and_logs(session) -> None:
     await ad_service.submit(session, seller, ad)
 
     assert await ad_service.approve(session, ad, admin_id=777) is True
-    assert ad.status == AdStatus.ACTIVE
+    assert ad.status == AdStatus.PAUSED and ad.next_eligible_at is None
     assert ad.approved_by == 777
 
     history = await ad_service.moderation_history(session, ad.id)
@@ -352,14 +359,70 @@ async def test_edited_logs_revision_for_active_ad(session) -> None:
     ad = await _draft(session, seller, category)
     await ad_service.add_photo(session, ad, file_id="f1")
     await ad_service.submit(session, seller, ad)
+    assert ad.status == AdStatus.PENDING
+    await ad_service.approve(session, ad, 777)
+    assert await ad_service.resume(session, ad)
     assert ad.status == AdStatus.ACTIVE
 
     await ad_service.set_price(session, ad, 999)
     await ad_service.edited(session, ad)
 
-    assert ad.status == AdStatus.ACTIVE                 # navbatdan chiqmaydi
+    assert ad.status == AdStatus.PENDING and ad.approved_at is None
+    assert ad.next_eligible_at is None
     history = await ad_service.moderation_history(session, ad.id)
-    assert [row.decision for row in history] == ["revised"]
+    assert [row.decision for row in history] == ["revised", "approved"]
+    assert await ad_service.approve(session, ad, 888)
+    assert ad.status == AdStatus.PAUSED and ad.approved_by == 888
+    assert await ad_service.resume(session, ad)
+
+
+
+
+async def test_paid_revision_and_forged_resubmit_cannot_bypass_review_or_spend_slot(session) -> None:
+    seller, _, sub = await _seller_with_subscription(session, max_ads=2)
+    category = await _category(session)
+    ad = await _draft(session, seller, category)
+    await ad_service.add_photo(session, ad, file_id="old-photo")
+    assert await ad_service.submit(session, seller, ad) == (True, AdStatus.PENDING)
+    assert sub.ads_used == 1
+    assert (await ad_service.submit(session, seller, ad))[0] is False
+    assert sub.ads_used == 1
+    assert await ad_service.approve(session, ad, 777)
+    assert ad.status == AdStatus.PAUSED and ad.next_eligible_at is None
+    assert await ad_service.resume(session, ad)
+
+    await ad_service.set_title(session, ad, "Yangi, tekshirilmagan matn")
+    await ad_service.edited(session, ad)
+    assert ad.status == AdStatus.PENDING and ad.approved_at is None
+    assert ad.next_eligible_at is None
+    assert (await ad_service.submit(session, seller, ad))[0] is False
+    assert sub.ads_used == 1
+    assert await ad_service.approve(session, ad, 778)
+    assert await ad_service.resume(session, ad)
+
+    # Sotuvchi Stop'i tahrir/admin tasdig'idan keyin ham Start'siz o'zgarmaydi.
+    assert await ad_service.pause(session, ad)
+    await ad_service.set_description(session, ad, "Yana bir tahrir")
+    await ad_service.edited(session, ad)
+    assert ad.status == AdStatus.PAUSED and ad.approved_at is None
+    assert not await ad_service.approve(session, ad, 778)
+    assert await ad_service.resume(session, ad)
+    assert ad.status == AdStatus.PENDING and ad.next_eligible_at is None
+    assert await ad_service.approve(session, ad, 778)
+    assert sub.ads_used == 1
+
+
+async def test_no_photo_cannot_be_approved_even_after_previous_review(session) -> None:
+    seller, _, _ = await _seller_with_subscription(session)
+    category = await _category(session)
+    ad = await _draft(session, seller, category)
+    await ad_service.add_photo(session, ad, file_id="photo")
+    assert (await ad_service.submit(session, seller, ad))[0]
+    assert await ad_service.remove_photo(session, ad, 0)
+    assert not await ad_service.approve(session, ad, 777)
+    assert ad.status == AdStatus.PENDING
+    await ad_service.add_photo(session, ad, file_id="new-photo")
+    assert await ad_service.approve(session, ad, 777)
 
 
 # ═══════════════════ Pauza / o'chirish / navbat ═══════════════════
@@ -369,6 +432,9 @@ async def test_pause_resume_and_delete_flow(session) -> None:
     ad = await _draft(session, seller, category)
     await ad_service.add_photo(session, ad, file_id="f1")
     await ad_service.submit(session, seller, ad)
+    assert not await ad_service.pause(session, ad)  # tasdiqsiz joylash yo'q
+    await ad_service.approve(session, ad, 777)
+    assert await ad_service.resume(session, ad)
 
     assert await ad_service.pause(session, ad) is True
     assert ad.status == AdStatus.PAUSED
@@ -433,6 +499,7 @@ async def test_seller_list_filters_and_stats(session) -> None:
     await ad_service.add_photo(session, active, file_id="f1")
     await ad_service.submit(session, seller, active)
     await ad_service.approve(session, active, 777)
+    assert await ad_service.resume(session, active)
 
     draft = await _draft(session, seller, category, title="Qoralama")
 
@@ -503,10 +570,9 @@ def test_status_titles_and_labels() -> None:
     assert ad_service.pages(0, 6) == 1
 
 
-async def test_moderation_required_prefers_category(session) -> None:
+async def test_moderation_cannot_be_disabled_by_old_category_or_global_flags(session) -> None:
     category = await _category(session, moderation=False)
-    assert await ad_service.moderation_required(session, category) is False
-
-    await settings_service.set(session, "moderation_required_default", True)
-    assert await ad_service.moderation_required(session, category) is False   # toifa ustun
-    assert await ad_service.moderation_required(session, None) is True
+    assert await ad_service.moderation_required(session, category)
+    await settings_service.set(session, "moderation_required_default", False)
+    assert await ad_service.moderation_required(session, category)
+    assert await ad_service.moderation_required(session, None)

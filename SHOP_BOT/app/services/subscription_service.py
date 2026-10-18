@@ -21,11 +21,36 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import SellerStatus, SubscriptionStatus
-from app.db.models import Ad, Seller, Subscription, Tariff
+from app.db.models import Ad, Seller, Subscription, SubscriptionGrant, Tariff
 from app.utils.time import ensure_aware, utcnow
 
 MAX_ADS_LIMIT = 1000000  # qo'lda beriladigan obuna kvotasining yuqori chegarasi
 ACTIVE_STATUSES = (SubscriptionStatus.ACTIVE, SubscriptionStatus.GRACE)
+
+
+def tariff_terms(tariff: Tariff, *, ads_limit: int | None = None,
+                 duration_days: int | None = None) -> dict[str, Any]:
+    """Xarid paytidagi narx/huquq nusxasi; JSONda Decimal saqlanmaydi."""
+    return {
+        "name": tariff.name, "price": str(tariff.price or 0),
+        "currency": tariff.currency or "UZS",
+        "is_trial": bool(tariff.is_trial),
+        "duration_days": duration_days if duration_days is not None else tariff.duration_days,
+        "max_ads": ads_limit if ads_limit is not None else tariff.max_ads,
+        "max_photos": tariff.max_photos,
+        "interval_sec": tariff.interval_sec or 1800,
+        "allowed_group_ids": tariff.allowed_group_ids,
+        "allowed_category_ids": tariff.allowed_category_ids,
+    }
+
+
+def terms_for(subscription: Subscription) -> dict[str, Any]:
+    """Eski test/sxema yozuvi uchun fallback; migratsiya haqiqiylarini to'ldiradi."""
+    return subscription.terms or tariff_terms(subscription.tariff, ads_limit=subscription.ads_limit)
+
+
+def interval_for(subscription: Subscription) -> int:
+    return max(60, int(terms_for(subscription).get("interval_sec") or 1800))
 
 
 # ─────────────────────────── O'qish ────────────────────────────────
@@ -142,67 +167,62 @@ async def grant(
     days: int | None = None,
     ads_limit: int | None = None,
     payment_id: int | None = None,
+    terms_override: dict[str, Any] | None = None,
 ) -> Subscription:
     """Tarif berish yoki mavjud obunani uzaytirish.
 
     Bir xil tarif → muddat va limit qo'shiladi (uzaytirish).
     Boshqa tarif → eski obuna yopiladi, yangisi bugundan boshlanadi.
     """
-    duration = int(days or tariff.duration_days)
-    limit = int(ads_limit if ads_limit is not None else tariff.max_ads)
+    purchased = terms_override or {}
+    duration = int(days or purchased.get("duration_days") or tariff.duration_days)
+    limit = int(ads_limit if ads_limit is not None else purchased.get("max_ads") or tariff.max_ads)
     now = utcnow()
 
+    new_terms = (dict(purchased) if purchased else
+                 tariff_terms(tariff, ads_limit=limit, duration_days=duration))
     current = await active_for(session, seller.id)
+    same_terms = (current is not None and current.tariff_id == tariff.id
+                  and terms_for(current) == new_terms)
+    grant_starts = max(now, ensure_aware(current.expires_at)) if same_terms else now
 
-    if current is not None and current.tariff_id == tariff.id:
-        # Uzaytirish: mavjud muddat ustiga qo'shamiz
-        base = ensure_aware(current.expires_at) or now
-        current.expires_at = base + timedelta(days=duration)
+    if same_terms:
+        # Xuddi shu shartlar: sotib olingan yangi davr va kvotani qo'shish.
+        current.expires_at = grant_starts + timedelta(days=duration)
         current.ads_limit = min(MAX_ADS_LIMIT, current.ads_limit + limit)
         current.status = SubscriptionStatus.ACTIVE
         current.reminder_sent_at = None
         current.expired_notified_at = None
         if payment_id is not None:
             current.payment_id = payment_id
-        await session.flush()
-        logger.info(
-            "Obuna uzaytirildi: sotuvchi={} tarif={} +{} kun (jami limit {})",
-            seller.user_id,
-            tariff.name,
-            duration,
-            current.ads_limit,
-        )
         subscription = current
     else:
         if current is not None:
+            # Tarif tahrirlangan bo'lsa eski xarid snapshoti va obuna tarixda
+            # saqlanadi; faqat yangi xarid yangi shartlarni kuchga kiritadi.
             current.status = SubscriptionStatus.CANCELLED
-            logger.info(
-                "Sotuvchi {} tarifni almashtirdi: {} → {}",
-                seller.user_id,
-                current.tariff_id,
-                tariff.id,
-            )
-
+        expiry_base = max(now, ensure_aware(current.expires_at)) if current is not None else now
         subscription = Subscription(
-            seller_id=seller.id,
-            tariff_id=tariff.id,
-            status=SubscriptionStatus.ACTIVE,
-            starts_at=now,
-            expires_at=now + timedelta(days=duration),
-            ads_limit=limit,
-            ads_used=0,
-            granted_by=granted_by,
-            payment_id=payment_id,
+            seller_id=seller.id, tariff_id=tariff.id,
+            status=SubscriptionStatus.ACTIVE, starts_at=now,
+            expires_at=expiry_base + timedelta(days=duration),
+            ads_limit=min(MAX_ADS_LIMIT, limit + (current.ads_limit - current.ads_used
+                           if current is not None and current.tariff_id == tariff.id else 0)),
+            ads_used=current.ads_used if current is not None and current.tariff_id == tariff.id else 0,
+            terms=new_terms, granted_by=granted_by, payment_id=payment_id,
         )
         session.add(subscription)
-        await session.flush()
-        logger.info(
-            "Yangi obuna: sotuvchi={} tarif={} {} kun (limit {})",
-            seller.user_id,
-            tariff.name,
-            duration,
-            limit,
-        )
+        for ad in (await session.execute(select(Ad).where(
+            Ad.seller_id == seller.id, Ad.status == "active",
+        ))).scalars():
+            ad.next_eligible_at = now + timedelta(seconds=interval_for(subscription))
+    await session.flush()
+    session.add(SubscriptionGrant(
+        subscription_id=subscription.id, user_id=seller.user_id, tariff_id=tariff.id,
+        terms=new_terms, starts_at=grant_starts, expires_at=subscription.expires_at,
+        payment_id=payment_id, granted_by=granted_by,
+    ))
+    await session.flush()
 
     if seller.status in (SellerStatus.PENDING, SellerStatus.BLOCKED):
         seller.status = SellerStatus.ACTIVE
@@ -225,6 +245,15 @@ async def extend(session: AsyncSession, subscription: Subscription, days: int) -
     subscription.reminder_sent_at = None
     subscription.expired_notified_at = None
     await session.flush()
+    seller = await session.get(Seller, subscription.seller_id)
+    if seller is not None:
+        session.add(SubscriptionGrant(
+            subscription_id=subscription.id, user_id=seller.user_id,
+            tariff_id=subscription.tariff_id, terms=terms_for(subscription),
+            starts_at=base, expires_at=subscription.expires_at,
+            payment_id=None, granted_by=None,
+        ))
+        await session.flush()
     logger.info("Obuna #{} uzaytirildi: +{} kun", subscription.id, days)
     return subscription
 

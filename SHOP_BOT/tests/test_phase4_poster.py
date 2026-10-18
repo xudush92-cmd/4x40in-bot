@@ -109,7 +109,7 @@ async def test_two_ads_rotate_and_manual_force_moves_cursor(clean_db) -> None:
         await bot.session.close()
 
 
-async def test_two_categories_use_round_robin_and_override_interval(clean_db) -> None:
+async def test_two_categories_share_queue_but_not_legacy_override_interval(clean_db) -> None:
     group_id, cat_id, [ad_id] = await prepared(photos=1)
     async with session_scope() as session:
         cat = await session.get(Category, cat_id)
@@ -120,10 +120,11 @@ async def test_two_categories_use_round_robin_and_override_interval(clean_db) ->
         await session.flush()
         first = await session.get(Ad, ad_id)
         ad2 = Ad(seller_id=first.seller_id, category_id=second.id, group_id=group_id,
-                 title="Noutbuk", position=100, status="active")
+                 title="Noutbuk", position=100, status="active", next_eligible_at=first.next_eligible_at)
         session.add(ad2)
         sub = (await session.execute(select(Subscription))).scalar_one()
         sub.ads_limit = sub.ads_used = 2
+        sub.tariff.interval_sec = 60  # shaxsiy tarif 1 min; toifa override=2 min e'tiborsiz
         await session.flush()
         ad2_id, second_id = ad2.id, second.id
     fake = FakeSession()
@@ -134,7 +135,9 @@ async def test_two_categories_use_round_robin_and_override_interval(clean_db) ->
         assert one.status == "sent" and one.ad_id == ad_id
         async with session_scope() as session:
             group = await session.get(Group, group_id)
-            assert ensure_aware(group.rotation.next_post_at) == now + timedelta(seconds=60)
+            assert ensure_aware(group.rotation.next_post_at) == ensure_aware(
+                (await session.get(Ad, ad2_id)).next_eligible_at)
+            assert ensure_aware((await session.get(Ad, ad_id)).next_eligible_at) == now + timedelta(seconds=60)
         two = await poster.post_group(bot, group_id, now=now + timedelta(seconds=61))
         assert two.status == "sent" and two.ad_id == ad2_id
         three = await poster.post_group(bot, group_id, now=now + timedelta(seconds=122))
@@ -351,7 +354,7 @@ async def test_stats_count_only_successful_posts(clean_db) -> None:
 
 
 async def test_kill_switch_rebases_due_without_sending(clean_db) -> None:
-    group_id, _, _ = await prepared()
+    group_id, _, [ad_id] = await prepared()
     async with session_scope() as session:
         await settings_service.set(session, "kill_switch", True)
     settings_service.invalidate()
@@ -362,7 +365,9 @@ async def test_kill_switch_rebases_due_without_sending(clean_db) -> None:
         assert not fake.called("SendMediaGroup")
         async with session_scope() as session:
             group = await session.get(Group, group_id)
-            assert ensure_aware(group.rotation.next_post_at) > utcnow()
+            ad = await session.get(Ad, ad_id)
+            assert ensure_aware(ad.next_eligible_at) > utcnow()
+            assert ensure_aware(group.rotation.next_post_at) == ensure_aware(ad.next_eligible_at)
         assert (await poster.post_group(bot, group_id)).status == "unavailable"
     finally:
         await bot.session.close()

@@ -160,12 +160,13 @@ async def test_admin_creates_tariff(session, tg) -> None:
     await _feed(session, dp, bot, 5, text_update("30"))
     await _feed(session, dp, bot, 6, text_update("3"))
     await _feed(session, dp, bot, 7, text_update("2"))
+    await _feed(session, dp, bot, 8, text_update("10"))  # shaxsiy oralig'i daqiqada
 
     tariff = await _tariff(session, "🟢 Boshlang'ich")
     assert tariff.price == Decimal("150000.00")
     assert tariff.duration_days == 30
     assert tariff.max_ads == 3
-    assert tariff.max_photos == 2
+    assert tariff.max_photos == 2 and tariff.interval_sec == 600
     assert any("yaratildi" in text for text in fake.sent_texts())
 
 
@@ -183,7 +184,11 @@ async def test_admin_tariff_validation_and_edit(session, tg) -> None:
     assert "1–10" in fake.sent_texts()[-1]
 
     await _feed(session, dp, bot, 8, text_update("3"))
+    await _feed(session, dp, bot, 9, text_update("1441"))  # invalid interval
+    assert "1–1440" in fake.sent_texts()[-1]
+    await _feed(session, dp, bot, 10, text_update("5"))
     tariff = await _tariff(session, "Test tarif")
+    assert tariff.interval_sec == 300
     tariff_id = tariff.id
 
     # Narxni tahrirlash
@@ -208,14 +213,14 @@ async def test_admin_tariff_validation_and_edit(session, tg) -> None:
     session.expire_all()
     assert (await _tariff(session, "Premium tarif")).is_active is False
 
-    # Sinov belgisi
-    await _feed(session, dp, bot, 16, callback_update(TariffCB(action="trial", tariff_id=tariff_id).pack()))
-    session.expire_all()
-    assert (await _tariff(session, "Premium tarif")).is_trial is True
+    # Narxga mos interval keyingi sotuv uchun o'zgartiriladi.
+    await _feed(session, dp, bot, 16, callback_update(TariffCB(action="interval", tariff_id=tariff_id).pack()))
+    await _feed(session, dp, bot, 17, text_update("10"))
+    assert (await _tariff(session, "Premium tarif")).interval_sec == 600
 
     # Bekor qilish (/cancel) — kartochkaga qaytadi
-    await _feed(session, dp, bot, 17, callback_update(TariffCB(action="desc", tariff_id=tariff_id).pack()))
-    await _feed(session, dp, bot, 18, text_update("/cancel"))
+    await _feed(session, dp, bot, 18, callback_update(TariffCB(action="desc", tariff_id=tariff_id).pack()))
+    await _feed(session, dp, bot, 19, text_update("/cancel"))
     assert "Premium tarif" in fake.sent_texts()[-1]
 
 
@@ -481,7 +486,7 @@ async def test_seller_catalog_and_support(session, tg) -> None:
     await _feed(
         session, dp, bot, 2, callback_update(SellerPanelCB(action="support").pack(), user_id=SELLER_ID)
     )
-    assert "Yordam" in fake.edited_texts()[-1]
+    assert "Aloqa va yordam" in fake.edited_texts()[-1]
 
 
 async def test_seller_referral_code_created_on_demand(session, tg) -> None:

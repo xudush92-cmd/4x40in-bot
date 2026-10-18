@@ -219,7 +219,7 @@ def admin_ad_card_kb(ad: Ad, *, page: int = 0, status: str = "all", can_post: bo
                 text="⏸ To'xtatish", callback_data=ModCB(action="pause", ad_id=ad.id, value=back).pack()
             )
         )
-    elif ad.status == "paused":
+    elif ad.status == "paused" and ad.admin_paused:
         actions.append(
             InlineKeyboardButton(
                 text="▶️ Yoqish", callback_data=ModCB(action="resume", ad_id=ad.id, value=back).pack()

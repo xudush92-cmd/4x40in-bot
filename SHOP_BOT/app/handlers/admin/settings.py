@@ -1,4 +1,4 @@
-"""⚙️ Global sozlamalar: kill switch, texnik rejim, interval, yordam kontakti.
+"""⚙️ Global sozlamalar: kill switch, texnik rejim, yordam kontakti.
 
 Bu bo'lim Phase 0 da to'liq ishlaydi — chunki u butun tizimning
 "boshqaruv markazi" (REJA.md "asosiy qoida": kodga tegmasdan boshqarish).
@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.constants import MAX_INTERVAL_SEC, MIN_INTERVAL_SEC, AdminRole
+from app.constants import AdminRole
 from app.filters import IsAdmin
 from app.keyboards import settings_kb
 from app.keyboards.callbacks import AdminCB
@@ -38,12 +38,10 @@ LABELS = {
     "cleaner_enabled_global": "🧹 Tozalovchi global switch",
     "broadcast_enabled_global": "📣 Broadcast global switch",
     "support_contact": "☎️ Yordam kontakti",
-    "default_interval_sec": "⏱ Joylash intervali",
 }
 
 
 def _format_settings(values: dict[str, object]) -> str:
-    interval = int(values.get("default_interval_sec", DEFAULTS["default_interval_sec"]) or 1800) // 60
     return (
         "⚙️ <b>Global sozlamalar</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -56,7 +54,6 @@ def _format_settings(values: dict[str, object]) -> str:
         f"🛡 Posbon global: <b>{'YOQILGAN' if values.get('guard_enabled_global') else 'PAUZA'}</b>\n"
         f"🧹 Tozalovchi global: <b>{'YOQILGAN' if values.get('cleaner_enabled_global') else 'PAUZA'}</b>\n"
         f"📣 Broadcast global: <b>{'YOQILGAN' if values.get('broadcast_enabled_global') else 'PAUZA'}</b>\n"
-        f"⏱ Default joylash intervali: <b>{interval} daqiqa</b>\n"
         f"☎️ Yordam kontakti: <b>{values.get('support_contact') or '—'}</b>\n"
         f"🗄 Loglarni saqlash: <b>{values.get('log_retention_days')} kun</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -153,15 +150,6 @@ async def start_edit(
             "@username yoki telefon raqam yuboring.\n"
             "Bekor qilish uchun /cancel"
         )
-    elif key == "default_interval_sec":
-        current = int(await settings_service.get("default_interval_sec", 1800, session) or 1800) // 60
-        await state.set_state(AdminSettingsStates.waiting_interval)
-        await callback.message.answer(
-            "⏱ <b>Yangi interval</b>\n"
-            f"Hozirgi qiymat: <b>{current} daqiqa</b>\n\n"
-            f"{MIN_INTERVAL_SEC // 60} dan {MAX_INTERVAL_SEC // 60} gacha daqiqa yuboring (raqam bilan).\n"
-            "Bekor qilish uchun /cancel"
-        )
     else:
         await callback.answer("⚠️ Noma'lum sozlama.", show_alert=True)
         return
@@ -190,31 +178,3 @@ async def apply_support_contact(message: Message, state: FSMContext, session: As
         f"✅ Yordam kontakti yangilandi: <b>{value}</b>\n\n" + _format_settings(values),
         reply_markup=settings_kb(values, role),
     )
-
-
-@router.message(IsAdmin(AdminRole.ADMIN), StateFilter(AdminSettingsStates.waiting_interval), F.text)
-async def apply_interval(message: Message, state: FSMContext, session: AsyncSession, role: str | None) -> None:
-    raw = (message.text or "").strip()
-    if not raw.isdigit():
-        await message.answer("⚠️ Faqat raqam yuboring (daqiqada).")
-        return
-
-    minutes = int(raw)
-    if not MIN_INTERVAL_SEC // 60 <= minutes <= MAX_INTERVAL_SEC // 60:
-        await message.answer(
-            f"⚠️ Qiymat {MIN_INTERVAL_SEC // 60} dan {MAX_INTERVAL_SEC // 60} daqiqagacha bo'lishi kerak."
-        )
-        return
-
-    await settings_service.set(
-        session, "default_interval_sec", minutes * 60, updated_by=message.from_user.id
-    )
-    await state.clear()
-    values = await settings_service.get_all(session)
-    await message.answer(
-        f"✅ Interval yangilandi: <b>{minutes} daqiqa</b>\n\n" + _format_settings(values),
-        reply_markup=settings_kb(values, role),
-    )
-
-
-__all__ = ["router", "render_settings_screen"]

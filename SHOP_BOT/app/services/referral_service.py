@@ -7,15 +7,13 @@ Bonussiz yoki daromadga ta'sir qiladigan holat avval o'chirilgan (`referral_enab
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.constants import BonusType, PaymentStatus, ReferralTrigger, SellerStatus
 from app.db.models import (
     ActionLog,
@@ -31,7 +29,6 @@ from app.services.settings_service import settings_service
 from app.utils.time import ensure_aware, utcnow
 
 BONUS_DEFAULT = {BonusType.DAYS: "7", BonusType.BALANCE: "50000", BonusType.DISCOUNT: "10"}
-MAX_DAILY_REFERRALS = 500
 MAX_BONUS_DAYS = Decimal("3650")
 MAX_BONUS_BALANCE = Decimal("10000000")
 MAX_DISCOUNT_PERCENT = Decimal("50")  # 500% manfiy chek chiqaradi — oshirilmaydi
@@ -41,7 +38,6 @@ DEFAULTS = {
     "trigger": ReferralTrigger.FIRST_PAYMENT,
     "bonus_type": BonusType.DAYS,
     "bonus_value": "7",
-    "daily_limit": 5,
     "min_payment": "50000",
 }
 
@@ -65,11 +61,6 @@ def validate(key: str, value: object, *, bonus_type: str = BonusType.DAYS) -> st
         if value not in (BonusType.DAYS, BonusType.BALANCE, BonusType.DISCOUNT):
             raise ValueError("Bonus turi noto'g'ri.")
         return str(value)
-    if key == "daily_limit":
-        raw = str(value).strip()
-        if not raw.isascii() or not raw.isdigit() or not 1 <= int(raw) <= MAX_DAILY_REFERRALS:
-            raise ValueError(f"Kunlik limit 1–{MAX_DAILY_REFERRALS} orasida bo'lsin.")
-        return int(raw)
     if key in {"bonus_value", "min_payment"}:
         number = _decimal(value)
         if key == "min_payment":
@@ -128,15 +119,6 @@ async def referral_active(session: AsyncSession) -> bool:
     )
 
 
-def _day_start() -> datetime:
-    now = utcnow()
-    try:
-        tz = ZoneInfo(get_settings().timezone)
-    except ZoneInfoNotFoundError:
-        tz = ZoneInfo("Asia/Tashkent")
-    return now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(now.tzinfo)
-
-
 async def register(session: AsyncSession, *, code: str, referee_id: int,
                    user_is_new: bool) -> Referral | None:
     """Yangi /start (oldin botni ishlatmagan) uchun dublikatdan himoyalangan yozuv."""
@@ -148,18 +130,13 @@ async def register(session: AsyncSession, *, code: str, referee_id: int,
     if (referrer is None or referrer.user_id == referee_id or
             referrer.status in (SellerStatus.BLOCKED, SellerStatus.DELETED)):
         return None
-    # Sotuvchi qatorini bloklash kunlik limitni ikkita bot workerda ham saqlaydi.
+    # Anti-fraud dublikat tekshiruvi bir nechta workerda ham izchil qolsin.
     referrer = (await session.execute(select(Seller).where(
         Seller.id == referrer.id,
     ).with_for_update())).scalar_one()
     if await session.scalar(select(Referral.id).where(Referral.referee_id == referee_id)) is not None:
         return None
     conf = await config(session)
-    count = (await session.execute(select(func.count(Referral.id)).where(
-        Referral.referrer_id == referrer.user_id, Referral.created_at >= _day_start(),
-    ))).scalar_one()
-    if count >= int(conf["daily_limit"]):
-        return None
     try:
         async with session.begin_nested():
             row = Referral(referrer_id=referrer.user_id, referee_id=referee_id,
@@ -241,7 +218,7 @@ async def first_payment(session: AsyncSession, payment: Payment, referee_seller:
 
 
 async def process_pending(session: AsyncSession, limit: int = 100) -> int:
-    """Shart bajarilgan, ammo referrerda hali faol tarif bo'lmagan kunlik bonuslar."""
+    """Shart bajarilgan, ammo referrerda hali faol tarif bo'lmagan bonuslar."""
     if not await referral_active(session):
         return 0
     ids = (await session.execute(select(Referral.id).where(

@@ -32,7 +32,7 @@ _STALE_SECONDS = 45
 
 async def _reserve(group_id: int, user_id: int, issue: str) -> tuple[int, int] | None:
     """Guruh qatori qulfida har a'zoga 60 sekundda ko'pi bilan bir ogohlantirish."""
-    if (user_id <= 0 or issue not in {"counter_not_done", "not_subscribed"}
+    if (user_id <= 0 or issue != "counter_not_done"
             or not await settings_service.is_feature_enabled_fresh("counter")):
         return None
     async with session_scope() as session:
@@ -44,9 +44,6 @@ async def _reserve(group_id: int, user_id: int, issue: str) -> tuple[int, int] |
                 and (group.bot_rights or {}).get("can_delete_messages")
                 and setting and setting.enabled and not setting.dry_run):
             return None
-        if issue == "not_subscribed" and (not setting.require_subscription
-                                          or not await counters.applicable_channels(session, group_id)):
-            return None  # kanal sharti faqat admin alohida yoqqanida mavjud
         if issue == "counter_not_done" and (setting.required_n <= 0 or
                                             await counters.total_for(session, group_id, user_id)
                                             >= setting.required_n):
@@ -92,9 +89,7 @@ def _text(issue: str) -> str:
     # shaxsiy hisob va ortiqcha tugmalarni ommaviy xabarda ko'rsatmaymiz.
     if issue == "counter_not_done":
         return "Guruhga yozish uchun odam qo‘shing."
-    # Faqat eski guruhda admin alohida yoqqan kanal qoidasi uchun: yolg'on
-    # «odam qo'shing» degan izoh yubormaymiz (yangi guruhda kanal talabi yo'q).
-    return "Guruhga yozish uchun obuna shartini bajaring."
+    raise ValueError("Faqat shu guruhga odam qo'shish ogohlantirishi mavjud.")
 
 
 async def send_notice(bot: Bot, *, group_id: int, user_id: int, issue: str) -> None:

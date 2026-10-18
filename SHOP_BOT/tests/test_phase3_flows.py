@@ -9,14 +9,13 @@ tekshirishdan oldin `session.expire_all()` qilib, yangi SELECT ishlatamiz.
 
 from __future__ import annotations
 
-import itertools
 from datetime import timedelta
 
 import pytest_asyncio
 from sqlalchemy import func, select
 
 from app.constants import AdminRole, AdStatus, SellerStatus
-from app.db.models import Ad, AdPhoto, Admin, Category, Group, ModerationLog, PostLog, Seller, Subscription
+from app.db.models import Ad, Admin, AdPhoto, Category, Group, ModerationLog, PostLog, Seller, Subscription
 from app.keyboards.callbacks import AdCB, AdminCB, ModCB, SellerPanelCB
 from app.services import ad_service, seller_service, subscription_service, tariff_service
 from tests.fake_telegram import (
@@ -200,7 +199,7 @@ async def _run_wizard(
     return n
 
 
-# ═══════════════ 1. Usta: e'lon yaratish (avto-tasdiq) ═════════════
+# ═══════════════ 1. Usta: e'lon yaratish va admin tasdig'i ═════════════
 async def test_seller_creates_ad_and_it_goes_active(session, tg) -> None:
     fake, bot, dp = tg
     await _seller_with_tariff(session)
@@ -222,10 +221,18 @@ async def test_seller_creates_ad_and_it_goes_active(session, tg) -> None:
     await _cb(session, dp, bot, n, AdCB(action="wiz_send", ad_id=_pk(ad)).pack())
 
     ad = await _only_ad(session)
-    assert ad.status == AdStatus.ACTIVE
-    assert ad.approved_at is not None
+    assert ad.status == AdStatus.PENDING and ad.next_eligible_at is None
+    assert "tekshiruvga yuborildi" in fake.edited_texts()[-1]
+    await _cb(session, dp, bot, n + 1, ModCB(action="approve", ad_id=_pk(ad),
+                                               value="0|pending").pack(), user_id=ADMIN_ID)
+    ad = await _only_ad(session)
+    assert ad.status == AdStatus.PAUSED and ad.approved_at is not None
+    assert ad.next_eligible_at is None  # Admin tasdig'i sotuvchining Start'i emas.
+    assert "Boshlash" in str(fake.called("SendMessage")[-1]["text"])
+    await _cb(session, dp, bot, n + 2, AdCB(action="resume", ad_id=_pk(ad)).pack())
+    ad = await _only_ad(session)
+    assert ad.status == AdStatus.ACTIVE and ad.next_eligible_at is not None
     assert (await _subscription(session)).ads_used == 1
-    assert any("faollashtirildi" in text for text in fake.edited_texts())
 
 
 async def test_seller_edits_and_resubmits_rejected_ad(session, tg) -> None:
@@ -319,7 +326,7 @@ async def test_seller_wizard_skips_optional_steps(session, tg) -> None:
     await _cb(session, dp, bot, 9, AdCB(action="wiz_send", ad_id=_pk(ad)).pack())
 
     session.expire_all()
-    assert (await _only_ad(session)).status == AdStatus.ACTIVE
+    assert (await _only_ad(session)).status == AdStatus.PENDING
 
 
 async def test_seller_backs_up_a_step(session, tg) -> None:
@@ -370,7 +377,7 @@ async def test_wizard_hidden_without_subscription(session, tg) -> None:
     fake, bot, dp = tg
     seller, _ = await seller_service.get_or_create_seller(session, SELLER_ID, display_name="Do'kon")
     seller.status = SellerStatus.ACTIVE              # tarif yo'q
-    category = await _category(session)
+    await _category(session)
     await session.commit()
 
     await _cb(session, dp, bot, 1, CB_NEW_AD)
@@ -422,6 +429,9 @@ async def _make_active_ad(session, *, title: str = "Faol e'lon") -> Ad:
     await ad_service.set_price(session, ad, 1000)
     await ad_service.add_photo(session, ad, file_id="seed-photo")
     await ad_service.submit(session, seller, ad)
+    assert ad.status == AdStatus.PENDING
+    await ad_service.approve(session, ad, ADMIN_ID)
+    assert await ad_service.resume(session, ad)
     await session.commit()
     return ad
 
@@ -501,10 +511,20 @@ async def test_photo_edit_add_and_remove(session, tg) -> None:
     await _photo(session, dp, bot, 2, "p2")
     await _photo(session, dp, bot, 3, "p3")
     assert await ad_service.photo_count(session, ad_id) == 3
+    ad = await ad_service.get_ad(session, ad_id)
+    assert ad.status == AdStatus.PENDING and ad.approved_at is None
+    assert (await _subscription(session)).ads_used == 1  # o'sha e'lon, yangi slot emas
 
     await _cb(session, dp, bot, 4, AdCB(action="photo_del", ad_id=ad_id, value="2").pack())
     assert await ad_service.photo_count(session, ad_id) == 2
     assert "o'chirildi" in fake.edited_texts()[-1]
+    await _cb(session, dp, bot, 5, AdCB(action="preview", ad_id=ad_id).pack())
+    buttons = str(fake.called("EditMessageText")[-1]["reply_markup"])
+    assert AdCB(action="wiz_send", ad_id=ad_id).pack() not in buttons
+    await _cb(session, dp, bot, 6, AdCB(action="wiz_send", ad_id=ad_id).pack())
+    assert any("allaqachon yuborilgan" in answer for answer in fake.answers())
+    assert (await _subscription(session)).ads_used == 1
+    assert await ad_service.approve(session, await ad_service.get_ad(session, ad_id), ADMIN_ID)
 
 
 async def test_ad_stats_screen(session, tg) -> None:
@@ -594,8 +614,9 @@ async def test_admin_approves_ad(session, tg) -> None:
 
     session.expire_all()
     approved = await session.get(Ad, ad_id)
-    assert approved.status == AdStatus.ACTIVE
+    assert approved.status == AdStatus.PAUSED and approved.next_eligible_at is None
     assert approved.approved_by == ADMIN_ID
+    assert any("Boshlash" in text for text in fake.sent_texts())
     assert await ad_service.count_pending(session) == 0
     assert any("tasdiqlandi" in text for text in fake.sent_texts())     # sotuvchiga xabar
     assert "Kutilmoqda: <b>0</b>" in fake.edited_texts()[-1]

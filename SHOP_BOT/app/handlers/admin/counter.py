@@ -1,4 +1,4 @@
-"""Phase 7: har bir guruh uchun sanoqchi, kanallar, hisob va audit paneli.
+"""Phase 7: har bir guruh uchun sanoqchi, hisob va audit paneli.
 
 Jonli rejim faqat alohida tasdiq bilan, real Telegram huquqlari qayta
 tekshirilgandan keyin yoqiladi. Kanal nomi oldindan taxmin qilinmaydi.
@@ -25,12 +25,11 @@ from app.db.models import (
     Group,
     InviteEvent,
     InviteLink,
-    RequiredChannel,
 )
 from app.filters import IsAdmin
 from app.handlers.group.counter import _unlock
 from app.keyboards.callbacks import CounterAdminCB
-from app.keyboards.counter import channels_kb, choose_kb, confirm_kb, home_kb, user_kb
+from app.keyboards.counter import choose_kb, confirm_kb, home_kb, user_kb
 from app.services import counter_service as counters
 from app.services.group_service import extract_rights, get_group, list_groups
 from app.services.settings_service import settings_service
@@ -43,8 +42,7 @@ router = Router(name="admin:counter")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 _EDITABLE = {AdminRole.ADMIN, AdminRole.SUPER}
-_LABELS = {"required_n": "N odam sharti", "min_stay_minutes": "Minimal qolish (daqiqa)",
-           "max_per_day": "Kunlik taklif limiti", "link_member_limit": "Shaxsiy havola limiti"}
+_LABELS = {"required_n": "N odam sharti", "min_stay_minutes": "Minimal qolish (daqiqa)"}
 
 
 def _edit(role: str | None) -> bool:
@@ -64,8 +62,7 @@ async def render_choose(target: Message | CallbackQuery, session: AsyncSession,
     page = max(0, min(page, pages - 1))
     groups = await list_groups(session, offset=page * 6, limit=6)
     await render(target, "🧮 <b>Guruh sanoqchisini tanlang</b>\n"
-                 "Har guruh uchun N, rejim, kanal, manba va audit alohida. "
-                 "🌐 Global kanallar faqat kanal sharti yoqilgan guruhlarga ta'sir qiladi.",
+                 "Har guruh uchun N, sinov/jonli rejim, manbalar va audit alohida.",
                  choose_kb(groups, page, pages))
 
 
@@ -84,7 +81,6 @@ async def render_home(target: Message | CallbackQuery, session: AsyncSession,
         await render(target, "⚠️ Guruh topilmadi.")
         return
     row = await counters.ensure_counter(session, group.id)
-    channels = await counters.applicable_channels(session, group.id)
     global_on = await settings_service.is_feature_enabled_fresh("counter")
     source = row.count_sources or {}
     text = (f"🧮 <b>{escape_html(group.display)} — sanoqchi</b>\n"
@@ -93,44 +89,14 @@ async def render_home(target: Message | CallbackQuery, session: AsyncSession,
             f"Switch: {'🟢' if group.settings.counter_enabled and row.enabled else '🔴'}\n"
             f"Rejim: <b>{escape_html(row.mode or 'soft').upper()}</b> · "
             f"{'🧪 SINOV (jazo yo‘q)' if row.dry_run else '🔴 JONLI (xabar o‘chadi, hard: mute)'}\n"
-            f"N: <b>{row.required_n}</b> · Minimal qolish: <b>{row.min_stay_minutes} min</b> · "
-            f"Kunlik: <b>{row.max_per_day}</b> · Havola limiti: <b>{row.link_member_limit}</b>\n"
-            f"Manbalar: havola {'✅' if source.get('link') else '—'} / "
-            f"qo'lda {'✅' if source.get('added_by') else '—'}\n"
-            f"Kanal sharti: {'✅' if row.require_subscription else '—'} "
-            f"({len(channels)} ta, global kanallar ham kiritilgan) · "
-            f"DM: {'✅' if row.notify_inviter else '—'}\n\n"
-            "🔐 Kanal a'zoligi va N <b>ikkalasi</b> tekshiriladi. "
+            f"N: <b>{row.required_n}</b> · Minimal qolish: <b>{row.min_stay_minutes} min</b>\n"
+            f"Telegram «A'zo qo'shish»: {'✅' if source.get('added_by') else '—'}\n\n"
+            "👥 N faqat shu guruhga bevosita qo'shilgan haqiqiy a'zolar uchun. "
             "N noma'lum bo'lsa yoki Telegram tekshirilmasa jazo berilmaydi. "
             "SOFT: xabar o'chadi; HARD: shart bajarilmaguncha mute ham qo'yiladi.\n"
             "Yangi/yoqilgan guruh avval sinovda. Jonli rejimni alohida tasdiqlang. "
             "Privacy Mode'ni o'chiring.")
-    if row.require_subscription and not channels:
-        text += "\n⚠️ Kanal hali sozlanmagan: obuna uchun jazo ishlamaydi."
     await render(target, text, home_kb(group, row, can_edit=_edit(role)))
-
-
-async def render_channels(target: Message | CallbackQuery, session: AsyncSession,
-                          group_id: int, role: str | None) -> None:
-    if group_id and not await get_group(session, group_id):
-        await render(target, "⚠️ Guruh topilmadi.")
-        return
-    if group_id:
-        channels = await counters.applicable_channels(session, group_id)
-    else:
-        channels = list((await session.execute(select(RequiredChannel).where(
-            RequiredChannel.group_id.is_(None), RequiredChannel.is_active.is_(True),
-        ).order_by(RequiredChannel.id))).scalars())
-    title = "guruh kanallari" if group_id else "umumiy kanallar (barcha guruhlar)"
-    items = [f"• <b>{escape_html(ch.title or ch.username or str(ch.channel_tg_id))}</b> "
-             f"<code>{ch.channel_tg_id}</code> {'🌐 global' if ch.group_id is None else 'shu guruh'}"
-             for ch in channels[:20]]
-    text = (f"📣 <b>Majburiy obuna — {title}</b>\n"
-            "Faqat sanoqchisida «Majburiy kanal» yoqilgan guruhlarga tatbiq etiladi.\n"
-            "Bot kanalda ADMIN bo'lishi kerak; getChatMember ishlamasa jazo yo'q.\n\n"
-            + ("\n".join(items) if items else "Hali kanal kiritilmagan.")
-            + "\n\n❌ tugmasi kanalni bekor qilishni alohida tasdiqlaydi.")
-    await render(target, text, channels_kb(group_id, channels, can_edit=_edit(role)))
 
 
 async def render_user(target: Message | CallbackQuery, session: AsyncSession,
@@ -182,13 +148,6 @@ async def home(callback: CallbackQuery, callback_data: CounterAdminCB,
     await alert(callback, "")
 
 
-@router.callback_query(CounterAdminCB.filter(F.action == "channels"))
-async def channels(callback: CallbackQuery, callback_data: CounterAdminCB,
-                   session: AsyncSession, role: str | None) -> None:
-    await render_channels(callback, session, callback_data.group_id, role)
-    await alert(callback, "")
-
-
 @router.callback_query(CounterAdminCB.filter(F.action == "toggle"))
 async def toggle(callback: CallbackQuery, callback_data: CounterAdminCB,
                  session: AsyncSession, role: str | None) -> None:
@@ -200,11 +159,11 @@ async def toggle(callback: CallbackQuery, callback_data: CounterAdminCB,
         await alert(callback, "⚠️ Guruh topilmadi.", show=True)
         return
     field = callback_data.value
-    if field not in {"enabled", "require_subscription", "notify_inviter"}:
+    if field != "enabled":
         await alert(callback, "⚠️ Noma'lum qoida.", show=True)
         return
     row = await counters.ensure_counter(session, group.id)
-    current = bool(row.enabled and group.settings.counter_enabled) if field == "enabled" else bool(getattr(row, field))
+    current = bool(row.enabled and group.settings.counter_enabled)
     await counters.edit_counter(session, group, field, not current, callback.from_user.id)
     await render_home(callback, session, group.id, role)
     await alert(callback, "🧪 Yoqilganda sinovda. Mute'lar schedulerda ochiladi." if field == "enabled"
@@ -246,19 +205,8 @@ async def _validate_live(bot: Bot, session: AsyncSession, group: Group, row: Cou
         rights = extract_rights(member)
         if not rights.get("can_delete_messages"):
             raise ValueError("Botda xabarni o'chirish huquqi yo'q.")
-        if (row.count_sources or {}).get("link") and not rights.get("can_invite_users"):
-            raise ValueError("Shaxsiy havola uchun invite huquqi yo'q.")
         if row.mode == CounterMode.HARD and not rights.get("can_restrict_members"):
             raise ValueError("HARD uchun a'zolarni cheklash huquqi yo'q.")
-        if row.require_subscription:
-            channels = await counters.applicable_channels(session, group.id)
-            if not channels:
-                raise ValueError("Kanal sharti yoqilgan, lekin kanal sozlanmagan.")
-            for channel in channels:
-                chat = await bot.get_chat(channel.channel_tg_id)
-                admin = await bot.get_chat_member(channel.channel_tg_id, me)
-                if chat.type != "channel" or str(admin.status) not in {"administrator", "creator"}:
-                    raise ValueError(f"Kanal #{channel.id}: bot admin emas yoki bu kanal emas.")
         group.bot_is_admin, group.bot_rights = True, rights
     except TelegramAPIError as exc:
         raise ValueError(f"Telegram huquqlari tasdiqlanmadi: {exc}") from exc
@@ -280,8 +228,7 @@ async def live(callback: CallbackQuery, callback_data: CounterAdminCB, session: 
                      f"Guruh: {escape_html(group.display)}\n"
                      f"Rejim: <b>{escape_html(row.mode)}</b> · N: {row.required_n}\n"
                      "SOFT: a'zoning xabari o'chadi; HARD: bunga qo'shimcha a'zo mute qilinadi. "
-                     "Kanal bo'lsa bot u yerda ham admin bo'lishi kerak.\n\n"
-                     "Bosilganda guruh va kanal huquqlari Telegram'da qayta tekshiriladi.",
+                     "Bosilganda botning guruhdagi huquqlari Telegram'da qayta tekshiriladi.",
                      confirm_kb("live_confirm", group.id, _revision(row)))
     else:
         await counters.edit_counter(session, group, "dry_run", True, callback.from_user.id)
@@ -355,105 +302,6 @@ async def save_number(message: Message, state: FSMContext, session: AsyncSession
         return
     await state.clear()
     await render_home(message, session, group.id, role)
-
-
-async def _validated_channel(bot: Bot, raw: str) -> tuple[int, str | None, str, str]:
-    parts = raw.strip().split()
-    if not 1 <= len(parts) <= 2:
-        raise ValueError("@username yoki -100... [https://t.me/+...] ko'rinishida yuboring.")
-    lookup = parts[0]
-    if not (lookup.startswith("@") and len(lookup) >= 6 or lookup.startswith("-100") and lookup[1:].isdigit()):
-        raise ValueError("Kanalni @username yoki -100... ID orqali ko'rsating.")
-    if len(parts) == 2 and not (parts[1].startswith("https://t.me/+") and len(parts[1]) <= 255):
-        raise ValueError("Xususiy kanal linki https://t.me/+... bo'lishi kerak.")
-    try:
-        chat = await bot.get_chat(int(lookup) if lookup.startswith("-100") else lookup)
-        if chat.type != "channel" or chat.id >= 0:
-            raise ValueError("Bu kanal emas.")
-        member = await bot.get_chat_member(chat.id, (await bot.get_me()).id)
-        if str(member.status) not in {"administrator", "creator"}:
-            raise ValueError("Bot kanalga admin qilib qo'shilishi kerak.")
-    except TelegramAPIError as exc:
-        raise ValueError(f"Kanal yoki bot adminligini tekshirib bo'lmadi: {exc}") from exc
-    username = getattr(chat, "username", None)
-    link = (f"https://t.me/{username}" if username else getattr(chat, "invite_link", None)
-            or (parts[1] if len(parts) == 2 else None))
-    if not link or not link.startswith("https://t.me/"):
-        raise ValueError("Xususiy kanal havolasi topilmadi; ID bilan https://t.me/+... yuboring.")
-    return chat.id, username, chat.title or username or str(chat.id), link
-
-
-@router.callback_query(CounterAdminCB.filter(F.action == "channel_add"))
-async def ask_channel(callback: CallbackQuery, callback_data: CounterAdminCB, state: FSMContext,
-                      session: AsyncSession, role: str | None) -> None:
-    if not _edit(role) or callback_data.group_id and not await get_group(session, callback_data.group_id):
-        await alert(callback, "⛔️ Ruxsat yoki guruh topilmadi.", show=True)
-        return
-    await state.set_state(AdminCounterStates.waiting_channel)
-    await state.update_data(counter_group_id=callback_data.group_id)
-    await render(callback, "📣 Bot kanalda <b>admin</b> bo'lsin. Kanalning "
-                 "<code>@username</code> yoki <code>-100...</code> ID sini yuboring.\n"
-                 "Xususiy kanal uchun: <code>-100... https://t.me/+link</code> "
-                 "(linkning IDga mosligini Telegram tekshira olmaydi; admin mas'ul).\n"
-                 "/cancel — bekor qilish.")
-    await alert(callback, "")
-
-
-@router.message(StateFilter(AdminCounterStates.waiting_channel), F.text)
-async def save_channel(message: Message, state: FSMContext, bot: Bot,
-                       session: AsyncSession, role: str | None) -> None:
-    data = await state.get_data()
-    gid = int(data.get("counter_group_id") or 0)
-    if message.text.strip() == "/cancel":
-        await state.clear()
-        await render_channels(message, session, gid, role)
-        return
-    if not _edit(role) or gid and not await get_group(session, gid):
-        await state.clear()
-        return
-    try:
-        cid, username, title, link = await _validated_channel(bot, message.text)
-        await counters.add_channel(session, group_id=gid or None, channel_id=cid,
-                                   username=username, title=title, invite_link=link,
-                                   actor_id=message.from_user.id)
-    except ValueError as exc:
-        await message.answer(f"⚠️ {escape_html(str(exc))}\n/cancel — bekor qilish.")
-        return
-    await state.clear()
-    await render_channels(message, session, gid, role)
-
-
-@router.callback_query(CounterAdminCB.filter(F.action == "channel_ask"))
-async def ask_remove_channel(callback: CallbackQuery, callback_data: CounterAdminCB,
-                             session: AsyncSession, role: str | None) -> None:
-    if not _edit(role) or not callback_data.value.isdigit():
-        await alert(callback, "⛔️ Faqat admin.", show=True)
-        return
-    row = await session.get(RequiredChannel, int(callback_data.value))
-    if row is None or not row.is_active or (row.group_id or 0) != callback_data.group_id:
-        await alert(callback, "⚠️ Bu qamrovda kanal yo'q.", show=True)
-        return
-    await render(callback, f"❌ <b>Kanalni talabdan olib tashlash?</b>\n"
-                 f"{escape_html(row.title or str(row.channel_tg_id))} · "
-                 f"{'global' if row.group_id is None else 'shu guruh'}\n"
-                 "Telegram kanalining o'zi o'chirilmaydi.",
-                 confirm_kb("channel_remove", callback_data.group_id, callback_data.value))
-    await alert(callback, "")
-
-
-@router.callback_query(CounterAdminCB.filter(F.action == "channel_remove"))
-async def remove_channel(callback: CallbackQuery, callback_data: CounterAdminCB,
-                         session: AsyncSession, role: str | None) -> None:
-    if not _edit(role) or not callback_data.value.isdigit():
-        await alert(callback, "⛔️ Faqat admin.", show=True)
-        return
-    row = await session.get(RequiredChannel, int(callback_data.value))
-    if row is None or (row.group_id or 0) != callback_data.group_id:
-        await alert(callback, "⚠️ Bu qamrovda kanal yo'q.", show=True)
-        return
-    await counters.remove_channel(session, row, callback.from_user.id)
-    await render_channels(callback, session, callback_data.group_id, role)
-    await alert(callback, "✅ Talabdan olib tashlandi.")
 
 
 @router.callback_query(CounterAdminCB.filter(F.action == "user"))
@@ -646,7 +494,7 @@ async def log(callback: CallbackQuery, callback_data: CounterAdminCB,
     changes = (await session.execute(select(ActionLog).where(
         ActionLog.group_id == gid,
         ActionLog.action.in_({"counter_setting", "counter_switch", "counter_adjust",
-                              "channel_add", "channel_remove", "invite_cancel"}),
+                              "invite_cancel"}),
     ).order_by(ActionLog.id.desc()).limit(8))).scalars().all()
     total = (await session.execute(select(CounterTotal).where(
         CounterTotal.group_id == gid,

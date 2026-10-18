@@ -100,7 +100,7 @@ async def test_toggle_active_and_trial(session) -> None:
     assert await tariff_service.list_all_active(session) == []
 
     assert await tariff_service.set_active(session, tariff, True) is True
-    assert len(await tariff_service.list_all_active(session)) == 1
+    assert await tariff_service.list_all_active(session) == []  # bepul/sinov pullik katalogdan alohida
 
 
 async def test_delete_tariff_without_links(session) -> None:

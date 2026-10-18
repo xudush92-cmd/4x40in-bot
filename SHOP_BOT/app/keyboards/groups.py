@@ -85,7 +85,7 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
     rows.append(
         [
             InlineKeyboardButton(
-                text="⚙️ Sozlamalar",
+                text="⚙️ Guruh amallari",
                 callback_data=GroupCB(action="settings", group_id=group.id).pack(),
             ),
             InlineKeyboardButton(
@@ -95,17 +95,15 @@ def group_card_kb(group: Group) -> InlineKeyboardMarkup:
         ]
     )
     rows.append([
-        InlineKeyboardButton(text="🛡 Posbon", callback_data=PolicyCB(
+        InlineKeyboardButton(text="🛡 Xavfsizlik", callback_data=PolicyCB(
             action="home", group_id=group.id, value="guard").pack()),
-        InlineKeyboardButton(text="🧹 Tozalovchi", callback_data=PolicyCB(
+        InlineKeyboardButton(text="🧹 Tozalash", callback_data=PolicyCB(
             action="home", group_id=group.id, value="cleaner").pack()),
     ])
-    rows.append([
-        InlineKeyboardButton(text="🧮 N kishi sharti", callback_data=CounterAdminCB(
-            action="home", group_id=group.id).pack()),
-        InlineKeyboardButton(text="📣 Kanal a'zoligi", callback_data=CounterAdminCB(
-            action="channels", group_id=group.id).pack()),
-    ])
+    rows.append([InlineKeyboardButton(
+        text="👥 Odam qo'shish sharti / Sanoqchi",
+        callback_data=CounterAdminCB(action="home", group_id=group.id).pack(),
+    )])
     rows.append([InlineKeyboardButton(text="🔑 Guruh ruxsatlari", callback_data=PolicyCB(
         action="perm", group_id=group.id).pack())])
     rows.append(
@@ -206,56 +204,23 @@ def group_features_kb(group: Group) -> InlineKeyboardMarkup:
 
 def group_settings_kb(group: Group, *, old_ads_enabled: bool = False,
                       old_ads_dry_run: bool = False) -> InlineKeyboardMarkup:
-    """Interval, jitter, kunlik limit, tinch soatlar."""
+    """Faqat guruh texnik amallari; tijoriy limitlar tarifda."""
     settings = group.settings
-    quiet_on = bool(settings and settings.quiet_start and settings.quiet_end)
-
     rows = [
-        [
-            InlineKeyboardButton(
-                text="⏱ Joylash intervali",
-                callback_data=GroupCB(action="interval", group_id=group.id).pack(),
-            ),
-            InlineKeyboardButton(
-                text="🔀 Jitter (±%)",
-                callback_data=GroupCB(action="jitter", group_id=group.id).pack(),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="📆 Kunlik limit",
-                callback_data=GroupCB(action="limit", group_id=group.id).pack(),
-            ),
-            InlineKeyboardButton(
-                text=f"{'🌙' if quiet_on else '☀️'} Tinch soatlar",
-                callback_data=GroupCB(action="quiet", group_id=group.id).pack(),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text=f"{'🟢' if (settings and settings.welcome_enabled) else '🔴'} 👋 Salomlashuv",
-                callback_data=FeatureCB(
-                    group_id=group.id,
-                    feature="welcome",
-                    enabled=not (settings and settings.welcome_enabled),
-                    origin="settings",
-                ).pack(),
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text=f"{'🧪' if old_ads_dry_run else '🟢' if old_ads_enabled else '🔴'} 🧹 Eski e'lon nusxalarini o'chirish",
-                callback_data=GroupCB(action="old_ads", group_id=group.id).pack(),
-            )
-        ],
-        [InlineKeyboardButton(text="🧹 Tozalovchi siyosati va jonli tasdiq", callback_data=PolicyCB(
+        [InlineKeyboardButton(
+            text=f"{'🟢' if settings and settings.welcome_enabled else '🔴'} 👋 Salomlashuv",
+            callback_data=FeatureCB(group_id=group.id, feature="welcome",
+                                    enabled=not (settings and settings.welcome_enabled),
+                                    origin="settings").pack(),
+        )],
+        [InlineKeyboardButton(
+            text=f"{'🧪' if old_ads_dry_run else '🟢' if old_ads_enabled else '🔴'} 🧹 Eski nusxalarni tozalash",
+            callback_data=GroupCB(action="old_ads", group_id=group.id).pack(),
+        )],
+        [InlineKeyboardButton(text="🧹 Tozalash: sinov / jonli", callback_data=PolicyCB(
             action="home", group_id=group.id, value="cleaner").pack())],
-        [
-            InlineKeyboardButton(
-                text="◀️ Guruh kartasi",
-                callback_data=GroupCB(action="card", group_id=group.id).pack(),
-            )
-        ],
+        [InlineKeyboardButton(text="◀️ Guruh kartasi", callback_data=GroupCB(
+            action="card", group_id=group.id).pack())],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

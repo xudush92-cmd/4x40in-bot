@@ -358,22 +358,19 @@ async def photo_limit(session: AsyncSession, seller: Seller) -> int:
     subscription = await subscription_service.active_for(session, seller.id)
     limit = None
     if subscription is not None:
-        tariff = subscription.tariff
-        if tariff is not None:
-            limit = tariff.max_photos
+        limit = subscription_service.terms_for(subscription).get("max_photos")
     if not limit:
         limit = int(await settings_service.get("default_max_photos", 3, session) or 3)
     return max(1, min(int(limit), MAX_PHOTOS_HARD))
 
 
 async def moderation_required(session: AsyncSession, category: Category | None) -> bool:
-    """E'lon admin tasdig'ini kutadimi.
+    """Har yangi pullik e'lon mazmuni admin tasdig'ini kutadi.
 
-    Aniq toifa sozlamasi ustun; toifa ko'rsatilmagan bo'lsa global sozlama.
+    Eski toifa flagi tarixiy ma'lumot sifatida qoladi, ammo tasdiqni chetlab
+    o'tadigan yo'l sifatida ishlamaydi.
     """
-    if category is not None:
-        return bool(category.moderation_required)
-    return bool(await settings_service.get("moderation_required_default", False, session))
+    return True
 
 
 async def max_position(session: AsyncSession, category_id: int) -> int:
@@ -547,22 +544,25 @@ async def edited(session: AsyncSession, ad: Ad, *, admin_id: int | None = None) 
 
       * `draft` / `rejected` — qoralama bo'lib qoladi (qayta yuborish kerak);
       * `pending` — qayta tekshiruvga tushadi (allaqachon navbatda edi);
-      * `active` / `paused` — tasdiqlangan e'lon, matn tahriri jurnalga yoziladi.
+      * `active` — tahrir darhol navbatdan chiqadi va qayta tasdiq kutadi;
+      * `paused` — foydalanuvchi/admin Stop'i saqlanadi, Startdan so'ng tasdiq kutadi.
     """
     if ad.status == AdStatus.REJECTED:
         ad.status = AdStatus.DRAFT
         ad.reject_reason = None
-    elif ad.status == AdStatus.PENDING:
+    elif ad.status in (AdStatus.PENDING, AdStatus.ACTIVE, AdStatus.PAUSED):
+        previous = ad.status
+        if previous == AdStatus.ACTIVE:
+            ad.status = AdStatus.PENDING
+        ad.approved_at = None
+        ad.approved_by = None
+        ad.next_eligible_at = None
         ad.submitted_at = utcnow()
-    elif ad.status in (AdStatus.ACTIVE, AdStatus.PAUSED):
-        session.add(
-            ModerationLog(
-                ad_id=ad.id,
-                admin_id=admin_id,
-                decision="revised",
-                reason="Sotuvchi e'lonni tahrirladi",
-            )
-        )
+        if previous in (AdStatus.ACTIVE, AdStatus.PAUSED):
+            session.add(ModerationLog(
+                ad_id=ad.id, admin_id=admin_id, decision="revised",
+                reason="Sotuvchi e'lonni tahrirladi; qayta tasdiq zarur",
+            ))
     await session.flush()
 
 
@@ -600,11 +600,13 @@ async def can_submit(
 
 # ═══════════════════ Holatni o'zgartirish (sotuvchi) ═══════════════
 async def submit(session: AsyncSession, seller: Seller, ad: Ad) -> tuple[bool, str]:
-    """E'lonni yuborish: limitdan hisoblash + moderatsiya rejimiga qarab holat.
+    """E'lonni yuborish: limitdan bir marta hisoblash va admin navbatiga qo'yish.
 
     Qaytaradi: (muvaffaqiyat, xabar/holat).
     """
 
+    if ad.status != AdStatus.DRAFT or ad.seller_id != seller.id:
+        return False, "Bu e'lon allaqachon yuborilgan; yangi tahrirni admin tasdiqlaydi."
     ok, reason = await can_submit(session, seller, ad)
     if not ok:
         return False, reason
@@ -620,25 +622,19 @@ async def submit(session: AsyncSession, seller: Seller, ad: Ad) -> tuple[bool, s
             "Tarifni yangilang."
         )
 
-    category = await category_of(session, ad)
-    needs_moderation = await moderation_required(session, category)
     ad.submitted_at = utcnow()
-
-    if needs_moderation:
-        ad.status = AdStatus.PENDING
-        ad.reject_reason = None
-        state = AdStatus.PENDING
-    else:
-        ad.status = AdStatus.ACTIVE
-        ad.approved_at = utcnow()
-        state = AdStatus.ACTIVE
+    ad.status = AdStatus.PENDING
+    ad.approved_at = None  # eski tasdiq rad/tahrir bilan qayta qo'llanmasin
+    ad.approved_by = None
+    ad.next_eligible_at = None
+    ad.reject_reason = None
 
     await session.flush()
     logger.info(
         "E'lon yuborildi: ad={} sotuvchi={} holat={} (subscription={})",
-        ad.id, seller.id, state, subscription.id,
+        ad.id, seller.id, AdStatus.PENDING, subscription.id,
     )
-    return True, state
+    return True, AdStatus.PENDING
 
 
 async def pause(session: AsyncSession, ad: Ad) -> bool:
@@ -652,9 +648,17 @@ async def pause(session: AsyncSession, ad: Ad) -> bool:
 
 async def resume(session: AsyncSession, ad: Ad) -> bool:
     """▶️ Pauzadan qaytarish (obuna faol bo'lishi shart)."""
-    if ad.status != AdStatus.PAUSED:
+    if ad.status != AdStatus.PAUSED or ad.admin_paused:
         return False
-    ad.status = AdStatus.ACTIVE
+    subscription = await subscription_service.active_for(session, ad.seller_id)
+    if subscription is None:
+        return False
+    if ad.approved_at is None:
+        ad.status = AdStatus.PENDING
+        ad.next_eligible_at = None
+    else:
+        ad.status = AdStatus.ACTIVE
+        ad.next_eligible_at = utcnow() + timedelta(seconds=subscription_service.interval_for(subscription))
     await session.flush()
     return True
 
@@ -692,12 +696,18 @@ async def hard_delete_empty_draft(session: AsyncSession, ad: Ad) -> bool:
 
 # ═══════════════════ Moderatsiya (admin tomoni) ════════════════════
 async def approve(session: AsyncSession, ad: Ad, admin_id: int | None) -> bool:
-    """✅ Tasdiqlash → e'lon navbatga qo'shiladi."""
-    if ad.status not in (AdStatus.PENDING, AdStatus.PAUSED):
+    """✅ Tasdiqlash → faqat sotuvchining ▶️ Startidan keyin navbatga qo'shiladi."""
+    if ad.status != AdStatus.PENDING:
         return False
-    ad.status = AdStatus.ACTIVE
+    valid, _ = await validate_for_submit(session, ad)
+    if not valid:
+        return False
+    # Moderatsiya Start emas: sotuvchi Start bosguncha birinchi post bo'lmasin.
+    ad.status = AdStatus.PAUSED
+    ad.admin_paused = False
     ad.approved_by = admin_id
     ad.approved_at = utcnow()
+    ad.next_eligible_at = None
     ad.reject_reason = None
     session.add(ModerationLog(ad_id=ad.id, admin_id=admin_id, decision="approved"))
     await session.flush()
@@ -726,11 +736,30 @@ async def reject(
     return True
 
 
+async def admin_resume(session: AsyncSession, ad: Ad, admin_id: int | None) -> bool:
+    """Admin pauzasini bekor qilish; tasdiq bo'lmagan e'lon navbatga kirmaydi."""
+    if ad.status != AdStatus.PAUSED or not ad.admin_paused:
+        return False
+    ad.admin_paused = False
+    subscription = await subscription_service.active_for(session, ad.seller_id)
+    if ad.approved_at is None:
+        ad.status = AdStatus.PENDING
+        ad.next_eligible_at = None
+    elif subscription is not None:
+        ad.status = AdStatus.ACTIVE
+        ad.next_eligible_at = utcnow() + timedelta(seconds=subscription_service.interval_for(subscription))
+    # Obuna tugagan bo'lsa PAUSED qoladi; sotuvchi yangi tarifdan keyin Start qiladi.
+    session.add(ModerationLog(ad_id=ad.id, admin_id=admin_id, decision="resumed"))
+    await session.flush()
+    return True
+
+
 async def admin_pause(session: AsyncSession, ad: Ad, admin_id: int | None, reason: str | None = None) -> bool:
     """Admin tomonidan to'xtatish (shikoyat bo'lganda)."""
     if ad.status not in (AdStatus.ACTIVE, AdStatus.PENDING):
         return False
     ad.status = AdStatus.PAUSED
+    ad.admin_paused = True
     session.add(
         ModerationLog(
             ad_id=ad.id, admin_id=admin_id, decision="paused", reason=clean_text(reason, limit=300)
@@ -813,6 +842,7 @@ __all__ = [
     "daily_post_counts",
     "add_photo",
     "admin_pause",
+    "admin_resume",
     "approve",
     "can_submit",
     "category_of",

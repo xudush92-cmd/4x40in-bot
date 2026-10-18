@@ -1,5 +1,8 @@
 # Boshqaruv panellari, limitlar va sotuvchilik arizasi — loyiha rejasi
 
+> **ARXIV (UX-0/1/2/3):** Quyidagi eski ariza sharti, kanal paneli, guruh/toifa intervali va kunlik kvota oqimlari joriy kodga tatbiq etilmaydi. Hozir pullik tarifni oddiy foydalanuvchi ham oldindan arizasiz oladi; bot faqat guruhlar uchun. Amaldagi yo‘l: [YANGI_ELON_OQIMI.md](YANGI_ELON_OQIMI.md) va [ADMIN_QOLLANMA.md](ADMIN_QOLLANMA.md). Tarixiy qarorlar o‘chirilmay, oldingi bosqichlarni tushunish uchun saqlangan.
+
+
 **Holat:** UX-0 rejasi, limitlar ×10/rolli yo‘riqnoma va **UX-1 admin navigatsiyasi** joriy qilindi. Foydalanuvchi 2026-10-16da UX-1/2/3ning barchasiga ruxsat berdi. **UX-2 sotuvchilik arizasi** kod va SQLite/soxta Telegram sinovlarida bajarildi; UX-3 kabineti keyingi ish. Jonli Replit/deploy bu ruxsatga kirmaydi.
 
 **Doira:** `SHOP_BOT/`; `AVTO_BOT/`, `main` va jonli Replit muhitiga tegilmaydi.

@@ -26,6 +26,7 @@ MAX_DESC_LEN = 500
 MIN_DURATION_DAYS, MAX_DURATION_DAYS = 1, 36500
 MIN_ADS, MAX_ADS = 1, 10000
 MIN_PHOTOS, MAX_PHOTOS = 1, 10  # Telegram albomi: oshirilmaydi
+MIN_INTERVAL_SEC, MAX_INTERVAL_SEC = 60, 86400  # 1 min — 24 soat
 # Numeric(12, 2) maydonining 10 xonali butun qismiga sig'adi.
 MAX_PRICE = Decimal("9999999990")
 
@@ -53,7 +54,8 @@ async def list_all_active(session: AsyncSession) -> list[Tariff]:
     return list(
         (
             await session.execute(
-                select(Tariff).where(Tariff.is_active.is_(True)).order_by(Tariff.position, Tariff.id)
+                select(Tariff).where(Tariff.is_active.is_(True), Tariff.price > 0,
+                                     Tariff.is_trial.is_(False)).order_by(Tariff.position, Tariff.id)
             )
         ).scalars().all()
     )
@@ -108,6 +110,7 @@ async def create_tariff(
     duration_days: int = 30,
     max_ads: int = 5,
     max_photos: int = 3,
+    interval_sec: int = 1800,
     description: str | None = None,
     is_trial: bool = False,
     created_by: int | None = None,  # kelajak uchun (audit)
@@ -128,6 +131,7 @@ async def create_tariff(
         duration_days=validate_days(duration_days),
         max_ads=validate_ads(max_ads),
         max_photos=validate_photos(max_photos),
+        interval_sec=validate_interval(interval_sec),
         is_active=True,
         is_trial=bool(is_trial),
         position=await _next_position(session),
@@ -177,6 +181,12 @@ async def update_tariff(session: AsyncSession, tariff: Tariff, **fields: Any) ->
         photos = validate_photos(int(value))
         if tariff.max_photos != photos:
             tariff.max_photos = photos
+            changed = True
+
+    if (value := fields.get("interval_sec")) is not None:
+        interval = validate_interval(int(value))
+        if tariff.interval_sec != interval:
+            tariff.interval_sec = interval
             changed = True
 
     if (value := fields.get("is_trial")) is not None:
@@ -353,6 +363,17 @@ def validate_photos(value: int) -> int:
     return max(MIN_PHOTOS, min(MAX_PHOTOS, int(value)))
 
 
+def validate_interval(value: int) -> int:
+    if not MIN_INTERVAL_SEC <= int(value) <= MAX_INTERVAL_SEC:
+        raise ValueError("Joylash oralig'i 1–1440 daqiqa bo'lishi kerak.")
+    return int(value)
+
+
+def format_interval(seconds: int | None) -> str:
+    value = seconds or 1800
+    return f"{value // 3600} soat {value % 3600 // 60} daqiqa" if value >= 3600 else f"{value // 60} daqiqa"
+
+
 def format_price(tariff: Tariff) -> str:
     # Eslatma: bazaga yozilmagan obyektda `currency` bo'sh bo'lishi mumkin
     return fmt_amount(tariff.price, tariff.currency or "UZS")
@@ -368,7 +389,8 @@ def tariffs_label(tariff: Tariff, limit: int = 22) -> str:
 def limits_line(tariff: Tariff) -> str:
     return (
         f"{format_price(tariff)} · {tariff.duration_days} kun · "
-        f"📢 {tariff.max_ads} e'lon · 🖼 {tariff.max_photos} rasm"
+        f"📢 {tariff.max_ads} e'lon · 🖼 {tariff.max_photos} rasm · "
+        f"⏱ {format_interval(tariff.interval_sec)}"
     )
 
 

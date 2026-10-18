@@ -107,7 +107,7 @@ async def create_category(
     emoji: str | None = None,
     group_id: int | None = None,
     description: str | None = None,
-    moderation_required: bool = False,
+    moderation_required: bool = True,
     created_by: int | None = None,
 ) -> Category | None:
     """Toifa yaratish. Nom bo'sh bo'lsa None qaytaradi."""
@@ -125,7 +125,7 @@ async def create_category(
         emoji=emoji,
         description=clean_text(description, limit=500),
         group_id=group_id,
-        moderation_required=moderation_required,
+        moderation_required=True,  # tarixiy flag endi ixtiyoriy emas
         position=await _next_position(session),
         created_by=created_by,
         is_active=True,
@@ -236,26 +236,18 @@ async def set_active(session: AsyncSession, category: Category, active: bool) ->
 
 
 async def set_moderation(session: AsyncSession, category: Category, required: bool) -> None:
-    category.moderation_required = required
+    """Eski API tasdiqni chetlab o'tolmaydi."""
+    if not required:
+        raise ValueError("Har yangi e'lon uchun admin moderatsiyasi majburiy.")
+    category.moderation_required = True
     await session.flush()
 
 
 async def set_interval_override(session: AsyncSession, category: Category, seconds: int | None) -> None:
-    """Toifa intervali o'zgarsa, keyingi post vaqti ham qayta hisoblanadi."""
-    category.interval_override = seconds
-    await session.flush()
-    if category.group_id is not None:
-        from app.services.group_service import recompute_next_post
-        from app.utils.time import next_run_time
-
-        group = await session.get(Group, category.group_id)
-        if group is not None and group.settings is not None:
-            if category.rotation is not None:
-                category.rotation.next_post_at = next_run_time(
-                    seconds or group.settings.interval_sec,
-                    jitter_ratio=group.settings.jitter_percent / 100,
-                ) if category.rotation.last_post_at is not None else None
-            await recompute_next_post(session, group)
+    """Eski override'ni faqat tozalash mumkin; tijoriy interval tarifda."""
+    if seconds is not None:
+        raise ValueError("Joylash oralig'i toifada emas, tarifda boshqariladi.")
+    category.interval_override = None
     await session.flush()
 
 

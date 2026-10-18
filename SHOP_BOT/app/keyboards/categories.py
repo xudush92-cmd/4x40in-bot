@@ -76,16 +76,6 @@ def category_card_kb(category: Category) -> InlineKeyboardMarkup:
                 text=f"{'🟢 Faol' if category.is_active else '⏸ To‘xtatilgan'}",
                 callback_data=CategoryCB(action="active", category_id=category.id).pack(),
             ),
-            InlineKeyboardButton(
-                text=f"{'✅' if category.moderation_required else '⚪️'} Moderatsiya",
-                callback_data=CategoryCB(action="moderation", category_id=category.id).pack(),
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="⏱ Alohida interval",
-                callback_data=CategoryCB(action="interval", category_id=category.id).pack(),
-            )
         ],
         [
             InlineKeyboardButton(

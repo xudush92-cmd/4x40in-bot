@@ -36,27 +36,13 @@ def seller_menu_kb(*, has_subscription: bool = False, ads_count: int = 0,
             text="➕ Yangi e'lon", callback_data=SellerPanelCB(action="new_ad").pack(),
         )])
     rows.extend([
-        [InlineKeyboardButton(
-            text="📅 Mening tarifim", callback_data=SellerPanelCB(action="tariff").pack(),
-        ), InlineKeyboardButton(
-            text="🧾 To'lovlarim", callback_data=SellerPanelCB(action="payments").pack(),
-        )],
-        [InlineKeyboardButton(
-            text="💳 Tariflarni ko'rish / olish", callback_data=SellerPanelCB(action="tariffs").pack(),
-        ), InlineKeyboardButton(
-            text="👤 Aloqa ma'lumotlari", callback_data=SellerPanelCB(action="profile").pack(),
-        )],
+        [InlineKeyboardButton(text="💳 Tarif tanlash / olish",
+                              callback_data=SellerPanelCB(action="tariffs").pack()),
+         InlineKeyboardButton(text="🧾 To'lovlarim",
+                              callback_data=SellerPanelCB(action="payments").pack())],
+        [InlineKeyboardButton(text="☎️ Aloqa va yordam",
+                              callback_data=SellerPanelCB(action="support").pack())],
     ])
-    rows.append(
-        [
-            InlineKeyboardButton(
-                text="🎁 Referal", callback_data=SellerPanelCB(action="referral").pack()
-            ),
-            InlineKeyboardButton(
-                text="☎️ Yordam", callback_data=SellerPanelCB(action="support").pack()
-            ),
-        ]
-    )
     rows.append([InlineKeyboardButton(
         text="📖 Foydalanish yo'riqnomasi", callback_data=GuideCB().pack()
     )])

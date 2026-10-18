@@ -10,7 +10,6 @@ Asosiy qoidalar:
 from __future__ import annotations
 
 import secrets
-import string
 from typing import Any
 
 from loguru import logger
@@ -167,8 +166,6 @@ async def get_or_create_seller(
 ) -> tuple[Seller, bool]:
     """Sotuvchini qo'shish yoki mavjudini yangilash. (seller, yangi_yaratildi)."""
     seller = await get_seller(session, user_id)
-    created = seller is None
-
     if seller is None:
         seller = Seller(
             user_id=user_id,

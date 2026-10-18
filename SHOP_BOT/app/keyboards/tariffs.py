@@ -7,7 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.db.models import Tariff
 from app.keyboards.callbacks import AdminCB, TariffCB
 from app.keyboards.common import confirm_row, nav_row
-from app.services.tariff_service import format_price, tariffs_label
+from app.services.tariff_service import format_interval, format_price, tariffs_label
 
 MENU_BUTTON = InlineKeyboardButton(
     text="◀️ Boshqaruv paneli", callback_data=AdminCB(action="menu").pack()
@@ -70,6 +70,12 @@ def tariff_card_kb(tariff: Tariff, *, subs: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
+                text=f"⏱ {format_interval(tariff.interval_sec)} — o'zgartirish",
+                callback_data=TariffCB(action="interval", tariff_id=tariff.id).pack(),
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 text="✏️ Nom", callback_data=TariffCB(action="rename", tariff_id=tariff.id).pack()
             ),
             InlineKeyboardButton(
@@ -90,10 +96,6 @@ def tariff_card_kb(tariff: Tariff, *, subs: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(
                 text="⏸ To'xtatish" if tariff.is_active else "▶️ Yoqish",
                 callback_data=TariffCB(action="active", tariff_id=tariff.id).pack(),
-            ),
-            InlineKeyboardButton(
-                text="🎁 Sinov: ✅" if tariff.is_trial else "🎁 Sinov: —",
-                callback_data=TariffCB(action="trial", tariff_id=tariff.id).pack(),
             ),
         ],
         [

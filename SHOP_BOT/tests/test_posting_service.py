@@ -41,7 +41,8 @@ async def setup(session, *, count: int = 3, interval: int = 1800,
     cat = Category(name="Telefonlar", group_id=group.id, position=1000,
                    rotation=CategoryRotation(is_paused=False))
     seller = Seller(user_id=987654321, status=SellerStatus.ACTIVE)
-    tariff = Tariff(name="Test", max_ads=count, max_photos=3)
+    tariff = Tariff(name="Test", price=120000, max_ads=count, max_photos=3,
+                    interval_sec=interval)
     session.add_all([cat, seller, tariff])
     await session.flush()
     subscription = Subscription(
@@ -52,7 +53,8 @@ async def setup(session, *, count: int = 3, interval: int = 1800,
     session.add(subscription)
     ads = [
         Ad(seller_id=seller.id, category_id=cat.id, group_id=group.id,
-           title=f"E'lon {i}", status=AdStatus.ACTIVE, position=i * 100)
+           title=f"E'lon {i}", status=AdStatus.ACTIVE, position=i * 100,
+           next_eligible_at=now - timedelta(seconds=5))
         for i in range(1, count + 1)
     ]
     session.add_all(ads)
@@ -141,11 +143,7 @@ def test_time_math_quiet_day_night_and_minimum(monkeypatch) -> None:
     assert p.quiet_until(now, "09:00", "17:00", tz) is None
     assert p.quiet_until(datetime(2026, 10, 15, 7, tzinfo=UTC), "09:00", "17:00", tz) == datetime(2026, 10, 15, 12, tzinfo=UTC)
     assert p.quiet_until(now, "23:00", "23:00", tz) is None
-    monkeypatch.setattr(p.random, "uniform", lambda low, high: low)
-    assert p.next_interval(now, 60, 30) == now + timedelta(seconds=60)
-    assert p.next_interval(now, 100, 10) == now + timedelta(seconds=90)
-    monkeypatch.setattr(p.random, "uniform", lambda low, high: high)
-    assert p.next_interval(now, 100, 10) == now + timedelta(seconds=110)
+
 
 
 async def test_claim_is_atomic_and_stale_sending_never_resends(session) -> None:
@@ -226,46 +224,39 @@ async def test_three_known_send_errors_trigger_auto_pause(session) -> None:
             assert group.paused_reason == "error" and group.rotation.next_post_at is None
 
 
-async def test_quiet_hours_and_daily_cap_defer_without_claim(session) -> None:
-    now = datetime(2026, 10, 15, 18, 30, tzinfo=UTC)
-    group, _, _, _, _, _ = await setup(session, now=now)
-    group.settings.quiet_start = "23:00"
-    group.settings.quiet_end = "08:00"
-    claim, result = await p.claim_post(session, group.id, now)
-    assert claim is None and result.status == "deferred"
-    assert ensure_aware(group.rotation.next_post_at) == datetime(2026, 10, 16, 3, tzinfo=UTC)
-    group.settings.quiet_start = None
-    group.settings.quiet_end = None
-    group.rotation.next_post_at = now - timedelta(seconds=1)
+async def test_legacy_quiet_hours_and_daily_cap_do_not_defer_personal_due(session) -> None:
+    now = utcnow()
+    group, _, ads, _, _, _ = await setup(session, now=now)
+    group.settings.quiet_start = "00:00"
+    group.settings.quiet_end = "23:59"
     group.rotation.today_date = p.local_day(now, p.timezone_for("Asia/Tashkent"))
     group.rotation.today_count = group.settings.daily_post_limit
     await session.flush()
     claim, result = await p.claim_post(session, group.id, now)
-    assert claim is None and result.status == "deferred"
-    assert ensure_aware(group.rotation.next_post_at) == p.tomorrow(now, p.timezone_for("Asia/Tashkent"))
-    assert (await session.execute(select(func.count()).select_from(PostLog))).scalar_one() == 0
+    assert claim and claim.ad_id == ads[0].id and result.status == "claimed"
+    assert (await session.execute(select(func.count()).select_from(PostLog))).scalar_one() == 1
 
 
-async def test_empty_queue_pauses_but_future_eligible_defers(session) -> None:
+async def test_empty_paid_queue_stays_on_and_reports_next_personal_due(session) -> None:
     group, _, ads, _, _, _ = await setup(session, count=1)
     now = utcnow()
     ads[0].next_eligible_at = now + timedelta(minutes=10)
     await session.flush()
     claim, result = await p.claim_post(session, group.id, now)
-    assert claim is None and result.status == "deferred"
+    assert claim is None and result.status == "empty" and not result.notify
     assert group.is_active is True
     assert ensure_aware(group.rotation.next_post_at) == ads[0].next_eligible_at
     ads[0].status = AdStatus.PAUSED
     group.rotation.next_post_at = now - timedelta(seconds=1)
     await session.flush()
     claim, result = await p.claim_post(session, group.id, now)
-    assert claim is None and result.status == "empty" and result.notify
-    assert group.is_active is False and group.settings.posting_enabled is False
-    await session.flush()
-    assert (await session.execute(select(PostLog))).scalar_one().status == "skipped"
+    assert claim is None and result.status == "empty" and not result.notify
+    assert group.is_active and group.settings.posting_enabled
+    assert group.rotation.next_post_at is None
+    assert (await session.execute(select(func.count()).select_from(PostLog))).scalar_one() == 0
 
 
-async def test_manual_claim_validates_group_and_minute_gap(session) -> None:
+async def test_manual_claim_bypasses_personal_due_but_not_group_or_ad_pause(session) -> None:
     group, cat, ads, _, _, _ = await setup(session, count=1)
     now = utcnow()
     group.rotation.next_post_at = now + timedelta(days=1)
@@ -276,8 +267,8 @@ async def test_manual_claim_validates_group_and_minute_gap(session) -> None:
     group.rotation.last_post_at = now
     await session.flush()
     claim, result = await p.claim_post(session, group.id, now + timedelta(seconds=1), force_ad_id=ads[0].id)
-    assert claim is None and result.status == "deferred"
-    group.rotation.last_post_at = None
+    assert claim is not None and result.status == "claimed"  # eski 1 minutlik tijoriy to'siq yo'q
+    await p.abandon_post(session, claim, now + timedelta(seconds=1))
     ads[0].status = AdStatus.PAUSED
     await session.flush()
     claim, result = await p.claim_post(session, group.id, now, force_ad_id=ads[0].id)

@@ -17,16 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import (
     FEATURE_LABELS,
-    MAX_DAILY_POST_LIMIT,
-    MAX_INTERVAL_SEC,
-    MAX_JITTER_PERCENT,
-    MIN_INTERVAL_SEC,
-    MIN_JITTER_PERCENT,
     GroupFeature,
 )
-from app.db.models import ActionLog, Ad, Category, Group, GroupRotation, GroupSettings
-from app.utils.text import clamp
-from app.utils.time import next_run_time, utcnow
+from app.db.models import ActionLog, Ad, Category, Group, GroupRotation, GroupSettings, PostLog
+from app.utils.time import utcnow
 
 # Bot uchun majburiy admin huquqlari (REJA.md 1 — Guruhlar)
 REQUIRED_RIGHTS: dict[str, str] = {
@@ -35,8 +29,8 @@ REQUIRED_RIGHTS: dict[str, str] = {
 }
 
 OPTIONAL_RIGHTS: dict[str, str] = {
-    # Guruhning «A'zo qo'shish» tugmasi botning shaxsiy havola yaratish
-    # huquqiga bog'liq emas; link manbasi yoqilsa uning servisi alohida tekshiradi.
+    # Guruhdagi «A'zo qo'shish» botning taklif havolasi yaratish huquqiga
+    # bog'liq emas. Eski link manbasi endi N kreditiga kirmaydi.
     "can_invite_users": "Taklif havolalari yaratish",
     "can_pin_messages": "Xabarlarni qadash",
     "can_change_info": "Guruh ma'lumotlarini o'zgartirish",
@@ -299,33 +293,26 @@ async def count_groups_by_status(session: AsyncSession) -> tuple[int, int]:
 
 
 # ─────────────────────────── Sozlamalar ────────────────────────────
-async def recompute_next_post(session: AsyncSession, group: Group, *, delay_min_sec: int | None = None) -> None:
-    """Keyingi joylash vaqtini guruh sozlamalari asosida hisoblash."""
-    # Guruh shu sessiyada yangidan yaratilgan bo'lsa relationship hali
-    # yuklanmagan bo'lishi mumkin — async lazy-load (MissingGreenlet) bo'lmasin.
+async def recompute_next_post(session: AsyncSession, group: Group) -> None:
+    """Faqat diagnostika va texnik lease: shaxsiy due'ni bloklamaydi."""
     rotation = await session.get(GroupRotation, group.id)
+    settings = await session.get(GroupSettings, group.id)
     if rotation is None:
         return
-
-    settings = await session.get(GroupSettings, group.id)
+    sending = (await session.execute(select(PostLog.id).where(
+        PostLog.group_id == group.id, PostLog.status == "sending",
+    ).limit(1))).scalar_one_or_none()
+    if sending is not None:
+        return  # in-flight claim lease'ini o'zgartirmaymiz
     if settings is None or not settings.posting_enabled or not group.is_active:
         rotation.next_post_at = None
         return
-
-    # Bir guruhda bir nechta toifa bo'lishi mumkin: eng yaqin toifa intervali
-    # guruhni uyg'otadi, category_rotation esa o'z intervalini alohida saqlaydi.
-    intervals = (await session.execute(
-        select(Category.interval_override).where(
-            Category.group_id == group.id, Category.is_active.is_(True)
-        )
-    )).scalars().all()
-    shortest = min((int(value or settings.interval_sec) for value in intervals), default=settings.interval_sec)
-    minimum = delay_min_sec if delay_min_sec is not None else MIN_INTERVAL_SEC
-    rotation.next_post_at = next_run_time(
-        shortest,
-        jitter_ratio=clamp(settings.jitter_percent, MIN_JITTER_PERCENT, MAX_JITTER_PERCENT) / 100,
-        minimum_sec=max(MIN_INTERVAL_SEC, minimum),
-    )
+    await session.flush()  # autoflush=False: shu tranzaksiyadagi due ko‘rinsin
+    rotation.next_post_at = (await session.execute(select(func.min(Ad.next_eligible_at))
+        .join(Category, Category.id == Ad.category_id)
+        .where(Category.group_id == group.id, Category.is_active.is_(True),
+               Ad.status == "active", Ad.admin_paused.is_(False),
+               Ad.next_eligible_at.is_not(None)))).scalar_one()
 
 
 async def set_feature(
@@ -356,7 +343,7 @@ async def set_feature(
             for category in categories:
                 if category.rotation and not category.rotation.is_paused:
                     category.rotation.next_post_at = None
-        await recompute_next_post(session, group, delay_min_sec=5 if enabled else None)
+        await recompute_next_post(session, group)
         if enabled and group.settings.free_ads_enabled:
             from app.services.free_ad_service import rebase_group_due
 
@@ -401,42 +388,11 @@ async def set_setting(
     field_name: str,
     value: Any,
 ) -> None:
-    """Guruh sozlamasini yangilash (+ joylash vaqtini qayta hisoblash)."""
-    if group.settings is None:
-        return
+    """Faqat guruhning tijoriy bo'lmagan sozlamalari."""
+    if group.settings is None or field_name not in {"protect_content", "timezone"}:
+        raise ValueError("Bu sozlama guruhda emas, tarif yoki bepul rejada boshqariladi.")
     setattr(group.settings, field_name, value)
-    if field_name in ("interval_sec", "jitter_percent"):
-        categories = (await session.execute(
-            select(Category).where(Category.group_id == group.id, Category.is_active.is_(True))
-        )).scalars().all()
-        for category in categories:
-            if category.rotation is not None:
-                category.rotation.next_post_at = (
-                    next_run_time(
-                        category.interval_override or group.settings.interval_sec,
-                        jitter_ratio=clamp(group.settings.jitter_percent, 0, MAX_JITTER_PERCENT) / 100,
-                    ) if category.rotation.last_post_at is not None else None
-                )
-        await recompute_next_post(session, group)
-        if field_name == "interval_sec" and group.settings.free_ads_enabled:
-            from app.services.free_ad_service import rebase_group_due
-
-            await rebase_group_due(session, group)
     await session.flush()
-
-
-def validate_interval_minutes(minutes: int) -> int:
-    """Daqiqani sekundga aylantirish va chegaralarni tekshirish."""
-    seconds = minutes * 60
-    return clamp(seconds, MIN_INTERVAL_SEC, MAX_INTERVAL_SEC)
-
-
-def validate_jitter(percent: int) -> int:
-    return clamp(percent, MIN_JITTER_PERCENT, MAX_JITTER_PERCENT)
-
-
-def validate_daily_limit(limit: int) -> int:
-    return clamp(limit, 1, MAX_DAILY_POST_LIMIT)
 
 
 # ─────────────────────── Pauza / o'chirish ─────────────────────────
@@ -465,7 +421,7 @@ async def resume_group(session: AsyncSession, group: Group, *, enable_posting: b
         for category in categories:
             if category.rotation and not category.rotation.is_paused:
                 category.rotation.next_post_at = None
-    await recompute_next_post(session, group, delay_min_sec=5)
+    await recompute_next_post(session, group)
     if group.settings and group.settings.free_ads_enabled:
         from app.services.free_ad_service import rebase_group_due
 
@@ -513,7 +469,4 @@ __all__ = [
     "set_feature",
     "set_setting",
     "sync_bot_status",
-    "validate_daily_limit",
-    "validate_interval_minutes",
-    "validate_jitter",
 ]

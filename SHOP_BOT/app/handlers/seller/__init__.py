@@ -93,7 +93,7 @@ async def _tariff_text(seller: Seller, session: AsyncSession) -> tuple[str, bool
     left = subscription_service.days_left(latest)
 
     lines += [
-        f"💳 Tarif: <b>{escape_html(tariff.name if tariff else '—')}</b>",
+        f"💳 Tarif: <b>{escape_html(str(subscription_service.terms_for(latest).get('name') or '—'))}</b>",
         f"📌 Holat: <b>{subscription_service.status_title(latest)}</b>",
         f"📆 Boshlangan: {fmt_date(latest.starts_at)}",
         f"⏳ Tugash sanasi: <b>{fmt_date(latest.expires_at)}</b>",
@@ -110,7 +110,8 @@ async def _tariff_text(seller: Seller, session: AsyncSession) -> tuple[str, bool
         f"📢 E'lon limiti: <b>{latest.ads_used}/{latest.ads_limit}</b> (qoldi {latest.ads_left})",
     ]
     if tariff is not None:
-        lines.append(f"🖼 Har e'londa rasm: <b>{tariff.max_photos}</b> tagacha")
+        lines.append(f"🖼 Har e'londa rasm: <b>{subscription_service.terms_for(latest).get('max_photos')}</b> tagacha")
+        lines.append(f"⏱ Oralig'i: <b>{subscription_service.interval_for(latest) // 60}</b> daqiqa")
         if tariff.description:
             lines.append(f"\n📝 {escape_html(truncate(tariff.description, 200))}")
 
@@ -142,7 +143,8 @@ async def _catalog_text(session: AsyncSession, tariffs: list[Tariff] | None = No
             f"   ├ 💰 {tariff_service.format_price(tariff)}\n"
             f"   ├ 📅 {tariff.duration_days} kun\n"
             f"   ├ 📢 {tariff.max_ads} ta e'lon\n"
-            f"   └ 🖼 har birida {tariff.max_photos} ta rasm"
+            f"   ├ 🖼 har birida {tariff.max_photos} ta rasm\n"
+            f"   └ ⏱ {tariff_service.format_interval(tariff.interval_sec)}"
         )
         if tariff.description:
             lines.append(f"   <i>{escape_html(truncate(tariff.description, 120))}</i>")
@@ -179,14 +181,14 @@ async def _referral_text(seller: Seller, session: AsyncSession, bot: Bot | None 
 
 # ══════════════════════════ Callback'lar ═══════════════════════════
 @seller_router.callback_query(SellerPanelCB.filter(F.action == "menu"))
-async def on_menu(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+async def on_menu(callback: CallbackQuery, session: AsyncSession, state: FSMContext, bot: Bot) -> None:
     """Sotuvchi menyusi (tarif holatiga qarab tugmalar)."""
     await _leave_payment(state)
     seller = await _seller_of(callback, session)
     if seller is None:
         return
 
-    overview = await seller_dashboard.get_overview(session, seller)
+    overview = await seller_dashboard.get_overview(session, seller, bot=bot)
     await render(
         callback,
         "🛒 <b>Mening kabinetim</b>\n━━━━━━━━━━━━━━━━━━━━\n" + overview.text,
@@ -254,12 +256,16 @@ async def on_referral(callback: CallbackQuery, session: AsyncSession, state: FSM
 async def on_support(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     await _leave_payment(state)
     support = await settings_service.get("support_contact", "@admin", session)
+    seller = await _seller_of(callback, session)
+    if seller is None:
+        return
     await render(
         callback,
-        "☎️ <b>Yordam</b>\n"
+        "☎️ <b>Aloqa va yordam</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 Sizning aloqa: {escape_html(seller.contact or seller.phone or 'kiritilmagan')}\n"
         f"Admin bilan bog'lanish: <b>{escape_html(str(support))}</b>\n\n"
-        "<i>Savol, tarif olish yoki muammo bo'lsa shu manzilga yozing.</i>",
+        "<i>O'z aloqangizni o'zgartirish, savol yoki muammo bo'lsa shu manzilga yozing.</i>",
         back_to_menu_kb(),
     )
     await alert(callback, "")
@@ -289,7 +295,7 @@ async def seller_status_text(seller: Seller, session: AsyncSession) -> str:
             return "⛔️ Tarif yo'q — katalogdan tanlang yoki admin bilan bog'laning."
         return f"🔴 Tarif muddati tugagan ({fmt_date(latest.expires_at)}) — yangilash kerak."
 
-    tariff_name = subscription.tariff.name if subscription.tariff else "—"
+    tariff_name = str(subscription_service.terms_for(subscription).get("name") or "—")
     left = days_left(subscription.expires_at)
     return (
         f"💳 <b>{escape_html(tariff_name)}</b>\n"

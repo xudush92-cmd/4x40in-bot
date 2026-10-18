@@ -149,11 +149,11 @@ def ad_card_kb(ad: Ad, *, page: int = 0, status: str = "all") -> InlineKeyboardM
                 ),
             ]
         )
-    elif ad.status == AdStatus.PAUSED:
+    elif ad.status == AdStatus.PAUSED and not ad.admin_paused:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="▶️ Yoqish",
+                    text="▶️ Boshlash",
                     callback_data=AdCB(action="resume", ad_id=ad.id, value=f"{page}|{status}").pack(),
                 ),
                 InlineKeyboardButton(
@@ -162,6 +162,12 @@ def ad_card_kb(ad: Ad, *, page: int = 0, status: str = "all") -> InlineKeyboardM
                 ),
             ]
         )
+
+    elif ad.status == AdStatus.PAUSED:
+        rows.append([InlineKeyboardButton(
+            text="📊 Statistika",
+            callback_data=AdCB(action="stats", ad_id=ad.id, value=f"{page}|{status}").pack(),
+        )])
 
     if ad.status != AdStatus.DELETED:
         rows.append(
@@ -286,15 +292,12 @@ def photos_kb(*, ad_id: int, count: int, limit: int, from_edit: bool = False) ->
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def preview_kb(*, ad_id: int, from_edit: bool = False) -> InlineKeyboardMarkup:
-    """Ko'rish (preview) ekrani: yuborish yoki tahrirlash."""
-    rows = [
-        [
-            InlineKeyboardButton(
-                text="📤 Yuborish", callback_data=AdCB(action="wiz_send", ad_id=ad_id).pack()
-            )
-        ]
-    ]
+def preview_kb(*, ad_id: int, from_edit: bool = False,
+               can_submit: bool = True) -> InlineKeyboardMarkup:
+    """Faqat qoralama yuboriladi; tasdiqlangan/tahrirdagi e'lon slotni takror sarflamaydi."""
+    rows = [[InlineKeyboardButton(
+        text="📤 Yuborish", callback_data=AdCB(action="wiz_send", ad_id=ad_id).pack(),
+    )]] if can_submit else []
     if from_edit:
         rows.insert(
             0,

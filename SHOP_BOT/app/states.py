@@ -7,16 +7,6 @@ class AdminSettingsStates(StatesGroup):
     """Global sozlamalarni tahrirlash."""
 
     waiting_support_contact = State()
-    waiting_interval = State()
-
-
-class AdminGroupStates(StatesGroup):
-    """Guruhlar bo'limi: sozlamalarni qo'lda kiritish (Phase 1)."""
-
-    waiting_interval = State()
-    waiting_jitter = State()
-    waiting_limit = State()
-    waiting_quiet = State()
 
 
 class AdminCategoryStates(StatesGroup):
@@ -24,7 +14,6 @@ class AdminCategoryStates(StatesGroup):
 
     waiting_name = State()
     waiting_rename = State()
-    waiting_interval = State()
     waiting_description = State()
 
 
@@ -69,6 +58,11 @@ class AdminTariffStates(StatesGroup):
     waiting_days = State()
     waiting_ads = State()
     waiting_photos = State()
+    waiting_interval = State()
+
+
+class AdminFreePlanStates(StatesGroup):
+    waiting_interval = State()
 
 
 class SellerAdStates(StatesGroup):
@@ -135,10 +129,9 @@ class AdminPolicyStates(StatesGroup):
 
 
 class AdminCounterStates(StatesGroup):
-    """Phase 7: har guruh sanoqchisi, kanal va qo'lda hisob tuzatish."""
+    """Har guruh sanoqchisi va qo'lda hisob tuzatish."""
 
     waiting_number = State()
-    waiting_channel = State()
     waiting_user = State()
     waiting_adjust = State()
 
