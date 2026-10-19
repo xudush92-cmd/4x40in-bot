@@ -26,6 +26,11 @@ from matcher import find_match
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+try:
+    asyncio.get_event_loop()
+except RuntimeError:  # Python 3.12+ da loop oldindan yaratilgan bo'lishi kerak
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 # O'zbekiston telefon raqamini topish uchun regex

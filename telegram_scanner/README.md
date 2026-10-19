@@ -25,6 +25,44 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
 .venv/bin/python userbot.py  # skaner (1-marta telefon + kod so'raydi)
 ```
 
+## Replitda ishga tushirish
+
+1. Replitda **Import from GitHub** qiling (yoki shu papkadagi fayllarni yuklang).
+2. Chap menyudagi **Secrets (🔒)** bo'limiga quyidagilarni qo'shing —
+   kalitlarni kodga yozmang:
+
+   | Secret nomi | Qiymati |
+   |---|---|
+   | `API_ID` | my.telegram.org dan (faqat raqam) |
+   | `API_HASH` | my.telegram.org dan |
+   | `BOT_TOKEN` | @BotFather dan |
+   | `ADMIN_ID` | @userinfobot dan (faqat raqam) |
+   | `MATCH_THRESHOLD` | ixtiyoriy, masalan `0.70` |
+
+3. **Birinchi marta** Shell (terminal) da userbotni alohida ishga tushirib
+   Telegramga kiring — telefon raqami, kod (va 2FA parol) so'raladi:
+
+   ```bash
+   cd telegram_scanner
+   pip install -r requirements.txt
+   python userbot.py
+   ```
+
+   Kirgach `Ctrl+C` bilan to'xtating — `userbot_session.session` fayli
+   saqlanib qoladi, keyingi safar kod so'ralmaydi.
+   ⚠️ Bu sessiya faylini hech kimga bermang — u akkauntingiz kaliti.
+
+4. Keyin **Run** tugmasini bosing (`.replit` sozlangan) yoki:
+
+   ```bash
+   python main.py
+   ```
+
+   `main.py` bot va userbotni bir vaqtda ishlatadi.
+
+Eslatma: Replit bepul tarifida loyiha "uxlab" qolishi mumkin — bot
+to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
+
 ## Ish tartibi
 
 1. `userbot.py` ishga tushgach, akkaunt a'zo bo'lgan guruhlar bazaga yoziladi.
