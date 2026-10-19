@@ -1,95 +1,68 @@
-"""Matcher testlari (foizsiz, 2–10 so'z, 2/3 ta shart):
+"""Matcher testlari: kalitlar cheksiz, admin soni bo'yicha.
 python -m unittest test_matcher -v"""
 import unittest
 
 from matcher import (
     find_match,
-    match_key_set,
+    match_keywords,
     normalize_tokens,
     parse_key_words,
-    validate_key_words,
 )
 
-SET7 = "toshkent samarqand odam mashina kerak yuk bugun"
-SET4 = "toshkent odam mashina kerak"
+KEYWORDS = ["toshkent", "samarqand", "odam", "mashina", "kerak", "yuk", "bugun"]
 
 
-class TestValidation(unittest.TestCase):
-    def test_word_count_limits(self):
-        self.assertIsNotNone(validate_key_words(["toshkent"]))          # 1 ta — kam
-        self.assertIsNone(validate_key_words(["toshkent", "odam"]))     # 2 ta — OK
-        ten = [f"soz{i}" for i in range(10)]
-        self.assertIsNone(validate_key_words(ten))                      # 10 ta — OK
-        self.assertIsNotNone(validate_key_words(ten + ["ortiqcha"]))    # 11 ta — ko'p
+class TestMatchCount(unittest.TestCase):
+    def test_three_found_of_many(self):
+        r = match_keywords("Toshkentdan odam bor, mashina kerak", KEYWORDS, required_count=3)
+        self.assertTrue(r.is_match)
+        self.assertGreaterEqual(r.matched_count, 3)
 
-    def test_duplicates_counted_once(self):
-        self.assertEqual(parse_key_words("odam odam mashina"), ["odam", "mashina"])
+    def test_below_admin_count_no_match(self):
+        # 2 ta topildi, admin 3 belgilagan — xabar berilmaydi
+        r = match_keywords("Toshkentdan odam bor", KEYWORDS, required_count=3)
+        self.assertFalse(r.is_match)
+        self.assertIsNone(find_match("Toshkentdan odam bor", KEYWORDS, required_count=3))
+
+    def test_admin_count_two(self):
+        self.assertIsNotNone(find_match("Odam bor, mashina bormi?", KEYWORDS, required_count=2))
+
+    def test_admin_count_one(self):
+        self.assertIsNotNone(find_match("Faqat yuk bor", KEYWORDS, required_count=1))
+
+    def test_many_keywords_unlimited(self):
+        many = [f"kalit{i}" for i in range(50)] + KEYWORDS
+        r = match_keywords("Toshkent odam mashina", many, required_count=3)
+        self.assertTrue(r.is_match)
+        self.assertEqual(r.total_words, 57)
+
+    def test_count_larger_than_found(self):
+        r = match_keywords("Toshkent odam", KEYWORDS, required_count=5)
+        self.assertFalse(r.is_match)
+
+
+class TestParsingAndForms(unittest.TestCase):
+    def test_each_word_separate_key(self):
         self.assertEqual(
             parse_key_words("toshkent, odam; mashina"),
             ["toshkent", "odam", "mashina"],
         )
+        self.assertEqual(parse_key_words("odam odam"), ["odam"])
 
-
-class TestRequiredCount(unittest.TestCase):
-    def test_required_3_of_7(self):
-        # 3 ta so'z yetarli
-        r = match_key_set("Toshkentdan odam bor, mashina kerak", SET7, required_count=3)
-        self.assertTrue(r.is_match)
-        self.assertIn("toshkent", r.matched_words)
-
-    def test_below_required_no_match(self):
-        # atigi 2 ta topildi, shart 3 ta — xabar berilmaydi
-        r = match_key_set("Toshkentdan odam bor", SET7, required_count=3)
-        self.assertFalse(r.is_match)
-
-    def test_required_2_of_4(self):
-        r = match_key_set("Odam bor, mashina bormi?", SET4, required_count=2)
-        self.assertTrue(r.is_match)
-
-    def test_below_required_2_no_match(self):
-        r = match_key_set("Faqat odam bor", SET4, required_count=2)
-        self.assertFalse(r.is_match)
-        self.assertEqual(r.matched_count, 1)
-
-    def test_two_word_set_needs_both(self):
-        r = match_key_set("Toshkentdan odam bor", "toshkent odam", required_count=2)
-        self.assertTrue(r.is_match)
-        r = match_key_set("Faqat odam bor", "toshkent odam", required_count=2)
-        self.assertFalse(r.is_match)
-
-
-class TestWordForms(unittest.TestCase):
     def test_plural_and_case_suffix(self):
-        r = match_key_set("Toshkentga odamlar bor", SET4, required_count=2)
+        r = match_keywords("Toshkentga odamlar bor", KEYWORDS, required_count=2)
         self.assertTrue(r.is_match)
 
-    def test_no_percent_attribute(self):
-        r = match_key_set("Toshkent odam mashina", SET4, required_count=2)
-        self.assertFalse(hasattr(r, "percent"))
-
-
-class TestFindMatch(unittest.TestCase):
-    def test_best_set_wins(self):
-        sets = [
-            (SET4, 2),   # 3 ta topiladi
-            (SET7, 3),   # 5 ta topiladi — shu yutadi
-        ]
-        msg = "Toshkent samarqand odam mashina kerak bugun"
-        result = find_match(msg, sets)
-        self.assertIsNotNone(result)
-        self.assertEqual(result.phrase, SET7)
-        self.assertEqual(result.matched_count, 6)
-
-    def test_no_match(self):
-        self.assertIsNone(find_match("Salom, ishlar yaxshimi?", [(SET7, 3)]))
-
-    def test_plain_strings_default_required_2(self):
-        result = find_match("Toshkent odam", [SET4])
-        self.assertIsNotNone(result)
-        self.assertEqual(result.required_count, 2)
+    def test_word_forms_in_message(self):
+        self.assertIsNotNone(
+            find_match("Toshkentdan yuklar ketmoqda, mashina bormi", KEYWORDS, required_count=3)
+        )
 
     def test_normalize_apostrophe(self):
         self.assertEqual(normalize_tokens("Bog‘dod ko'chasi"), ["bog'dod", "ko'chasi"])
+
+    def test_no_keywords_no_match(self):
+        self.assertIsNone(find_match("Toshkent odam mashina", [], required_count=1))
 
 
 if __name__ == "__main__":

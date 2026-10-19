@@ -16,7 +16,8 @@ from config import (
 )
 from database import (
     get_active_groups_ids,
-    get_key_sets,
+    get_keywords,
+    get_match_count,
     get_setting,
     init_db,
     save_groups,
@@ -72,13 +73,15 @@ async def handler(event):
     if event.chat_id not in get_active_groups_ids():
         return
 
-    # 3-4. Ko'p so'zli kalitlarni tekshirish: iboradagi BARCHA so'zlar
-    # xabarda bo'lsa mos hisoblanadi (tartib/oraliq so'zlar muhim emas).
-    # Batafsil: matcher.py
-    found_phrase = find_match(event.raw_text, get_phrases())
+    # 3-4. Kalit so'zlarni tekshirish: kalitlar soni cheksiz, admin
+    # belgilagan soni (match_count) topilsa — xabar beriladi.
+    # Har bir xabarda sozlamadan qayta o'qiladi — admin o'zgartirsa,
+    # qayta ishga tushirmasdan darhol kuchga kiradi. Batafsil: matcher.py
+    match = find_match(event.raw_text, get_keywords(), get_match_count())
 
-    if not found_phrase:
+    if not match:
         return
+    found_phrase = match.matched_words
 
     sender = await event.get_sender()
     # Kanal nomidan yozilgan xabarlarda sender None bo'lishi mumkin
@@ -107,10 +110,9 @@ async def handler(event):
         f"🆔 <b>Telegram ID:</b> <code>{user_id if user_id is not None else '—'}</code>\n"
         f"📞 <b>Telefon:</b> {html.escape(phone)}\n\n"
         f"💬 <b>Xabar matni:</b>\n<i>{html.escape(event.raw_text)}</i>\n\n"
-        f"🔍 <b>Kalitlar to'plami:</b> {html.escape(found_phrase)}\n"
-        f"✅ <b>Topilgan so'zlar ({match.matched_count} ta):</b> "
-        f"{html.escape(', '.join(match.matched_words))}\n"
-        f"🔔 <b>Shart:</b> {match.required_count} ta so'z — bajarildi"
+        f"✅ <b>Topilgan kalitlar ({match.matched_count} ta):</b> "
+        f"{html.escape(', '.join(found_phrase))}\n"
+        f"🔔 <b>Shart:</b> kamida {match.required_count} ta — bajarildi"
     )
 
     # Supergroup ID: -100xxxxxxxxxx -> ichki qism havola uchun

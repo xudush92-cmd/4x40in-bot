@@ -1,28 +1,22 @@
-"""Kalit so'zlar to'plami bo'yicha moslashtirish (foizsiz).
+"""Kalit so'zlar bo'yicha moslashtirish (foizsiz, to'plamsiz).
 
-Har bir so'z — alohida kalit. Bitta to'plam 2 tadan 10 tagacha
-so'zdan iborat bo'ladi, masalan:
-
-    to'plam:  toshkent samarqand odam mashina kerak yuk bugun (7 so'z)
-    shart:    3 ta so'z uchrasa xabar ber
-
-Xabarda to'plamdagi so'zlardan belgilangan soni (2 yoki 3 ta —
-foydalanuvchi to'plam yaratishda tanlaydi) topilsa, xabar haqida
-xabar beriladi. Foiz hisoblanmaydi.
+Model:
+  * Har bir so'z — bitta alohida kalit. Kalitlar soni CHEKSIZ —
+    admin xohlagancha so'z qo'shadi.
+  * Admin bitta son belgilaydi: "nechta kalit so'z topilsa xabar ber".
+    Masalan, son = 3 bo'lsa, xabarda kalitlardan istalgan 3 tasi
+    uchrashi kifoya (qaysi 3 tasi ekanligi muhim emas).
 
 Qo'shimcha imkoniyatlar:
-  * tartib va oradagi boshqa so'zlar ahamiyatsiz;
+  * so'z tartibi va oradagi boshqa so'zlar ahamiyatsiz;
   * katta/kichik harf, tinish belgilari hisobga olinmaydi;
   * so'z shakllari ham taniladi: "odam" ~ "odamlar",
-    "toshkentdan" ~ "toshkentga" (umumiy o'zak bo'yicha).
+    "toshkent" ~ "toshkentdan" / "toshkentga" (umumiy o'zak bo'yicha).
 """
 
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-
-MIN_WORDS = 2
-MAX_WORDS = 10
 
 _TOKEN_RE = re.compile(r"[^\W_]+(?:['’ʻʼ][^\W_]+)*", re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`": "'"})
@@ -30,10 +24,9 @@ _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`":
 
 @dataclass
 class MatchResult:
-    phrase: str  # to'plam matni (so'zlar bo'shliq bilan)
-    required_count: int = 2  # xabar berish uchun kerakli so'zlar soni
-    matched_words: list[str] = field(default_factory=list)
-    total_words: int = 0
+    required_count: int = 3  # admin belgilagan: nechta so'z topilsa xabar beriladi
+    matched_words: list[str] = field(default_factory=list)  # topilgan kalitlar
+    total_words: int = 0  # bazadagi jami kalitlar soni
 
     @property
     def matched_count(self) -> int:
@@ -41,10 +34,7 @@ class MatchResult:
 
     @property
     def is_match(self) -> bool:
-        return (
-            self.total_words >= MIN_WORDS
-            and self.matched_count >= self.required_count
-        )
+        return self.matched_count >= self.required_count >= 1
 
 
 def normalize_tokens(text: str) -> list[str]:
@@ -59,29 +49,13 @@ def normalize_text(text: str) -> str:
 
 
 def parse_key_words(text: str) -> list[str]:
-    """Foydalanuvchi yuborgan matndan to'plam so'zlarini ajratadi.
+    """Foydalanuvchi yuborgan matndan kalit so'zlarni ajratadi.
 
     So'zlar bo'shliq, vergul yoki yangi qator bilan ajratilishi mumkin.
-    Takroriy so'zlar bir marta olinadi.
+    Har bir so'z — alohida kalit. Takrorlar bir marta olinadi.
     """
     cleaned = (text or "").replace(",", " ").replace(";", " ")
     return list(dict.fromkeys(normalize_tokens(cleaned)))
-
-
-def validate_key_words(words: list[str]) -> str | None:
-    """To'plam so'zlarini tekshiradi. Xato bo'lsa matn, bo'lmasa None."""
-    if len(words) < MIN_WORDS:
-        return (
-            f"⚠️ To'plamda kamida {MIN_WORDS} ta kalit so'z bo'lishi kerak. "
-            "So'zlarni bo'shliq bilan yozing, masalan: "
-            "<i>toshkent samarqand odam mashina</i>"
-        )
-    if len(words) > MAX_WORDS:
-        return (
-            f"⚠️ Bitta to'plamda ko'pi bilan {MAX_WORDS} ta so'z bo'ladi, "
-            f"siz {len(words)} ta yozdingiz. Ortiqchasini olib tashlang."
-        )
-    return None
 
 
 def _common_prefix_len(a: str, b: str) -> int:
@@ -102,11 +76,11 @@ def _word_matches(key_word: str, message_word: str) -> bool:
         message_word.startswith(key_word) or key_word.startswith(message_word)
     ):
         return True
-    # toshkentdan ~ toshkentga: uzun umumiy o'zak
+    # toshkent ~ toshkentdan / toshkentga: uzun umumiy o'zak
     prefix = _common_prefix_len(key_word, message_word)
     if prefix >= 5 and prefix >= 0.75 * min(len(key_word), len(message_word)):
         return True
-    # kichik yozuv xatolari: toshkentdan ~ toshketdan
+    # kichik yozuv xatolari: toshkent ~ toshket
     if (
         min(len(key_word), len(message_word)) >= 5
         and SequenceMatcher(None, key_word, message_word).ratio() >= 0.85
@@ -115,29 +89,25 @@ def _word_matches(key_word: str, message_word: str) -> bool:
     return False
 
 
-def match_key_set(
+def match_keywords(
     message_text: str,
-    key_words,
-    required_count: int = 2,
+    keywords,
+    required_count: int = 3,
 ) -> MatchResult:
-    """Xabarda to'plamdan nechta so'z topilganini hisoblaydi.
+    """Xabarda kalitlardan nechtasi topilganini hisoblaydi.
 
-    key_words — so'zlar ro'yxati yoki bo'shliqli matn bo'lishi mumkin.
+    keywords — barcha kalit so'zlar ro'yxati (soni cheksiz).
+    required_count — admin belgilagan chegara (botda o'zgartiriladi).
     """
-    if isinstance(key_words, str):
-        words = parse_key_words(key_words)
-        phrase_text = key_words
-    else:
-        words = list(dict.fromkeys(key_words))
-        phrase_text = " ".join(words)
+    words = list(dict.fromkeys(normalize_tokens(" ".join(keywords or []))))
+    try:
+        required = int(required_count)
+    except (TypeError, ValueError):
+        required = 3
+    required = max(1, required)
 
-    required = max(MIN_WORDS, min(int(required_count or 2), len(words) or 2))
-    result = MatchResult(
-        phrase=phrase_text,
-        required_count=required,
-        total_words=len(words),
-    )
-    if len(words) < MIN_WORDS:
+    result = MatchResult(required_count=required, total_words=len(words))
+    if not words:
         return result
 
     message_tokens = set(normalize_tokens(message_text))
@@ -152,25 +122,11 @@ def match_key_set(
     return result
 
 
-def find_match(message_text: str, key_sets) -> MatchResult | None:
-    """Eng ko'p so'zi topilgan to'plamni qaytaradi (sharti bajarilgani).
-
-    key_sets — (matn, required_count) juftliklari yoki matnlar ro'yxati.
-    Bir nechta to'plam shartni bajarsa, eng ko'p so'zi topilgani
-    tanlanadi (teng bo'lsa — sharti kichikroq, ya'ni osonroq to'plam).
-    """
-    best: MatchResult | None = None
-    for item in key_sets:
-        if isinstance(item, (tuple, list)):
-            text, required = item[0], item[1] if len(item) > 1 else 2
-        else:
-            text, required = item, 2
-        result = match_key_set(message_text, text, required)
-        if not result.is_match:
-            continue
-        if best is None or (result.matched_count, -result.required_count) > (
-            best.matched_count,
-            -best.required_count,
-        ):
-            best = result
-    return best
+def find_match(
+    message_text: str,
+    keywords,
+    required_count: int = 3,
+) -> MatchResult | None:
+    """Chegara bajarilsa MatchResult, bajarilmasa None qaytaradi."""
+    result = match_keywords(message_text, keywords, required_count)
+    return result if result.is_match else None

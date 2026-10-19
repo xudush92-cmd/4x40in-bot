@@ -66,29 +66,34 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 
 1. `userbot.py` ishga tushgach, akkaunt a'zo bo'lgan guruhlar bazaga yoziladi.
 2. Botda **📋 Guruhlar ro'yxati** dan kuzatiladigan guruhlarni yoqing.
-3. **➕ Yangi ibora qo'shish** orqali kalit to'plamlarini qo'shing.
-   Har bir so'z — alohida kalit, bitta to'plamda **2–10 ta so'z** bo'ladi,
-   masalan: `toshkent samarqand odam mashina kerak yuk bugun`.
-   Keyin bot so'raydi: nechta so'z uchrasa xabar beray — **2 ta** yoki **3 ta**.
-4. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni, topilgan
-   so'zlar ro'yxati va asl xabarga havola bilan xabar yuboradi.
+3. **➕ Kalit so'z qo'shish** orqali kalitlar qo'shing. Har bir so'z —
+   alohida kalit, kalitlar soni **cheklanmagan**. Bitta xabarda bir
+   nechta so'z yuborsangiz, har biri alohida kalit bo'lib saqlanadi.
+4. **🔔 Xabar sharti** tugmasida admin bitta son belgilaydi: xabarda
+   kalitlardan kamida nechtasi topilsa xabar berilishi. Sonni xohlagan
+   vaqtda o'zgartirish mumkin — qayta ishga tushirish shart emas.
+5. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni, topilgan
+   kalitlar ro'yxati va asl xabarga havola bilan xabar yuboradi.
 
-### Kalit qanday ishlaydi? (foizsiz — aniq son)
+### Kalit qanday ishlaydi?
 
-Har bir so'z alohida kalit. Xabarda to'plamdagi so'zlardan
-foydalanuvchi belgilagan soni (2 yoki 3 ta) topilsa — xabar beriladi.
-Foiz hisoblanmaydi.
+- Har bir so'z = bitta kalit, umumiy kalitlar sonining ahamiyati yo'q.
+- Admin belgilagan son (standart: **3**) — xabarda kalitlardan istalgan
+  shuncha tasi uchrasa, qaysi kalitlar ekanligidan qat'iy nazar,
+  xabar beriladi. Foiz ham, to'plam ham yo'q.
 
-| To'plam: `toshkent samarqand odam mashina kerak yuk bugun`, shart: 3 ta | Natija |
+| Kalitlar: `toshkent samarqand odam mashina kerak yuk bugun`, shart: 3 | Natija |
 |---|---|
-| "Toshkentdan odam bor, mashina kerak" (3 ta topildi) | ✅ xabar beradi |
+| "Toshkentdan odam bor, mashina kerak" (3+ ta topildi) | ✅ xabar beradi |
 | "Toshkentdan odam bor" (2 ta topildi) | ❌ bermaydi |
 | "Samarqandga yuk kerak" (3 ta topildi) | ✅ xabar beradi |
 
 Qo'shimcha: so'z tartibi va oradagi so'zlar ahamiyatsiz, katta-kichik
 harf/tinish belgilari hisoblanmaydi, so'z shakllari ham taniladi
-(`odam` ~ `odamlar`, `toshkentdan` ~ `toshkentga`). Bir nechta to'plam
-mos kelsa — eng ko'p so'zi topilgani yuboriladi.
+(`odam` ~ `odamlar`, `toshkent` ~ `toshkentdan`).
+
+Eski bazadagi ko'p so'zli yozuvlar avtomatik ravishda alohida
+kalit so'zlarga bo'linadi — ma'lumot yo'qolmaydi.
 
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.

@@ -10,16 +10,12 @@ def _connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     with closing(_connect()) as conn, conn:
-        # Iboralar (kalit to'plamlari) jadvali
+        # Kalit so'zlar jadvali: HAR BIR qatorda BITTA so'z (kalit).
+        # (Jadval nomi tarixiy sabab bilan 'phrases' bo'lib qolgan.)
         conn.execute("""CREATE TABLE IF NOT EXISTS phrases (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             text TEXT UNIQUE)""")
-        # Eski bazalarda required_count ustuni bo'lmasligi mumkin — qo'shamiz
-        columns = [row[1] for row in conn.execute("PRAGMA table_info(phrases)")]
-        if "required_count" not in columns:
-            conn.execute(
-                "ALTER TABLE phrases ADD COLUMN required_count INTEGER DEFAULT 2"
-            )
+        _migrate_old_sets(conn)
         # Guruhlar jadvali
         conn.execute("""CREATE TABLE IF NOT EXISTS groups (
                             chat_id INTEGER PRIMARY KEY,
@@ -33,31 +29,57 @@ def init_db() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
         )
+        # Xabar berish sharti: nechta kalit so'z topilsa xabar beriladi
+        # (admin botdan xohlagan vaqtda o'zgartiradi)
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('match_count', '3')"
+        )
 
 
-def get_key_sets() -> list[tuple[str, int]]:
-    """Kalit to'plamlari: (so'zlar matni, kerakli so'zlar soni)."""
+def _migrate_old_sets(conn) -> None:
+    """Eski 'to'plam' yozuvlarini alohida kalit so'zlarga bo'ladi.
+
+    Avvalgi modelda bitta qatorda bir nechta so'z saqlangan bo'lishi
+    mumkin — har bir so'z alohida kalit qatoriga aylanadi.
+    """
+    from matcher import parse_key_words
+
+    rows = conn.execute("SELECT id, text FROM phrases").fetchall()
+    for row_id, text in rows:
+        words = parse_key_words(text or "")
+        if len(words) <= 1:
+            continue
+        conn.execute("DELETE FROM phrases WHERE id = ?", (row_id,))
+        for word in words:
+            conn.execute(
+                "INSERT OR IGNORE INTO phrases (text) VALUES (?)", (word,)
+            )
+
+
+def get_keywords() -> list[str]:
+    """Barcha kalit so'zlar (soni cheksiz)."""
     with closing(_connect()) as conn:
-        return conn.execute(
-            "SELECT text, COALESCE(required_count, 2) FROM phrases ORDER BY id"
-        ).fetchall()
+        rows = conn.execute("SELECT text FROM phrases ORDER BY id").fetchall()
+    return [row[0] for row in rows]
 
 
+# Eski nomlar (moslik uchun)
 def get_phrases() -> list[str]:
-    return [text for text, _ in get_key_sets()]
+    return get_keywords()
 
 
-def add_phrase(text: str, required_count: int = 2) -> bool:
-    """True — saqlandi, False — bu to'plam allaqachon bor."""
+def add_keyword(word: str) -> bool:
+    """True — saqlandi, False — bu so'z allaqachon kalitlarda bor."""
     try:
         with closing(_connect()) as conn, conn:
-            conn.execute(
-                "INSERT INTO phrases (text, required_count) VALUES (?, ?)",
-                (text, int(required_count)),
-            )
+            conn.execute("INSERT INTO phrases (text) VALUES (?)", (word,))
         return True
     except sqlite3.IntegrityError:
         return False
+
+
+def add_phrase(text: str, required_count: int = 2) -> bool:
+    return add_keyword(text)
 
 
 def delete_phrase(phrase_id: int) -> None:
@@ -65,11 +87,23 @@ def delete_phrase(phrase_id: int) -> None:
         conn.execute("DELETE FROM phrases WHERE id = ?", (phrase_id,))
 
 
-def get_all_phrases_with_id() -> list[tuple[int, str, int]]:
+def get_all_phrases_with_id() -> list[tuple[int, str]]:
     with closing(_connect()) as conn:
         return conn.execute(
-            "SELECT id, text, COALESCE(required_count, 2) FROM phrases ORDER BY id"
+            "SELECT id, text FROM phrases ORDER BY id"
         ).fetchall()
+
+
+def get_match_count() -> int:
+    """Admin belgilagan shart: nechta kalit so'z topilsa xabar beriladi."""
+    with closing(_connect()) as conn:
+        res = conn.execute(
+            "SELECT value FROM settings WHERE key = 'match_count'"
+        ).fetchone()
+    try:
+        return max(1, int(res[0])) if res else 3
+    except (TypeError, ValueError):
+        return 3
 
 
 def save_groups(groups_list) -> None:
