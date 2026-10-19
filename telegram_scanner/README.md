@@ -35,19 +35,32 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
 4. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni va asl xabarga
    havola bilan xabar yuboradi.
 
-### Kalit qanday ishlaydi?
+### Kalit qanday ishlaydi? (70% qoidasi)
 
-Kalitdagi **barcha so'zlar** bitta xabarda uchrasa — xabar topilgan
-hisoblanadi. So'zlar tartibi boshqacha yoki orasida boshqa so'zlar
-bo'lsa ham topadi, lekin bitta so'zi yetishmasa topmaydi:
+Kalit — bir nechta so'zdan iborat to'plam (7, 10 ta va h.k.). Kalitdagi
+so'zlarning **kamida 70%** i bitta xabarda uchrasa, bot o'xshashlik
+foizini ko'rsatib xabar yuboradi:
 
-| Kalit: `toshkentdan odam bor` | Natija |
+| Kalit hajmi | Xabar berilishi uchun kerak |
 |---|---|
-| "Toshkentdan odam bor, tel: ..." | ✅ topadi |
-| "Toshkentdan ertaga 2 ta odam bor ekan" | ✅ topadi |
-| "Odam bor, ertaga Toshkentdan ketaman" | ✅ topadi |
-| "Toshkentdan ketaman" (`odam`, `bor` yo'q) | ❌ topmaydi |
-| "Odam bor" (`toshkentdan` yo'q) | ❌ topmaydi |
+| 7 ta so'z | kamida **5** tasi (71%) |
+| 10 ta so'z | kamida **7** tasi (70%) |
+| 3 ta so'z | 3 tasi ham (2/3 = 66% < 70%) |
+| 2 ta so'z | 2 tasi ham (1/2 = 50% < 70%) |
+
+Chegarani `.env` da `MATCH_THRESHOLD` bilan o'zgartirish mumkin
+(masalan `0.80` — qattiqroq, `0.70` — standart).
+
+Qo'shimcha: so'z tartibi va oradagi so'zlar ahamiyatsiz, katta-kichik
+harf/tinish belgilari hisoblanmaydi, so'z shakllari ham taniladi
+(`odam` ~ `odamlar`, `toshkentdan` ~ `toshkentga`). Bir nechta kalit
+mos kelsa — foizi eng yuqorisi yuboriladi.
+
+| Kalit: `toshkentdan samarqandga odam bor mashina kerak ertaga` (7 so'z) | Natija |
+|---|---|
+| "Toshkentdan odam bor, mashina kerak" (5/7) | ✅ 71% — xabar beradi |
+| "Toshkentdan odam bor, mashina bor" (4/7) | ❌ 57% — bermaydi |
+| "Toshkentga odamlar bor" (kalitga 3 so'zli misolda) | ✅ so'z shakli taniladi |
 
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.

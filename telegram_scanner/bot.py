@@ -114,7 +114,7 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
     if add_phrase(text):
         await message.answer(
             f"✅ Ajoyib! Yangi kalit ibora saqlandi: <b>{html.escape(text)}</b>\n"
-            "Endi skaner shu iboradagi barcha so'zlar uchragan xabarlarni qidiradi.",
+            "Endi skaner shu so'zlarning kamida 70% i uchragan xabarlarni qidiradi.",
             parse_mode="HTML",
             reply_markup=main_menu(),
         )

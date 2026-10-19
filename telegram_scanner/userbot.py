@@ -102,7 +102,9 @@ async def handler(event):
         f"🆔 <b>Telegram ID:</b> <code>{user_id if user_id is not None else '—'}</code>\n"
         f"📞 <b>Telefon:</b> {html.escape(phone)}\n\n"
         f"💬 <b>Xabar matni:</b>\n<i>{html.escape(event.raw_text)}</i>\n\n"
-        f"🔍 <b>Topilgan ibora:</b> {html.escape(found_phrase)}"
+        f"🔍 <b>Topilgan ibora:</b> {html.escape(found_phrase)}\n"
+        f"📊 <b>O'xshashlik:</b> {match.percent}% "
+        f"({match.matched_count}/{match.total_words} so'z topildi)"
     )
 
     # Supergroup ID: -100xxxxxxxxxx -> ichki qism havola uchun
