@@ -1,0 +1,109 @@
+import asyncio
+import re
+import aiohttp
+from telethon import TelegramClient, events
+from config import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID
+from database import init_db, get_active_groups_ids, get_phrases, get_setting, save_groups
+
+client = TelegramClient('userbot_session', API_ID, API_HASH)
+init_db()
+
+# Telefon raqamini topish uchun regex
+PHONE_REGEX = re.compile(r'(\+?998|\b)[\s\-]?\(?\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}\b')
+
+async def send_to_bot_api(text, reply_markup=None):
+    """Topilgan xabarni boshqaruv botiga yuborish"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": ADMIN_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
+    async with aiohttp.ClientSession() as session:
+        await session.post(url, json=payload)
+
+@client.on(events.NewMessage)
+async def handler(event):
+    # 1. Tizim yoqilganmi?
+    if get_setting('is_active') != '1':
+        return
+
+    # 2. Xabar kuzatilayotgan guruhdanmi?
+    active_groups = get_active_groups_ids()
+    if event.chat_id not in active_groups:
+        return
+
+    # 3. Xabar matnini tozalash (kichik harf, ortiqcha probelni olib tashlash)
+    message_text = event.raw_text.lower()
+    cleaned_text = " ".join(message_text.split())
+
+    # 4. Iboralarni tekshirish
+    phrases = get_phrases()
+    found_phrase = None
+    
+    for phrase in phrases:
+        # Iborani ham tozalaymiz va xabar ichidan qidiramiz
+        clean_phrase = " ".join(phrase.lower().split())
+        if clean_phrase in cleaned_text:
+            found_phrase = phrase
+            break
+
+    if found_phrase:
+        sender = await event.get_sender()
+        
+        # Yuboruvchi ma'lumotlari
+        sender_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
+        username = f"@{sender.username}" if sender.username else "Yo'q"
+        user_id = sender.id
+        
+        # Telefon raqamini qidirish
+        phone_match = PHONE_REGEX.search(event.raw_text)
+        phone = phone_match.group(0) if phone_match else "Matnda topilmadi"
+        
+        # Guruh nomini olish
+        chat = await event.get_chat()
+        group_title = chat.title
+
+        # Xabarni chiroyli formatga solish
+        result_text = (
+            f"🚖 <b>YANGI MIJOZ TOPILDI!</b>\n\n"
+            f"📍 <b>Guruh:</b> {group_title}\n"
+            f"👤 <b>Yuboruvchi:</b> {sender_name} ({username})\n"
+            f"🆔 <b>Telegram ID:</b> <code>{user_id}</code>\n"
+            f"📞 <b>Telefon:</b> {phone}\n\n"
+            f"💬 <b>Xabar matni:</b>\n<i>{event.raw_text}</i>\n\n"
+            f"🔍 <b>Topilgan ibora:</b> {found_phrase}"
+        )
+        
+        # Tugmalar (Mijozga yozish va Guruhdagi xabarni ochish)
+        buttons = {
+            "inline_keyboard": [
+                [
+                    {"text": "💬 Mijozga yozish", "url": f"tg://user?id={user_id}"},
+                    {"text": "🔗 Asl xabarni ochish", "url": f"https://t.me/c/{str(event.chat_id).replace('-100', '')}/{event.id}"}
+                ]
+            ]
+        }
+
+        # Botga yuborish
+        await send_to_bot_api(result_text, buttons)
+
+async def main():
+    print("Userbot ishga tushdi...")
+    await client.start()
+    
+    # Akkaunt a'zo bo'lgan barcha guruhlarni bazaga yozib qo'yish (sinxronizatsiya)
+    print("Guruhlar sinxronizatsiya qilinmoqda...")
+    dialogs = await client.get_dialogs()
+    groups = [d.entity for d in dialogs if d.is_group or d.is_channel]
+    save_groups(groups)
+    print(f"{len(groups)} ta guruh bazaga saqlandi.")
+    
+    await client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
