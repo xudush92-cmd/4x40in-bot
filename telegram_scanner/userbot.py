@@ -16,7 +16,7 @@ from config import (
 )
 from database import (
     get_active_groups_ids,
-    get_phrases,
+    get_key_sets,
     get_setting,
     init_db,
     save_groups,
@@ -107,9 +107,10 @@ async def handler(event):
         f"🆔 <b>Telegram ID:</b> <code>{user_id if user_id is not None else '—'}</code>\n"
         f"📞 <b>Telefon:</b> {html.escape(phone)}\n\n"
         f"💬 <b>Xabar matni:</b>\n<i>{html.escape(event.raw_text)}</i>\n\n"
-        f"🔍 <b>Topilgan ibora:</b> {html.escape(found_phrase)}\n"
-        f"📊 <b>O'xshashlik:</b> {match.percent}% "
-        f"({match.matched_count}/{match.total_words} so'z topildi)"
+        f"🔍 <b>Kalitlar to'plami:</b> {html.escape(found_phrase)}\n"
+        f"✅ <b>Topilgan so'zlar ({match.matched_count} ta):</b> "
+        f"{html.escape(', '.join(match.matched_words))}\n"
+        f"🔔 <b>Shart:</b> {match.required_count} ta so'z — bajarildi"
     )
 
     # Supergroup ID: -100xxxxxxxxxx -> ichki qism havola uchun

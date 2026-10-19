@@ -10,10 +10,16 @@ def _connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     with closing(_connect()) as conn, conn:
-        # Iboralar jadvali
+        # Iboralar (kalit to'plamlari) jadvali
         conn.execute("""CREATE TABLE IF NOT EXISTS phrases (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             text TEXT UNIQUE)""")
+        # Eski bazalarda required_count ustuni bo'lmasligi mumkin — qo'shamiz
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(phrases)")]
+        if "required_count" not in columns:
+            conn.execute(
+                "ALTER TABLE phrases ADD COLUMN required_count INTEGER DEFAULT 2"
+            )
         # Guruhlar jadvali
         conn.execute("""CREATE TABLE IF NOT EXISTS groups (
                             chat_id INTEGER PRIMARY KEY,
@@ -29,17 +35,26 @@ def init_db() -> None:
         )
 
 
-def get_phrases() -> list[str]:
+def get_key_sets() -> list[tuple[str, int]]:
+    """Kalit to'plamlari: (so'zlar matni, kerakli so'zlar soni)."""
     with closing(_connect()) as conn:
-        rows = conn.execute("SELECT text FROM phrases ORDER BY id").fetchall()
-    return [row[0] for row in rows]
+        return conn.execute(
+            "SELECT text, COALESCE(required_count, 2) FROM phrases ORDER BY id"
+        ).fetchall()
 
 
-def add_phrase(text: str) -> bool:
-    """True — saqlandi, False — bu ibora allaqachon bor."""
+def get_phrases() -> list[str]:
+    return [text for text, _ in get_key_sets()]
+
+
+def add_phrase(text: str, required_count: int = 2) -> bool:
+    """True — saqlandi, False — bu to'plam allaqachon bor."""
     try:
         with closing(_connect()) as conn, conn:
-            conn.execute("INSERT INTO phrases (text) VALUES (?)", (text,))
+            conn.execute(
+                "INSERT INTO phrases (text, required_count) VALUES (?, ?)",
+                (text, int(required_count)),
+            )
         return True
     except sqlite3.IntegrityError:
         return False
@@ -50,9 +65,11 @@ def delete_phrase(phrase_id: int) -> None:
         conn.execute("DELETE FROM phrases WHERE id = ?", (phrase_id,))
 
 
-def get_all_phrases_with_id() -> list[tuple[int, str]]:
+def get_all_phrases_with_id() -> list[tuple[int, str, int]]:
     with closing(_connect()) as conn:
-        return conn.execute("SELECT id, text FROM phrases ORDER BY id").fetchall()
+        return conn.execute(
+            "SELECT id, text, COALESCE(required_count, 2) FROM phrases ORDER BY id"
+        ).fetchall()
 
 
 def save_groups(groups_list) -> None:

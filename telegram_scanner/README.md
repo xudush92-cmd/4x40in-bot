@@ -37,7 +37,6 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
    | `API_HASH` | my.telegram.org dan |
    | `BOT_TOKEN` | @BotFather dan |
    | `ADMIN_ID` | @userinfobot dan (faqat raqam) |
-   | `MATCH_THRESHOLD` | ixtiyoriy, masalan `0.70` |
 
 3. **Birinchi marta** Shell (terminal) da userbotni alohida ishga tushirib
    Telegramga kiring — telefon raqami, kod (va 2FA parol) so'raladi:
@@ -67,38 +66,29 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 
 1. `userbot.py` ishga tushgach, akkaunt a'zo bo'lgan guruhlar bazaga yoziladi.
 2. Botda **📋 Guruhlar ro'yxati** dan kuzatiladigan guruhlarni yoqing.
-3. **➕ Yangi ibora qo'shish** orqali qidiriladigan kalitlarni qo'shing.
-   Kalit bitta so'z emas — **bir nechta so'zdan iborat ibora** bo'ladi,
-   masalan: `toshkentdan odam bor`.
-4. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni va asl xabarga
-   havola bilan xabar yuboradi.
+3. **➕ Yangi ibora qo'shish** orqali kalit to'plamlarini qo'shing.
+   Har bir so'z — alohida kalit, bitta to'plamda **2–10 ta so'z** bo'ladi,
+   masalan: `toshkent samarqand odam mashina kerak yuk bugun`.
+   Keyin bot so'raydi: nechta so'z uchrasa xabar beray — **2 ta** yoki **3 ta**.
+4. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni, topilgan
+   so'zlar ro'yxati va asl xabarga havola bilan xabar yuboradi.
 
-### Kalit qanday ishlaydi? (70% qoidasi)
+### Kalit qanday ishlaydi? (foizsiz — aniq son)
 
-Kalit — bir nechta so'zdan iborat to'plam (7, 10 ta va h.k.). Kalitdagi
-so'zlarning **kamida 70%** i bitta xabarda uchrasa, bot o'xshashlik
-foizini ko'rsatib xabar yuboradi:
+Har bir so'z alohida kalit. Xabarda to'plamdagi so'zlardan
+foydalanuvchi belgilagan soni (2 yoki 3 ta) topilsa — xabar beriladi.
+Foiz hisoblanmaydi.
 
-| Kalit hajmi | Xabar berilishi uchun kerak |
+| To'plam: `toshkent samarqand odam mashina kerak yuk bugun`, shart: 3 ta | Natija |
 |---|---|
-| 7 ta so'z | kamida **5** tasi (71%) |
-| 10 ta so'z | kamida **7** tasi (70%) |
-| 3 ta so'z | 3 tasi ham (2/3 = 66% < 70%) |
-| 2 ta so'z | 2 tasi ham (1/2 = 50% < 70%) |
-
-Chegarani `.env` da `MATCH_THRESHOLD` bilan o'zgartirish mumkin
-(masalan `0.80` — qattiqroq, `0.70` — standart).
+| "Toshkentdan odam bor, mashina kerak" (3 ta topildi) | ✅ xabar beradi |
+| "Toshkentdan odam bor" (2 ta topildi) | ❌ bermaydi |
+| "Samarqandga yuk kerak" (3 ta topildi) | ✅ xabar beradi |
 
 Qo'shimcha: so'z tartibi va oradagi so'zlar ahamiyatsiz, katta-kichik
 harf/tinish belgilari hisoblanmaydi, so'z shakllari ham taniladi
-(`odam` ~ `odamlar`, `toshkentdan` ~ `toshkentga`). Bir nechta kalit
-mos kelsa — foizi eng yuqorisi yuboriladi.
-
-| Kalit: `toshkentdan samarqandga odam bor mashina kerak ertaga` (7 so'z) | Natija |
-|---|---|
-| "Toshkentdan odam bor, mashina kerak" (5/7) | ✅ 71% — xabar beradi |
-| "Toshkentdan odam bor, mashina bor" (4/7) | ❌ 57% — bermaydi |
-| "Toshkentga odamlar bor" (kalitga 3 so'zli misolda) | ✅ so'z shakli taniladi |
+(`odam` ~ `odamlar`, `toshkentdan` ~ `toshkentga`). Bir nechta to'plam
+mos kelsa — eng ko'p so'zi topilgani yuboriladi.
 
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.

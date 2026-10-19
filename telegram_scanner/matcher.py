@@ -1,32 +1,28 @@
-"""Ko'p so'zli kalit bo'yicha foizli (kamida 70%) moslashtirish.
+"""Kalit so'zlar to'plami bo'yicha moslashtirish (foizsiz).
 
-Bitta kalit = bitta so'z emas — 2 tadan 10 tagacha (yoki undan ko'p)
-so'zdan iborat to'plam. Masalan 8 so'zli kalit:
+Har bir so'z — alohida kalit. Bitta to'plam 2 tadan 10 tagacha
+so'zdan iborat bo'ladi, masalan:
 
-    "toshkentdan samarqandga odam bor mashina kerak ertaga"
+    to'plam:  toshkent samarqand odam mashina kerak yuk bugun (7 so'z)
+    shart:    3 ta so'z uchrasa xabar ber
 
-Qoida: kalitdagi so'zlarning kamida 70% i xabarda topilsa, xabar
-haqida xabar (notification) beriladi. So'zlar soni bo'yicha:
+Xabarda to'plamdagi so'zlardan belgilangan soni (2 yoki 3 ta —
+foydalanuvchi to'plam yaratishda tanlaydi) topilsa, xabar haqida
+xabar beriladi. Foiz hisoblanmaydi.
 
-    kalitda  7 ta so'z -> kamida 5 tasi topilishi kerak (71%)
-    kalitda 10 ta so'z -> kamida 7 tasi topilishi kerak (70%)
-    kalitda  3 ta so'z -> 3 tasi ham kerak (2/3 = 66% < 70%)
-    kalitda  2 ta so'z -> 2 tasi ham kerak (1/2 = 50% < 70%)
-
-Qo'shimcha imkoniyatlar (jonli yozuvlarni o'tkazib yubormaslik uchun):
+Qo'shimcha imkoniyatlar:
   * tartib va oradagi boshqa so'zlar ahamiyatsiz;
   * katta/kichik harf, tinish belgilari hisobga olinmaydi;
   * so'z shakllari ham taniladi: "odam" ~ "odamlar",
     "toshkentdan" ~ "toshkentga" (umumiy o'zak bo'yicha).
 """
 
-import math
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-# Standart chegara: 70%. config.py dagi MATCH_THRESHOLD bilan o'zgartiriladi.
-DEFAULT_THRESHOLD = 0.70
+MIN_WORDS = 2
+MAX_WORDS = 10
 
 _TOKEN_RE = re.compile(r"[^\W_]+(?:['’ʻʼ][^\W_]+)*", re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`": "'"})
@@ -34,26 +30,21 @@ _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`":
 
 @dataclass
 class MatchResult:
-    phrase: str
+    phrase: str  # to'plam matni (so'zlar bo'shliq bilan)
+    required_count: int = 2  # xabar berish uchun kerakli so'zlar soni
     matched_words: list[str] = field(default_factory=list)
     total_words: int = 0
-    threshold: float = DEFAULT_THRESHOLD
 
     @property
     def matched_count(self) -> int:
         return len(self.matched_words)
 
     @property
-    def ratio(self) -> float:
-        return self.matched_count / self.total_words if self.total_words else 0.0
-
-    @property
-    def percent(self) -> int:
-        return round(self.ratio * 100)
-
-    @property
     def is_match(self) -> bool:
-        return self.total_words >= 2 and self.ratio >= self.threshold
+        return (
+            self.total_words >= MIN_WORDS
+            and self.matched_count >= self.required_count
+        )
 
 
 def normalize_tokens(text: str) -> list[str]:
@@ -67,11 +58,30 @@ def normalize_text(text: str) -> str:
     return " ".join(normalize_tokens(text))
 
 
-def required_count(total_words: int, threshold: float = DEFAULT_THRESHOLD) -> int:
-    """70% ga yetish uchun nechta so'z topilishi kerakligi (yuqoriga yaxlitlanadi)."""
-    if total_words < 2:
-        return total_words
-    return math.ceil(threshold * total_words)
+def parse_key_words(text: str) -> list[str]:
+    """Foydalanuvchi yuborgan matndan to'plam so'zlarini ajratadi.
+
+    So'zlar bo'shliq, vergul yoki yangi qator bilan ajratilishi mumkin.
+    Takroriy so'zlar bir marta olinadi.
+    """
+    cleaned = (text or "").replace(",", " ").replace(";", " ")
+    return list(dict.fromkeys(normalize_tokens(cleaned)))
+
+
+def validate_key_words(words: list[str]) -> str | None:
+    """To'plam so'zlarini tekshiradi. Xato bo'lsa matn, bo'lmasa None."""
+    if len(words) < MIN_WORDS:
+        return (
+            f"⚠️ To'plamda kamida {MIN_WORDS} ta kalit so'z bo'lishi kerak. "
+            "So'zlarni bo'shliq bilan yozing, masalan: "
+            "<i>toshkent samarqand odam mashina</i>"
+        )
+    if len(words) > MAX_WORDS:
+        return (
+            f"⚠️ Bitta to'plamda ko'pi bilan {MAX_WORDS} ta so'z bo'ladi, "
+            f"siz {len(words)} ta yozdingiz. Ortiqchasini olib tashlang."
+        )
+    return None
 
 
 def _common_prefix_len(a: str, b: str) -> int:
@@ -105,16 +115,29 @@ def _word_matches(key_word: str, message_word: str) -> bool:
     return False
 
 
-def match_score(
+def match_key_set(
     message_text: str,
-    phrase: str,
-    threshold: float = DEFAULT_THRESHOLD,
+    key_words,
+    required_count: int = 2,
 ) -> MatchResult:
-    """Xabar va kalit o'xshashligini hisoblaydi (match bo'lmasa ham)."""
-    # Takroriy so'zlar kalitda bir marta hisoblanadi
-    key_tokens = list(dict.fromkeys(normalize_tokens(phrase)))
-    result = MatchResult(phrase=phrase, total_words=len(key_tokens), threshold=threshold)
-    if len(key_tokens) < 2:
+    """Xabarda to'plamdan nechta so'z topilganini hisoblaydi.
+
+    key_words — so'zlar ro'yxati yoki bo'shliqli matn bo'lishi mumkin.
+    """
+    if isinstance(key_words, str):
+        words = parse_key_words(key_words)
+        phrase_text = key_words
+    else:
+        words = list(dict.fromkeys(key_words))
+        phrase_text = " ".join(words)
+
+    required = max(MIN_WORDS, min(int(required_count or 2), len(words) or 2))
+    result = MatchResult(
+        phrase=phrase_text,
+        required_count=required,
+        total_words=len(words),
+    )
+    if len(words) < MIN_WORDS:
         return result
 
     message_tokens = set(normalize_tokens(message_text))
@@ -123,39 +146,31 @@ def match_score(
 
     result.matched_words = [
         word
-        for word in key_tokens
+        for word in words
         if any(_word_matches(word, msg_word) for msg_word in message_tokens)
     ]
     return result
 
 
-def phrase_matches(
-    message_text: str,
-    phrase: str,
-    threshold: float = DEFAULT_THRESHOLD,
-) -> bool:
-    """Kalit so'zlarining kamida `threshold` (70%) qismi xabarda bormi?"""
-    return match_score(message_text, phrase, threshold).is_match
+def find_match(message_text: str, key_sets) -> MatchResult | None:
+    """Eng ko'p so'zi topilgan to'plamni qaytaradi (sharti bajarilgani).
 
-
-def find_match(
-    message_text: str,
-    phrases,
-    threshold: float = DEFAULT_THRESHOLD,
-) -> MatchResult | None:
-    """Eng yuqori o'xshashlikdagi (≥70%) kalitni qaytaradi, topilmasa None.
-
-    Bir nechta kalit mos kelsa, foizi eng kattasi tanlanadi
-    (teng bo'lsa — so'zi ko'proq topilgani).
+    key_sets — (matn, required_count) juftliklari yoki matnlar ro'yxati.
+    Bir nechta to'plam shartni bajarsa, eng ko'p so'zi topilgani
+    tanlanadi (teng bo'lsa — sharti kichikroq, ya'ni osonroq to'plam).
     """
     best: MatchResult | None = None
-    for phrase in phrases:
-        result = match_score(message_text, phrase, threshold)
+    for item in key_sets:
+        if isinstance(item, (tuple, list)):
+            text, required = item[0], item[1] if len(item) > 1 else 2
+        else:
+            text, required = item, 2
+        result = match_key_set(message_text, text, required)
         if not result.is_match:
             continue
-        if best is None or (result.ratio, result.matched_count) > (
-            best.ratio,
+        if best is None or (result.matched_count, -result.required_count) > (
             best.matched_count,
+            -best.required_count,
         ):
             best = result
     return best

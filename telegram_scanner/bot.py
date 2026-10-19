@@ -14,6 +14,8 @@ from aiogram.types import (
 )
 
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
+from matcher import parse_key_words, validate_key_words
+
 from database import (
     delete_phrase,
     get_all_phrases_with_id,
@@ -44,7 +46,8 @@ class AdminFilter(BaseFilter):
 
 
 class AddPhrase(StatesGroup):
-    waiting_phrase = State()
+    waiting_phrase = State()   # kalit so'zlar (2–10 ta) kutilmoqda
+    waiting_required = State()  # nechta so'z uchrasa xabar berish tanlanmoqda
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -83,43 +86,94 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 async def ask_phrase(message: types.Message, state: FSMContext):
     await state.set_state(AddPhrase.waiting_phrase)
     await message.answer(
-        "Qidirmoqchi bo'lgan kalit iborani yuboring — u bitta so'z emas, "
-        "<b>bir nechta so'zdan</b> iborat bo'ladi.\n"
-        "Masalan: <i>toshkentdan odam bor</i>\n\n"
-        "Skaner shu so'zlarning <b>hammasi</b> bitta xabarda uchragan "
-        "xabarlarni topadi (tartibi boshqacha yoki orasida boshqa so'zlar "
-        "bo'lsa ham).\n\n"
+        "Kalit so'zlarni yuboring — har bir so'z alohida kalit. "
+        "Bitta to'plamda <b>2 tadan 10 tagacha</b> so'z bo'ladi, "
+        "so'zlarni bo'shliq bilan yozing.\n"
+        "Masalan: <i>toshkent samarqand odam mashina kerak yuk bugun</i>\n\n"
+        "Keyingi qadamda nechta so'z uchrasa xabar berishni tanlaysiz "
+        "(2 ta yoki 3 ta). Foiz yo'q — aniq son.\n\n"
         "Bekor qilish: /cancel",
         parse_mode="HTML",
     )
 
 
-@dp.message(StateFilter(AddPhrase.waiting_phrase), F.text)
-async def save_new_phrase(message: types.Message, state: FSMContext):
-    text = " ".join((message.text or "").split())
-
-    if text in MENU_BUTTONS:  # menyu tugmasi bosilsa — holatni tozalaymiz
-        await state.clear()
-        return
-
-    if len(set(text.lower().split())) < 2:
-        await message.answer(
-            "⚠️ Kalit bitta so'z bo'lmaydi — kamida 2 ta turli so'zdan "
-            "iborat ibora kiriting! Masalan: <i>toshkentdan odam bor</i>",
-            parse_mode="HTML",
-        )
-        return  # holatda qolamiz — foydalanuvchi qayta yozishi mumkin
-
+async def _save_key_set(message: types.Message, state: FSMContext,
+                        words: list[str], required: int):
+    text = " ".join(words)
     await state.clear()
-    if add_phrase(text):
+    if add_phrase(text, required):
         await message.answer(
-            f"✅ Ajoyib! Yangi kalit ibora saqlandi: <b>{html.escape(text)}</b>\n"
-            "Endi skaner shu so'zlarning kamida 70% i uchragan xabarlarni qidiradi.",
+            f"✅ Kalitlar to'plami saqlandi ({len(words)} ta so'z):\n"
+            f"<b>{html.escape(text)}</b>\n\n"
+            f"🔔 Xabarda shu so'zlardan <b>{required} tasi</b> uchrasa, "
+            "bot sizga xabar beradi.",
             parse_mode="HTML",
             reply_markup=main_menu(),
         )
     else:
-        await message.answer("⚠️ Bu ibora allaqachon ro'yxatda bor.")
+        await message.answer(
+            "⚠️ Bu to'plam allaqachon ro'yxatda bor.",
+            reply_markup=main_menu(),
+        )
+
+
+@dp.message(StateFilter(AddPhrase.waiting_phrase), F.text)
+async def save_new_phrase(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS:
+        await state.clear()
+        return
+
+    words = parse_key_words(message.text or "")
+    error = validate_key_words(words)
+    if error:
+        await message.answer(error, parse_mode="HTML")
+        return  # holatda qolamiz — foydalanuvchi qayta yozishi mumkin
+
+    if len(words) == 2:
+        # 2 so'zli to'plamda ikkalasi ham uchrashi kerak — tanlov shart emas
+        await _save_key_set(message, state, words, required=2)
+        return
+
+    # 3+ so'z: nechta so'z uchrasa xabar berishni foydalanuvchi tanlaydi
+    await state.update_data(words=words)
+    await state.set_state(AddPhrase.waiting_required)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="2 ta so'z uchrasa", callback_data="reqcnt:2"
+                ),
+                InlineKeyboardButton(
+                    text="3 ta so'z uchrasa", callback_data="reqcnt:3"
+                ),
+            ]
+        ]
+    )
+    await message.answer(
+        f"To'plam: <b>{html.escape(' '.join(words))}</b> "
+        f"({len(words)} ta so'z)\n\n"
+        "Xabarda nechta so'z uchrasa sizga xabar beray?",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(StateFilter(AddPhrase.waiting_required), F.data.startswith("reqcnt:"))
+async def save_required_count(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        required = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    data = await state.get_data()
+    words = data.get("words") or []
+    if not words:
+        await state.clear()
+        await callback.answer("So'zlar topilmadi, qaytadan qo'shing.", show_alert=True)
+        return
+    required = max(2, min(required, len(words)))
+    await _save_key_set(callback.message, state, words, required)
+    await callback.answer("Saqlandi!")
 
 
 @dp.message(F.text == BTN_PHRASES)
@@ -130,14 +184,20 @@ async def list_phrases(message: types.Message, state: FSMContext):
         await message.answer("Ro'yxat bo'sh.")
         return
 
-    await message.answer("Sizning iboralaringiz (o'chirish uchun tugmani bosing):")
-    for p_id, p_text in phrases:
+    await message.answer("Sizning kalit to'plamlaringiz (o'chirish uchun tugmani bosing):")
+    for p_id, p_text, required in phrases:
+        word_count = len(p_text.split())
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"del:{p_id}")]
             ]
         )
-        await message.answer(f"🔹 {html.escape(p_text)}", parse_mode="HTML", reply_markup=kb)
+        await message.answer(
+            f"🔹 {html.escape(p_text)}\n"
+            f"📝 {word_count} ta so'z, 🔔 {required} tasi uchrasa — xabar beradi",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
 
 
 @dp.callback_query(F.data.startswith("del:"))

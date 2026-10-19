@@ -48,15 +48,6 @@ ADMIN_ID = _get_int("ADMIN_ID")
 # tushirilishidan qat'iy nazar bot va userbot bitta bazani ko'radi)
 DB_NAME = os.getenv("SCANNER_DB_PATH") or str(BASE_DIR / "scanner.db")
 
-# Moslik chegarasi: kalit so'zlarining kamida necha foizi xabarda
-# bo'lishi kerak (0.70 = 70%). 0.50–1.0 oralig'ida yozing.
-try:
-    MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.70"))
-    if not 0.5 <= MATCH_THRESHOLD <= 1.0:
-        MATCH_THRESHOLD = 0.70
-except ValueError:
-    MATCH_THRESHOLD = 0.70
-
 # Telethon sessiya fayli ham shu papkada saqlanadi
 SESSION_NAME = os.getenv("SESSION_NAME") or str(BASE_DIR / "userbot_session")
 
