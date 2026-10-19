@@ -21,6 +21,7 @@ from database import (
     init_db,
     save_groups,
 )
+from matcher import find_match
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -66,16 +67,10 @@ async def handler(event):
     if event.chat_id not in get_active_groups_ids():
         return
 
-    # 3. Xabar matnini tozalash (kichik harf, ortiqcha probellar)
-    cleaned_text = " ".join(event.raw_text.lower().split())
-
-    # 4. Iboralarni tekshirish
-    found_phrase = None
-    for phrase in get_phrases():
-        clean_phrase = " ".join(phrase.lower().split())
-        if clean_phrase and clean_phrase in cleaned_text:
-            found_phrase = phrase
-            break
+    # 3-4. Ko'p so'zli kalitlarni tekshirish: iboradagi BARCHA so'zlar
+    # xabarda bo'lsa mos hisoblanadi (tartib/oraliq so'zlar muhim emas).
+    # Batafsil: matcher.py
+    found_phrase = find_match(event.raw_text, get_phrases())
 
     if not found_phrase:
         return

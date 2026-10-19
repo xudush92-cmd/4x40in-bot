@@ -83,8 +83,12 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 async def ask_phrase(message: types.Message, state: FSMContext):
     await state.set_state(AddPhrase.waiting_phrase)
     await message.answer(
-        "Qidirmoqchi bo'lgan iborani (gapni) yuboring.\n"
+        "Qidirmoqchi bo'lgan kalit iborani yuboring — u bitta so'z emas, "
+        "<b>bir nechta so'zdan</b> iborat bo'ladi.\n"
         "Masalan: <i>toshkentdan odam bor</i>\n\n"
+        "Skaner shu so'zlarning <b>hammasi</b> bitta xabarda uchragan "
+        "xabarlarni topadi (tartibi boshqacha yoki orasida boshqa so'zlar "
+        "bo'lsa ham).\n\n"
         "Bekor qilish: /cancel",
         parse_mode="HTML",
     )
@@ -98,18 +102,19 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    if len(text.split()) < 2:
+    if len(set(text.lower().split())) < 2:
         await message.answer(
-            "⚠️ Iltimos, kamida 2 ta so'zdan iborat gap kiriting! "
-            "(Shovqinni oldini olish uchun)"
+            "⚠️ Kalit bitta so'z bo'lmaydi — kamida 2 ta turli so'zdan "
+            "iborat ibora kiriting! Masalan: <i>toshkentdan odam bor</i>",
+            parse_mode="HTML",
         )
         return  # holatda qolamiz — foydalanuvchi qayta yozishi mumkin
 
     await state.clear()
     if add_phrase(text):
         await message.answer(
-            f"✅ Ajoyib! Yangi ibora saqlandi: <b>{html.escape(text)}</b>\n"
-            "Endi skaner aynan shu gapni qidiradi.",
+            f"✅ Ajoyib! Yangi kalit ibora saqlandi: <b>{html.escape(text)}</b>\n"
+            "Endi skaner shu iboradagi barcha so'zlar uchragan xabarlarni qidiradi.",
             parse_mode="HTML",
             reply_markup=main_menu(),
         )
