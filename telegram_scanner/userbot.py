@@ -103,6 +103,76 @@ def build_message_link(chat, chat_id, message_id) -> str | None:
     return None
 
 
+def find_phone_text(raw_text: str, sender=None) -> str:
+    """Telefon: avval xabar matnidan, topilmasa profildan (agar ochiq bo'lsa)."""
+    match = PHONE_REGEX.search(raw_text or "")
+    if match:
+        return match.group(0)
+    profile_phone = getattr(sender, "phone", None)
+    if profile_phone:
+        digits = re.sub(r"\D", "", str(profile_phone))
+        if digits:
+            return f"+{digits} (Profil raqami)"
+    return "Matnda ko'rsatilmagan"
+
+
+def build_notification_text(
+    *,
+    group_title: str,
+    sender_name: str,
+    username: str,
+    user_id,
+    phone: str,
+    raw_text: str,
+    matched_words,
+    required_count: int,
+    message_link: str | None,
+) -> str:
+    """Bildirishnoma matni — skrinshotdagi ko'rinishda."""
+    sep = "━━━━━━━━━━━━━━━"
+    esc = html.escape
+
+    if user_id is not None:
+        sender_block = (
+            f'👤 <b>Yuboruvchi:</b> '
+            f'<a href="tg://user?id={user_id}">{esc(sender_name)}</a>'
+        )
+        if username and username != "Yo'q":
+            sender_block += f"\n({esc(username)})"
+        profile_line = (
+            f'👉 <a href="tg://user?id={user_id}">'
+            "Mijoz profiliga o'tish (Lichkasi)</a>"
+        )
+    else:
+        sender_block = f"👤 <b>Yuboruvchi:</b> {esc(sender_name)}"
+        profile_line = "💡 (Mijoz profiliga o'tish uchun asl xabarni oching)"
+
+    lines = [
+        "🚕 <b>YANGI BUYURTMA / MIJOZ TOPILDI!</b>",
+        sep,
+        f"📍 <b>Guruh:</b> {esc(group_title or 'Nomaʼlum guruh')}",
+        sender_block,
+        f"🆔 <b>Telegram ID:</b> <code>{user_id if user_id is not None else '—'}</code>",
+        f"📞 <b>Telefon:</b> {esc(phone)}",
+        "",
+        "💬 <b>Xabar matni:</b>",
+        esc(raw_text or ""),
+        sep,
+        f"✅ <b>Topilgan kalitlar ({len(matched_words)} ta):</b> "
+        f"{esc(', '.join(matched_words))}",
+        f"🔔 <b>Shart:</b> kamida {required_count} ta — bajarildi",
+        sep,
+        profile_line,
+        "✍️ (Lichkasiga xabar yozish uchun ushbu xabarga «Reply / Javob» qiling)",
+    ]
+    if message_link:
+        lines.append(
+            f'🔗 <a href="{esc(message_link, quote=True)}">'
+            "Guruhdagi asl xabarni ochish</a>"
+        )
+    return "\n".join(lines)
+
+
 @client.on(events.NewMessage)
 async def handler(event):
     if not event.raw_text:
@@ -161,37 +231,38 @@ async def handler(event):
         if getattr(sender, "username", None):
             username = f"@{sender.username}"
 
-    # Telefon raqamini qidirish
-    phone_match = PHONE_REGEX.search(event.raw_text)
-    phone = phone_match.group(0) if phone_match else "Matnda topilmadi"
+    # Telefon: matndan, bo'lmasa profildan
+    phone = find_phone_text(event.raw_text, sender)
 
     chat = await event.get_chat()
     group_title = getattr(chat, "title", None) or "Noma'lum guruh"
 
-    result_text = (
-        "🚖 <b>YANGI MIJOZ TOPILDI!</b>\n\n"
-        f"📍 <b>Guruh:</b> {html.escape(group_title)}\n"
-        f"👤 <b>Yuboruvchi:</b> {html.escape(sender_name)} ({html.escape(username)})\n"
-        f"🆔 <b>Telegram ID:</b> <code>{user_id if user_id is not None else '—'}</code>\n"
-        f"📞 <b>Telefon:</b> {html.escape(phone)}\n\n"
-        f"💬 <b>Xabar matni:</b>\n<i>{html.escape(event.raw_text)}</i>\n\n"
-        f"✅ <b>Topilgan kalitlar ({match.matched_count} ta):</b> "
-        f"{html.escape(', '.join(found_phrase))}\n"
-        f"🔔 <b>Shart:</b> kamida {match.required_count} ta — bajarildi"
+    # Xabarning o'ziga olib boradigan havola (ochiq/superguruhda ishlaydi)
+    message_link = build_message_link(chat, event.chat_id, event.id)
+
+    result_text = build_notification_text(
+        group_title=group_title,
+        sender_name=sender_name,
+        username=username,
+        user_id=user_id,
+        phone=phone,
+        raw_text=event.raw_text,
+        matched_words=found_phrase,
+        required_count=match.required_count,
+        message_link=message_link,
     )
 
-    # Tugmalar: mijozga yozish + xabarning o'ziga o'tish
-    button_row = []
+    # Tugmalar: skrinshotdagi kabi alohida qatorlarda
+    button_rows = []
     if user_id is not None:
-        button_row.append(
-            {"text": "💬 Mijozga yozish", "url": f"tg://user?id={user_id}"}
+        button_rows.append(
+            [{"text": "💬 Mijozga yozish (Lichka)", "url": f"tg://user?id={user_id}"}]
         )
-    message_link = build_message_link(chat, event.chat_id, event.id)
     if message_link:
-        button_row.append(
-            {"text": "🔗 Xabarga o'tish", "url": message_link}
+        button_rows.append(
+            [{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}]
         )
-    buttons = {"inline_keyboard": [button_row]} if button_row else None
+    buttons = {"inline_keyboard": button_rows} if button_rows else None
 
     await send_to_bot_api(result_text, buttons)
 
