@@ -25,6 +25,16 @@ def init_db() -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS settings (
                             key TEXT PRIMARY KEY,
                             value TEXT)""")
+        # Qo'lda qo'shilgan guruhlar jadvali (asosiy).
+        # chat_id userbot tekshirgach to'ldiriladi, ungacha NULL bo'ladi.
+        conn.execute("""CREATE TABLE IF NOT EXISTS managed_groups (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            input_value TEXT UNIQUE,
+                            chat_id INTEGER UNIQUE,
+                            title TEXT,
+                            is_active INTEGER DEFAULT 1,
+                            status TEXT DEFAULT 'pending',
+                            last_error TEXT)""")
         # Standart sozlamalar
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
@@ -106,6 +116,100 @@ def get_match_count() -> int:
         return 3
 
 
+# --- Qo'lda qo'shilgan guruhlar (managed_groups) ---
+
+def add_managed_group(input_value: str) -> bool:
+    """True — qo'shildi, False — bu manzil/ID allaqachon bor."""
+    try:
+        with closing(_connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO managed_groups (input_value) VALUES (?)",
+                (input_value,),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_managed_groups() -> list[tuple]:
+    """(id, input_value, chat_id, title, is_active, status, last_error)."""
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, input_value, chat_id, title, is_active, status, "
+            "last_error FROM managed_groups ORDER BY id"
+        ).fetchall()
+
+
+def delete_managed_group(group_id: int) -> None:
+    """Guruh butunlay o'chib ketadi (tiklanmaydi)."""
+    with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM managed_groups WHERE id = ?", (group_id,))
+
+
+def toggle_managed_group(group_id: int, status: int) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE managed_groups SET is_active = ? WHERE id = ?",
+            (1 if status else 0, group_id),
+        )
+
+
+def get_pending_groups() -> list[tuple]:
+    """Userbot tekshirishi kerak bo'lgan guruhlar (pending/error)."""
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, input_value, chat_id, status FROM managed_groups "
+            "WHERE status IN ('pending', 'error')"
+        ).fetchall()
+
+
+def resolve_managed_group(group_id: int, chat_id: int, title: str) -> bool:
+    """Userbot guruhni topdi: haqiqiy ID/nom yoziladi, status='ok'.
+
+    False — bu chat_id boshqa yozuvda allaqachon bor (dublikat).
+    """
+    try:
+        with closing(_connect()) as conn, conn:
+            conn.execute(
+                "UPDATE managed_groups SET chat_id = ?, title = ?, "
+                "status = 'ok', last_error = NULL WHERE id = ?",
+                (chat_id, title, group_id),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        mark_managed_group_error(group_id, "Bu guruh ro'yxatda allaqachon bor (dublikat)")
+        return False
+
+
+def mark_managed_group_error(group_id: int, error: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE managed_groups SET status = 'error', last_error = ? "
+            "WHERE id = ?",
+            (str(error)[:300], group_id),
+        )
+
+
+def requeue_managed_group(group_id: int) -> None:
+    """Qayta tekshirish: statusni 'pending' ga qaytaradi."""
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE managed_groups SET status = 'pending', last_error = NULL "
+            "WHERE id = ?",
+            (group_id,),
+        )
+
+
+def get_active_chat_ids() -> list[int]:
+    """Skaner qilinadigan guruhlar: tekshiruvdan o'tgan VA yoqilgan."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT chat_id FROM managed_groups "
+            "WHERE status = 'ok' AND is_active = 1 AND chat_id IS NOT NULL"
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
 def save_groups(groups_list) -> None:
     with closing(_connect()) as conn, conn:
         for g in groups_list:
@@ -133,11 +237,8 @@ def toggle_group(chat_id: int, status: int) -> None:
 
 
 def get_active_groups_ids() -> list[int]:
-    with closing(_connect()) as conn:
-        rows = conn.execute(
-            "SELECT chat_id FROM groups WHERE is_active = 1"
-        ).fetchall()
-    return [row[0] for row in rows]
+    # Skaner faqat qo'lda qo'shilib tekshirilgan guruhlarni ko'radi
+    return get_active_chat_ids()
 
 
 def get_setting(key: str) -> str | None:

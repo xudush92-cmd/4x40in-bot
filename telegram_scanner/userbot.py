@@ -4,7 +4,8 @@ import logging
 import re
 
 import aiohttp
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils
+from telethon.tl.types import Channel, Chat
 
 from config import (
     ADMIN_ID,
@@ -18,9 +19,11 @@ from database import (
     get_active_groups_ids,
     get_keywords,
     get_match_count,
+    get_pending_groups,
     get_setting,
     init_db,
-    save_groups,
+    mark_managed_group_error,
+    resolve_managed_group,
 )
 from matcher import find_match
 
@@ -130,6 +133,143 @@ async def handler(event):
     await send_to_bot_api(result_text, {"inline_keyboard": buttons})
 
 
+def _is_group_entity(entity) -> bool:
+    """Faqat guruhlar: oddiy guruh (Chat) yoki superguruh (megagroup).
+
+    Kanallar (broadcast) skaner qilinmaydi.
+    """
+    if isinstance(entity, Chat):
+        return True
+    if isinstance(entity, Channel):
+        return bool(entity.megagroup)
+    return False
+
+
+async def _resolve_one(row, dialogs_by_id) -> None:
+    gid, input_value, _chat_id, prev_status = row
+    value = (input_value or "").strip()
+    entity = None
+
+    try:
+        if "t.me/+" in value or "t.me/joinchat/" in value:
+            mark_managed_group_error(
+                gid,
+                "Yopiq taklif havolasini tekshirib bo'lmaydi: userbot "
+                "guruhga a'zo bo'lsa, guruhning raqamli ID sini (-100...) yuboring",
+            )
+            if prev_status == "pending":
+                await send_to_bot_api(
+                    f"⚠️ Guruh qo'shilmadi: <code>{html.escape(value)}</code>\n"
+                    "Yopiq havola tekshirilmaydi — guruh ID sini (-100...) yuboring."
+                )
+            return
+
+        if value.lstrip("-").isdigit():
+            num = int(value)
+            # event.chat_id formati: superguruhda -100..., oddiy guruhda -...
+            candidates = [num]
+            if num > 0:
+                candidates += [-int(f"100{num}"), -num]
+            for cand in candidates:
+                if cand in dialogs_by_id:
+                    entity = dialogs_by_id[cand]
+                    break
+            if entity is None:
+                mark_managed_group_error(
+                    gid,
+                    "Bu ID dialoglarda topilmadi: userbot shu guruhda a'zo emas "
+                    "yoki ID noto'g'ri",
+                )
+                if prev_status == "pending":
+                    await send_to_bot_api(
+                        f"⚠️ Guruh topilmadi: <code>{html.escape(value)}</code>\n"
+                        "Userbot shu guruhda a'zo ekanini tekshiring yoki "
+                        "ID to'g'riligini qayta ko'ring, keyin 🔄 Qayta tekshirish bosing."
+                    )
+                return
+        else:
+            username = value.lstrip("@")
+            try:
+                found = await client.get_entity(username)
+            except Exception:
+                mark_managed_group_error(
+                    gid, "Bunday username topilmadi yoki mavjud emas"
+                )
+                if prev_status == "pending":
+                    await send_to_bot_api(
+                        f"⚠️ Guruh topilmadi: <code>{html.escape(value)}</code>\n"
+                        "Manzilni tekshirib, 🔄 Qayta tekshirish bosing."
+                    )
+                return
+            # A'zolik dialoglarda borligi bilan tasdiqlanadi
+            if utils.get_peer_id(found) not in dialogs_by_id:
+                mark_managed_group_error(
+                    gid,
+                    "Userbot bu guruhda a'zo emas: avval skaner akkauntini "
+                    "guruhga qo'shing, keyin 🔄 Qayta tekshirish bosing",
+                )
+                if prev_status == "pending":
+                    await send_to_bot_api(
+                        f"⚠️ Userbot <b>{html.escape(value)}</b> guruhida a'zo emas.\n"
+                        "Avval skaner akkauntini guruhga qo'shing, keyin botda "
+                        "🔄 Qayta tekshirish tugmasini bosing."
+                    )
+                return
+            entity = found
+
+        if not _is_group_entity(entity):
+            mark_managed_group_error(
+                gid, "Bu guruh emas (kanal yoki foydalanuvchi) — faqat guruhlar qo'shiladi"
+            )
+            if prev_status == "pending":
+                await send_to_bot_api(
+                    f"⚠️ <b>{html.escape(value)}</b> — bu guruh emas, "
+                    "faqat guruhlar skaner qilinadi."
+                )
+            return
+
+        marked_id = utils.get_peer_id(entity)
+        title = getattr(entity, "title", None) or value
+        if resolve_managed_group(gid, marked_id, title) and prev_status != "ok":
+            logger.info("Guruh ulandi: %s (%s)", title, marked_id)
+            await send_to_bot_api(
+                f"✅ <b>Guruh ulandi!</b>\n\n"
+                f"👥 {html.escape(title)}\n"
+                f"🆔 <code>{marked_id}</code>\n\n"
+                "Endi bu guruh skanerlanadi. To'xtatish uchun: "
+                "📋 Guruhlarim → ⏸ To'xtatish"
+            )
+    except Exception as exc:  # bitta guruhdagi xato boshqalarini to'xtatmasin
+        logger.exception("Guruhni tekshirishda xato (%s)", value)
+        mark_managed_group_error(gid, f"Tekshiruv xatosi: {exc}")
+
+
+async def resolve_pending_groups() -> None:
+    """Qo'lda qo'shilgan, tekshiruvdagi guruhlarni tekshiradi."""
+    rows = get_pending_groups()
+    if not rows:
+        return
+    dialogs = await client.get_dialogs()
+    dialogs_by_id = {}
+    for d in dialogs:
+        try:
+            dialogs_by_id[utils.get_peer_id(d.entity)] = d.entity
+        except Exception:
+            continue
+    for row in rows:
+        await _resolve_one(row, dialogs_by_id)
+
+
+async def _group_resolver_loop() -> None:
+    """Har 30 soniyada yangi qo'shilgan guruhlarni tekshirib turadi."""
+    while True:
+        try:
+            await resolve_pending_groups()
+        except Exception:
+            logger.exception("Guruh tekshiruvida xato")
+        await asyncio.sleep(30)
+
+
 async def main():
     missing = missing_settings()
     if missing:
@@ -142,14 +282,14 @@ async def main():
     logger.info("Userbot ishga tushdi...")
     await client.start()  # birinchi marta telefon raqami/kod so'raydi
 
-    # Akkaunt a'zo bo'lgan barcha guruhlarni bazaga yozish (sinxronizatsiya)
-    logger.info("Guruhlar sinxronizatsiya qilinmoqda...")
-    dialogs = await client.get_dialogs()
-    groups = [d.entity for d in dialogs if d.is_group or d.is_channel]
-    save_groups(groups)
-    logger.info("%s ta guruh bazaga saqlandi.", len(groups))
-
-    await client.run_until_disconnected()
+    # MUHIM: endi akkauntdagi BARCHA guruhlar avtomatik yozilmaydi.
+    # Faqat botdan qo'lda qo'shilgan guruhlar tekshiriladi va skanerlanadi.
+    resolver_task = asyncio.create_task(_group_resolver_loop())
+    logger.info("Skaner tayyor: faqat qo'lda qo'shilgan guruhlar kuzatiladi.")
+    try:
+        await client.run_until_disconnected()
+    finally:
+        resolver_task.cancel()
 
 
 if __name__ == "__main__":

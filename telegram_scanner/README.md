@@ -64,8 +64,16 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 
 ## Ish tartibi
 
-1. `userbot.py` ishga tushgach, akkaunt a'zo bo'lgan guruhlar bazaga yoziladi.
-2. Botda **📋 Guruhlar ro'yxati** dan kuzatiladigan guruhlarni yoqing.
+1. **➕ Guruh qo'shish** tugmasi orqali guruh manzili (`@username`,
+   t.me havola) yoki raqamli ID (`-100...`) dan birini yuboring.
+   Skaner faqat shu yerda qo'shilgan guruhlarni tekshiradi —
+   akkauntdagi barcha guruhlar avtomatik tortib kelinmaydi.
+   Userbot akkaunti guruhda a'zo bo'lishi shart: userbot 30 soniya
+   ichida tekshirib, "✅ Guruh ulandi" yoki sababi bilan xato xabarini
+   yuboradi. Xato bo'lsa 🔄 Qayta tekshirish tugmasi bor.
+2. **📋 Guruhlarim** da har bir guruh yonida o'rnini almashtiradigan
+   **⏸ To'xtatish / ▶️ Yoqish** tugmasi (skanerni yoqish/o'chirish) va
+   **🗑 O'chirish** tugmasi (guruh butunlay o'chib ketadi) bor.
 3. **➕ Kalit so'z qo'shish** orqali kalitlar qo'shing. Har bir so'z —
    alohida kalit, kalitlar soni **cheklanmagan**. Bitta xabarda bir
    nechta so'z yuborsangiz, har biri alohida kalit bo'lib saqlanadi.

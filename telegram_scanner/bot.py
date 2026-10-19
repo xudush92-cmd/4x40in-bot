@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import re
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import BaseFilter, Command, StateFilter
@@ -16,15 +17,18 @@ from aiogram.types import (
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
 from database import (
     add_keyword,
+    add_managed_group,
+    delete_managed_group,
     delete_phrase,
     get_all_phrases_with_id,
-    get_groups,
     get_keywords,
+    get_managed_groups,
     get_match_count,
     get_setting,
     init_db,
+    requeue_managed_group,
     set_setting,
-    toggle_group,
+    toggle_managed_group,
 )
 from matcher import parse_key_words
 
@@ -33,12 +37,17 @@ logger = logging.getLogger(__name__)
 
 BTN_ADD = "➕ Kalit so'z qo'shish"
 BTN_PHRASES = "📋 Kalitlar ro'yxati"
-BTN_GROUPS = "📋 Guruhlar ro'yxati"
+BTN_GROUP_ADD = "➕ Guruh qo'shish"
+BTN_GROUPS = "📋 Guruhlarim"
 BTN_COUNT = "🔔 Xabar sharti"
 BTN_TOGGLE = "⏸ To'xtatish / ▶️ Davom ettirish"
-MENU_BUTTONS = {BTN_ADD, BTN_PHRASES, BTN_GROUPS, BTN_COUNT, BTN_TOGGLE}
+MENU_BUTTONS = {
+    BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS, BTN_COUNT, BTN_TOGGLE,
+}
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
-_LEGACY_BUTTONS = {"➕ Yangi ibora qo'shish", "📋 Iboralar ro'yxati"}
+_LEGACY_BUTTONS = {
+    "➕ Yangi ibora qo'shish", "📋 Iboralar ro'yxati", "📋 Guruhlar ro'yxati",
+}
 
 
 class AdminFilter(BaseFilter):
@@ -57,9 +66,13 @@ class SetCount(StatesGroup):
     waiting_count = State()  # nechta so'z topilsa xabar berish soni kutilmoqda
 
 
+class AddGroup(StatesGroup):
+    waiting_group = State()  # guruh manzili yoki ID kutilmoqda
+
+
 def main_menu() -> ReplyKeyboardMarkup:
     kb = [
-        [KeyboardButton(text=BTN_ADD)],
+        [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUP_ADD)],
         [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_TOGGLE)],
     ]
@@ -250,56 +263,182 @@ async def delete_phrase_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(F.text == BTN_GROUPS)
-async def list_groups(message: types.Message, state: FSMContext):
-    await state.clear()
-    groups = get_groups()
-    if not groups:
-        await message.answer("Guruhlar topilmadi. Userbotni bir marta ishga tushiring.")
+def normalize_group_input(text: str) -> str | None:
+    """Guruh manzili yoki ID ni yagona ko'rinishga keltiradi.
+
+    Qabul qilinadi: @username, t.me/username havolasi, t.me/+... taklif
+    havolasi, raqamli ID (-100...). Aniqlanmasa None.
+    """
+    t = (text or "").strip()
+    if re.fullmatch(r"-?\d{5,}", t):
+        return t
+    if "t.me/+" in t or "t.me/joinchat/" in t:
+        return t
+    m = re.search(r"(?:t\.me/|@)([A-Za-z0-9_]{5,})", t)
+    if m:
+        return "@" + m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_]{5,}", t):
+        return "@" + t
+    return None
+
+
+@dp.message(F.text == BTN_GROUP_ADD)
+async def ask_group(message: types.Message, state: FSMContext):
+    await state.set_state(AddGroup.waiting_group)
+    await message.answer(
+        "Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
+        "• <code>@guruh_nomi</code>\n"
+        "• <code>https://t.me/guruh_nomi</code>\n"
+        "• <code>-1001234567890</code> (raqamli ID)\n\n"
+        "⚠️ Skaner qiluvchi akkaunt (userbot) shu guruhda <b>a'zo bo'lishi "
+        "shart</b> — bo'lmasa bot xato haqida xabar beradi.\n\n"
+        "Bekor qilish: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(StateFilter(AddGroup.waiting_group), F.text)
+async def save_group(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
         return
 
-    await message.answer("Guruhlarni kuzatishni yoqish/o'chirish uchun bosing:")
-    for chat_id, title, is_active in groups:
-        status = "✅ Kuzatilmoqda" if is_active else "❌ O'chirilgan"
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=status,
-                        # ":" ajratgichi salbiy chat_id (-100...) bilan ham ishlaydi
-                        callback_data=f"tgl:{chat_id}:{is_active}",
-                    )
-                ]
-            ]
+    value = normalize_group_input(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Tushunmadim. Guruh manzilini (@username yoki t.me havola) "
+            "yoki raqamli ID (-100...) yuboring."
         )
-        await message.answer(f"👥 {html.escape(title or '')}", parse_mode="HTML", reply_markup=kb)
+        return  # holatda qolamiz — qayta yozishi mumkin
+
+    await state.clear()
+    if not add_managed_group(value):
+        await message.answer(
+            "ℹ️ Bu guruh allaqachon ro'yxatda bor. 📋 Guruhlarim dan ko'ring.",
+            reply_markup=main_menu(),
+        )
+        return
+    await message.answer(
+        f"✅ Guruh qabul qilindi: <b>{html.escape(value)}</b>\n\n"
+        "⏳ Userbot tekshirmoqda (odatda 30 soniyagacha). "
+        "Tekshiruv natijasi shu yerga xabar bo'lib keladi. "
+        "Holatni 📋 Guruhlarim dan ham ko'rishingiz mumkin.",
+        parse_mode="HTML",
+        reply_markup=main_menu(),
+    )
 
 
-@dp.callback_query(F.data.startswith("tgl:"))
-async def toggle_group_callback(callback: types.CallbackQuery):
+def _group_text(row) -> str:
+    gid, input_value, chat_id, title, is_active, status, last_error = row
+    name = title or input_value
+    if status == "ok":
+        state_line = (
+            "✅ Skanerlanmoqda" if is_active else "⏸ To'xtatilgan (skanerlanmaydi)"
+        )
+    elif status == "pending":
+        state_line = "⏳ Userbot tekshirmoqda..."
+    else:
+        state_line = f"⚠️ Tekshiruvda xato: {last_error or 'nomaʼlum'}"
+    chat_line = f"\n🆔 <code>{chat_id}</code>" if chat_id else ""
+    return f"👥 <b>{html.escape(name or '')}</b>\n{state_line}{chat_line}"
+
+
+def _group_keyboard(row) -> InlineKeyboardMarkup:
+    gid, input_value, chat_id, title, is_active, status, last_error = row
+    rows = []
+    if status == "ok":
+        # O'rnini almashtiradigan tugma: holatga qarab matni o'zgaradi
+        toggle_text = "⏸ To'xtatish" if is_active else "▶️ Yoqish"
+        rows.append(
+            [InlineKeyboardButton(text=toggle_text, callback_data=f"gact:{gid}:{is_active}")]
+        )
+    else:
+        rows.append(
+            [InlineKeyboardButton(text="🔄 Qayta tekshirish", callback_data=f"grecheck:{gid}")]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"gdel:{gid}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _find_group(group_id: int):
+    for row in get_managed_groups():
+        if row[0] == group_id:
+            return row
+    return None
+
+
+@dp.message(F.text.in_({BTN_GROUPS, "📋 Guruhlar ro'yxati"}))
+async def list_groups(message: types.Message, state: FSMContext):
+    await state.clear()
+    groups = get_managed_groups()
+    if not groups:
+        await message.answer(
+            "Hozircha guruhlar yo'q.\n"
+            "➕ Guruh qo'shish tugmasi orqali manzil yoki ID yuboring — "
+            "skaner faqat shu yerda qo'shilgan guruhlarni tekshiradi."
+        )
+        return
+
+    await message.answer(f"Sizning guruhlaringiz — {len(groups)} ta:")
+    for row in groups:
+        await message.answer(
+            _group_text(row), parse_mode="HTML", reply_markup=_group_keyboard(row)
+        )
+
+
+@dp.callback_query(F.data.startswith("gact:"))
+async def toggle_managed_callback(callback: types.CallbackQuery):
+    """⏸/▶️ — tugma o'z o'rnida qarama-qarshi holatga almashadi."""
     try:
-        _, chat_id_str, current_status = callback.data.split(":")
-        chat_id, current = int(chat_id_str), int(current_status)
+        _, gid_str, current_str = callback.data.split(":")
+        gid, current = int(gid_str), int(current_str)
     except ValueError:
         await callback.answer("Xato ma'lumot.", show_alert=True)
         return
-
     new_status = 0 if current == 1 else 1
-    toggle_group(chat_id, new_status)
+    toggle_managed_group(gid, new_status)
+    row = _find_group(gid)
+    if row:
+        await callback.message.edit_text(
+            _group_text(row), parse_mode="HTML", reply_markup=_group_keyboard(row)
+        )
+    await callback.answer("⏸ To'xtatildi" if new_status == 0 else "▶️ Yoqildi")
 
-    status_text = "✅ Kuzatilmoqda" if new_status == 1 else "❌ O'chirilgan"
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=status_text,
-                    callback_data=f"tgl:{chat_id}:{new_status}",
-                )
-            ]
-        ]
+
+@dp.callback_query(F.data.startswith("grecheck:"))
+async def recheck_group_callback(callback: types.CallbackQuery):
+    try:
+        gid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    requeue_managed_group(gid)
+    row = _find_group(gid)
+    if row:
+        await callback.message.edit_text(
+            _group_text(row), parse_mode="HTML", reply_markup=_group_keyboard(row)
+        )
+    await callback.answer("🔄 Tekshiruv navbatga qo'yildi (30 soniyagacha)")
+
+
+@dp.callback_query(F.data.startswith("gdel:"))
+async def delete_group_callback(callback: types.CallbackQuery):
+    try:
+        gid = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = _find_group(gid)
+    name = (row[3] or row[1]) if row else gid
+    delete_managed_group(gid)
+    await callback.message.edit_text(
+        f"🗑 Guruh butunlay o'chirildi: <b>{html.escape(str(name))}</b>\n"
+        "Endi bu guruh skanerlanmaydi.",
+        parse_mode="HTML",
     )
-    await callback.message.edit_reply_markup(reply_markup=kb)
-    await callback.answer("O'zgartirildi!")
+    await callback.answer("O'chirildi")
 
 
 @dp.message(F.text == BTN_TOGGLE)
