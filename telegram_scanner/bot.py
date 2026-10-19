@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import re
+import time
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import BaseFilter, Command, StateFilter
@@ -30,7 +31,7 @@ from database import (
     set_setting,
     toggle_managed_group,
 )
-from matcher import parse_key_words
+from matcher import find_match, match_keywords, parse_key_words
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,8 +42,10 @@ BTN_GROUP_ADD = "➕ Guruh qo'shish"
 BTN_GROUPS = "📋 Guruhlarim"
 BTN_COUNT = "🔔 Xabar sharti"
 BTN_TOGGLE = "⏸ To'xtatish / ▶️ Davom ettirish"
+BTN_TEST = "🧪 Skaner testi"
 MENU_BUTTONS = {
-    BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS, BTN_COUNT, BTN_TOGGLE,
+    BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
+    BTN_COUNT, BTN_TOGGLE, BTN_TEST,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -70,11 +73,16 @@ class AddGroup(StatesGroup):
     waiting_group = State()  # guruh manzili yoki ID kutilmoqda
 
 
+class ScanTest(StatesGroup):
+    waiting_text = State()  # tekshirish uchun namuna xabar kutilmoqda
+
+
 def main_menu() -> ReplyKeyboardMarkup:
     kb = [
         [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUP_ADD)],
         [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_TOGGLE)],
+        [KeyboardButton(text=BTN_TEST)],
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -439,6 +447,101 @@ async def delete_group_callback(callback: types.CallbackQuery):
         parse_mode="HTML",
     )
     await callback.answer("O'chirildi")
+
+
+def scanner_status_text() -> str:
+    """Diagnostika: nega xabar kelmayotganini bir qarashda ko'rsatadi."""
+    groups = get_managed_groups()
+    active = [g for g in groups if g[5] == "ok" and g[4] == 1]
+    pending = [g for g in groups if g[5] == "pending"]
+    errored = [g for g in groups if g[5] == "error"]
+    paused = [g for g in groups if g[5] == "ok" and g[4] != 1]
+
+    last_seen_raw = get_setting("userbot_last_seen")
+    if last_seen_raw:
+        try:
+            ago = max(0, int(time.time()) - int(last_seen_raw))
+            userbot_line = (
+                f"🤖 Userbot: {'✅ ishlayapti' if ago <= 90 else '❌ javob bermayapti'} "
+                f"({ago} soniya oldin signal)"
+            )
+        except ValueError:
+            userbot_line = "🤖 Userbot: ❓ holati noma'lum"
+    else:
+        userbot_line = (
+            "🤖 Userbot: ❌ hali signal yo'q — userbot ishga tushmagan "
+            "yoki Replitda faqat bot.py ishlayapti (main.py kerak)"
+        )
+
+    lines = [
+        "📊 <b>Skaner holati</b>",
+        "",
+        f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ TOʻXTATILGAN — ▶️ yoqish kerak'}",
+        userbot_line,
+        f"🔑 Kalitlar: <b>{len(get_keywords())}</b> ta",
+        f"🔔 Shart: kamida <b>{get_match_count()}</b> ta kalit topilsa",
+        f"👥 Faol guruhlar: <b>{len(active)}</b> ta",
+    ]
+    if pending:
+        lines.append(f"⏳ Tekshiruvdagi guruhlar: {len(pending)} ta")
+    if paused:
+        lines.append(f"⏸ To'xtatilgan guruhlar: {len(paused)} ta (▶️ yoqing)")
+    if errored:
+        lines.append(f"⚠️ Xatoli guruhlar: {len(errored)} ta (📋 Guruhlarim da sababi bor)")
+    if not groups:
+        lines.append("📭 Guruh umuman qo'shilmagan — ➕ Guruh qo'shish dan qo'shing")
+    elif not active:
+        lines.append("📭 Faol guruh yo'q — guruh ulanganini tekshiring")
+    lines += [
+        "",
+        "📬 <b>Bildirishnomalar aynan shu chatga keladi</b> (Secrets dagi "
+        "ADMIN_ID — boshqa joyga yuborilmaydi).",
+    ]
+    return "\n".join(lines)
+
+
+@dp.message(F.text == BTN_TEST)
+async def scan_test_start(message: types.Message, state: FSMContext):
+    await state.set_state(ScanTest.waiting_text)
+    await message.answer(
+        scanner_status_text()
+        + "\n\n🧪 <b>Test:</b> endi namuna xabar yozib yuboring — "
+        "kalitlarga tekshirib, skaner xabar berardimi yoki yo'qmi, "
+        "sababi bilan aytaman.\n\nBekor qilish: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(StateFilter(ScanTest.waiting_text), F.text)
+async def scan_test_check(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    await state.clear()
+    keywords = get_keywords()
+    required = get_match_count()
+    result = match_keywords(message.text or "", keywords, required)
+    found = find_match(message.text or "", keywords, required)
+
+    lines = [
+        f"🔍 Topilgan kalitlar: <b>{result.matched_count}</b> ta "
+        f"(shart: {required} ta)",
+    ]
+    if result.matched_words:
+        lines.append(f"✅ {html.escape(', '.join(result.matched_words))}")
+    if found:
+        lines.append(
+            "\n🎯 <b>Natija: skaner bu xabarga XABAR BERARDI</b> — "
+            "agar guruh faol bo'lsa, bildirishnoma aynan shu chatga keladi."
+        )
+    else:
+        lines.append(
+            "\n❌ <b>Natija: xabar BERILMASDI</b> — kalitlar soni shartga "
+            "yetmadi. Kalit qo'shing yoki 🔔 shartni kamaytiring."
+        )
+    if get_setting("is_active") != "1":
+        lines.append("⚠️ Bundan tashqari tizim ⏸ to'xtatilgan — avval ▶️ yoqing.")
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
 
 
 @dp.message(F.text == BTN_TOGGLE)

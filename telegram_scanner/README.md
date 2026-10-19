@@ -80,7 +80,13 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 4. **🔔 Xabar sharti** tugmasida admin bitta son belgilaydi: xabarda
    kalitlardan kamida nechtasi topilsa xabar berilishi. Sonni xohlagan
    vaqtda o'zgartirish mumkin — qayta ishga tushirish shart emas.
-5. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni, topilgan
+5. **🧪 Skaner testi** tugmasi diagnostika uchun: tizim/userbot/guruhlar
+   holatini ko'rsatadi va namuna xabarni kalitlarga tekshirib beradi.
+   Bildirishnomalar faqat Secrets dagi `ADMIN_ID` ga — shu bot bilan
+   bo'lgan shaxsiy chatga keladi, boshqa joyga yuborilmaydi.
+   Replit logida `[SCAN]` yozuvlari qaysi bosqichda to'xtaganini,
+   `[NOTIFY]` yozuvlari yuborilganini ko'rsatadi.
+6. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni, topilgan
    kalitlar ro'yxati va asl xabarga havola bilan xabar yuboradi.
 
 ### Kalit qanday ishlaydi?

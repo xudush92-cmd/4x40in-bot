@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import re
+import time
 
 import aiohttp
 from telethon import TelegramClient, events, utils
@@ -24,8 +25,9 @@ from database import (
     init_db,
     mark_managed_group_error,
     resolve_managed_group,
+    set_setting,
 )
-from matcher import find_match
+from matcher import find_match, match_keywords
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,8 +45,13 @@ PHONE_REGEX = re.compile(
 )
 
 
-async def send_to_bot_api(text, reply_markup=None):
-    """Topilgan xabarni boshqaruv boti orqali adminga yuborish."""
+async def send_to_bot_api(text, reply_markup=None) -> bool:
+    """Topilgan xabarni boshqaruv boti orqali ADMIN_ID ga yuborish.
+
+    Manzil FAQAT Secrets dagi ADMIN_ID — boshqa joyga ketmaydi.
+    Asosiy yuborish xato bersa (tugma/HTML sababli), bildirishnoma
+    yo'qolmasligi uchun oddiy matn bilan qayta yuboriladi.
+    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": ADMIN_ID,
@@ -55,12 +62,29 @@ async def send_to_bot_api(text, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = reply_markup
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                logger.warning(
-                    "Bot API xatosi (%s): %s", resp.status, await resp.text()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                body = await resp.text()
+                if resp.status == 200:
+                    logger.info("[NOTIFY] Adminga yuborildi (ADMIN_ID=%s)", ADMIN_ID)
+                    return True
+                logger.warning("[NOTIFY] Bot API xatosi (%s): %s", resp.status, body)
+            # Zaxira: tugmalarsiz va HTMLsiz oddiy matn
+            plain = re.sub(r"<[^>]+>", "", text)
+            async with session.post(
+                url, json={"chat_id": ADMIN_ID, "text": plain}
+            ) as resp2:
+                if resp2.status == 200:
+                    logger.info("[NOTIFY] Zaxira matn yuborildi")
+                    return True
+                logger.error(
+                    "[NOTIFY] Zaxira ham yuborilmadi (%s): %s",
+                    resp2.status, await resp2.text(),
                 )
+    except Exception:
+        logger.exception("[NOTIFY] Yuborishda tarmoq xatosi")
+    return False
 
 
 @client.on(events.NewMessage)
@@ -68,21 +92,43 @@ async def handler(event):
     if not event.raw_text:
         return
 
+    keywords = get_keywords()
+    required = get_match_count()
+    active_ids = get_active_groups_ids()
+    is_active_chat = event.chat_id in active_ids
+
+    # Diagnostika: Replit logida [SCAN] deb qidiring — qaysi bosqichda
+    # to'xtagani ko'rinadi.
+    logger.info(
+        "[SCAN] chat_id=%s faol_guruh=%s tizim=%s kalitlar=%s shart=%s xabar=%r",
+        event.chat_id, is_active_chat, get_setting("is_active"),
+        len(keywords), required, event.raw_text[:80],
+    )
+
     # 1. Tizim yoqilganmi?
     if get_setting("is_active") != "1":
+        logger.info("[SCAN] tashlandi: tizim ⏸ to'xtatilgan (botdan ▶️ yoqing)")
         return
 
-    # 2. Xabar kuzatilayotgan guruhdanmi?
-    if event.chat_id not in get_active_groups_ids():
+    # 2. Xabar qo'lda qo'shilib, tekshirilgan va yoqilgan guruhdanmi?
+    if not is_active_chat:
+        logger.info(
+            "[SCAN] tashlandi: bu guruh faol ro'yxatda yo'q "
+            "(qo'shilmagan, tekshiruvda yoki ⏸ to'xtatilgan)"
+        )
         return
 
     # 3-4. Kalit so'zlarni tekshirish: kalitlar soni cheksiz, admin
     # belgilagan soni (match_count) topilsa — xabar beriladi.
-    # Har bir xabarda sozlamadan qayta o'qiladi — admin o'zgartirsa,
-    # qayta ishga tushirmasdan darhol kuchga kiradi. Batafsil: matcher.py
-    match = find_match(event.raw_text, get_keywords(), get_match_count())
+    result = match_keywords(event.raw_text, keywords, required)
+    logger.info(
+        "[SCAN] topilgan kalitlar=%s (%s/%s)",
+        result.matched_words, result.matched_count, required,
+    )
+    match = find_match(event.raw_text, keywords, required)
 
     if not match:
+        logger.info("[SCAN] tashlandi: kalitlar soni shartga yetmadi")
         return
     found_phrase = match.matched_words
 
@@ -261,9 +307,13 @@ async def resolve_pending_groups() -> None:
 
 
 async def _group_resolver_loop() -> None:
-    """Har 30 soniyada yangi qo'shilgan guruhlarni tekshirib turadi."""
+    """Har 30 soniyada guruhlarni tekshiradi va 'tirik' signalini yozadi.
+
+    Botdagi 📊 holatda userbot onlaynligi shu signal orqali ko'rinadi.
+    """
     while True:
         try:
+            set_setting("userbot_last_seen", int(time.time()))
             await resolve_pending_groups()
         except Exception:
             logger.exception("Guruh tekshiruvida xato")
