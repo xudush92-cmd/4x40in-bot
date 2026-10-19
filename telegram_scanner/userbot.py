@@ -87,6 +87,22 @@ async def send_to_bot_api(text, reply_markup=None) -> bool:
     return False
 
 
+def build_message_link(chat, chat_id, message_id) -> str | None:
+    """Xabarning o'ziga olib boradigan havola.
+
+    Ochiq guruhda (username bo'lsa): https://t.me/username/123
+    Superguruhda (username bo'lmasa): https://t.me/c/123456/123
+    Oddiy yopiq guruhda Telegram to'g'ridan havola bermaydi -> None.
+    """
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+    raw_id = str(chat_id)
+    if raw_id.startswith("-100"):
+        return f"https://t.me/c/{raw_id[4:]}/{message_id}"
+    return None
+
+
 @client.on(events.NewMessage)
 async def handler(event):
     if not event.raw_text:
@@ -164,19 +180,20 @@ async def handler(event):
         f"🔔 <b>Shart:</b> kamida {match.required_count} ta — bajarildi"
     )
 
-    # Supergroup ID: -100xxxxxxxxxx -> ichki qism havola uchun
-    raw_id = str(event.chat_id)
-    internal_id = raw_id[4:] if raw_id.startswith("-100") else raw_id.lstrip("-")
-
-    buttons = [
-        [{"text": "🔗 Asl xabarni ochish", "url": f"https://t.me/c/{internal_id}/{event.id}"}]
-    ]
+    # Tugmalar: mijozga yozish + xabarning o'ziga o'tish
+    button_row = []
     if user_id is not None:
-        buttons[0].insert(
-            0, {"text": "💬 Mijozga yozish", "url": f"tg://user?id={user_id}"}
+        button_row.append(
+            {"text": "💬 Mijozga yozish", "url": f"tg://user?id={user_id}"}
         )
+    message_link = build_message_link(chat, event.chat_id, event.id)
+    if message_link:
+        button_row.append(
+            {"text": "🔗 Xabarga o'tish", "url": message_link}
+        )
+    buttons = {"inline_keyboard": [button_row]} if button_row else None
 
-    await send_to_bot_api(result_text, {"inline_keyboard": buttons})
+    await send_to_bot_api(result_text, buttons)
 
 
 def _is_group_entity(entity) -> bool:
