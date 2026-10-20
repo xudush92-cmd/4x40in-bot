@@ -100,8 +100,8 @@ BTN_LOGIN = "🔑 Login"
 BTN_ACCOUNT = "📱 Akkaunt holati"
 BTN_HELP = "ℹ️ Yordam"
 # Foydalanuvchining UMUMIY skaner boshqaruvi (bitta tugma, menyuda)
-BTN_SCAN_PAUSE = "⏸ Stop"
-BTN_SCAN_RESUME = "▶️ Start"
+BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
+BTN_SCAN_RESUME = "🟢 ▶️ Start"
 MENU_BUTTONS = {
     BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
     BTN_COUNT, BTN_TOGGLE, BTN_TEST, BTN_USERS, BTN_STATS,
@@ -190,10 +190,12 @@ def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
         ]
     toggle = BTN_SCAN_PAUSE if scanner_enabled else BTN_SCAN_RESUME
     return [
+        # Umumiy Stop/Start — menyuning ENG TEPASIDA, alohida qatorda
+        [KeyboardButton(text=toggle)],
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
-        [KeyboardButton(text=BTN_TEST), KeyboardButton(text=toggle)],
-        [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_HELP)],
+        [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_COUNT)],
+        [KeyboardButton(text=BTN_HELP)],
     ]
 
 
@@ -713,37 +715,15 @@ async def account_status(message: types.Message, state: FSMContext):
         return
     await state.clear()
     uid = message.from_user.id
-    row = get_user_full(uid)
-    kb_rows = []
-    if row and row[8] and not row[10]:
-        kb_rows.append([InlineKeyboardButton(
-            text="🔌 Sessiyani uzish", callback_data="sess_out")])
-    elif not (row and row[10]):
-        kb_rows.append([InlineKeyboardButton(
-            text="📱 Akkauntni ulash", callback_data="sess_in")])
-    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
-    await message.answer(account_status_text(uid), parse_mode="HTML",
-                         reply_markup=kb)
+    # Bu bo'limda tugmalar yo'q — faqat holat ko'rsatiladi
+    # (sessiyani uzish tugmasi olib tashlangan).
+    await message.answer(account_status_text(uid), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "sess_in")
 async def sess_in_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await begin_login(callback.message, state, user_id=callback.from_user.id)
-
-
-@dp.callback_query(F.data == "sess_out")
-async def sess_out_callback(callback: types.CallbackQuery, state: FSMContext):
-    uid = callback.from_user.id
-    try:
-        import scanner_manager
-        await scanner_manager.stop_user_client(uid, revoke=True)
-    except Exception:
-        logger.exception("Sessiya uzish")
-    clear_session(uid)
-    await callback.message.edit_text(
-        "🔌 Sessiya uzildi. Qayta ulash uchun 🔑 Login bosing.")
-    await callback.answer("Uzildi")
 
 
 # --- Foydalanuvchi: o'z guruhlari ---
@@ -940,9 +920,9 @@ async def user_scanner_toggle(message: types.Message, state: FSMContext):
     enable = (message.text or "").strip() == BTN_SCAN_RESUME
     set_user_scanner_enabled(uid, enable)
     if enable:
-        text = "▶️ <b>Skaner yoqildi.</b>\nGuruhlaringiz yana kuzatiladi."
+        text = "🟢 <b>Skaner yoqildi.</b>\nGuruhlaringiz yana kuzatiladi."
     else:
-        text = ("⏸ <b>Skaner to'xtatildi.</b>\nBarcha guruhlaringizdan "
+        text = ("🔴 <b>Skaner to'xtatildi.</b>\nBarcha guruhlaringizdan "
                 "xabar kelishi to'xtaydi (guruhlar o'chmaydi).")
     await message.answer(text, parse_mode="HTML", reply_markup=user_menu_for(uid))
 
@@ -963,7 +943,7 @@ def _user_scan_status_text(uid: int) -> str:
         "",
         f"📱 Akkaunt: {'✅ ulangan' if user_connected(uid) else '❌ ulanmagan'}",
         f"🔐 Sessiya: {'✅ onlayn' if online else '❌ onlayn emas (server ishga tushganini tekshiring)'}",
-        f"📡 Umumiy skaner: {'▶️ yoniq' if get_user_scanner_enabled(uid) else '⏸ oʻchirilgan — menyudagi ▶️ Start ni bosing'}",
+        f"📡 Umumiy skaner: {'🟢 yoniq' if get_user_scanner_enabled(uid) else '🔴 oʻchirilgan — menyu tepasidagi 🟢 ▶️ Start ni bosing'}",
         f"👥 Guruhlaringiz: <b>{len(groups)}</b> ta (ulangan: {ok}, tekshiruvda: {pending}, xato: {errored})",
     ]
     if get_setting("is_active") != "1":

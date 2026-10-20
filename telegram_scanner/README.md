@@ -97,9 +97,11 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
    ichida tekshirib, "✅ Guruh ulandi" yoki sababi bilan xato xabarini
    yuboradi. Xato bo'lsa 🔄 Qayta tekshirish tugmasi bor.
 2. **📋 Guruhlarim** da har bir guruhda faqat **🗑 O'chirish** tugmasi
-   bor. Stop/Start guruhga alohida EMAS — foydalanuvchi menyusida
-   bitta UMUMIY tugma: yoniq bo'lsa `⏸ Stop`, o'chiq bo'lsa
-   `▶️ Start` chiqadi va barcha guruhlariga bir vaqtda ta'sir qiladi.
+   bor. Stop/Start guruhga alohida EMAS — foydalanuvchi menyusining
+   ENG TEPASIDA bitta UMUMIY tugma: yoniq bo'lsa `🔴 ⏸ Stop`,
+   o'chiq bo'lsa `🟢 ▶️ Start` chiqadi va barcha guruhlariga
+   bir vaqtda ta'sir qiladi. 📱 Akkaunt holati bo'limida tugmalar
+   yo'q — faqat holat ko'rsatiladi (sessiyani uzish tugmasi yo'q).
    Menyuda shuningdek bitta umumiy **🧪 Skaner testi** tugmasi bor.
 3. **➕ Kalit so'z qo'shish** orqali kalitlar qo'shing. Har bir so'z —
    alohida kalit, kalitlar soni **cheklanmagan**. Bitta xabarda bir
