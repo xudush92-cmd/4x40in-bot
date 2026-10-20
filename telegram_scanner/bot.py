@@ -170,11 +170,11 @@ def is_admin(user_id: int | None) -> bool:
 def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
     if admin:
         kb = [
-            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUPS)],
-            [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_COUNT)],
-            [KeyboardButton(text=BTN_TOGGLE), KeyboardButton(text=BTN_TEST)],
-            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_USERS)],
+            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_PHRASES)],
+            [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_USERS)],
             [KeyboardButton(text=BTN_APPLICATIONS), KeyboardButton(text=BTN_BROADCAST)],
+            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_TEST)],
+            [KeyboardButton(text=BTN_TOGGLE)],
         ]
     else:
         kb = user_menu_keyboard()
@@ -1265,7 +1265,8 @@ async def ask_group(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Guruhlarni har bir foydalanuvchi <b>o'z akkauntidan</b> qo'shadi. "
-        "Siz 📋 Guruhlarim (barcha guruhlar) dan ularni nazorat qilasiz.",
+        "Ularni 👥 Foydalanuvchilar bo'limidagi foydalanuvchi "
+        "kartochkasidan kuzatasiz.",
         parse_mode="HTML",
         reply_markup=main_menu(admin=True),
     )
@@ -1343,50 +1344,6 @@ def _find_group(group_id: int):
     return None
 
 
-@dp.message(AdminFilter(), F.text.in_({BTN_GROUPS, "📋 Guruhlar ro'yxati"}))
-async def list_groups(message: types.Message, state: FSMContext):
-    """Admin: BARCHA foydalanuvchilarning guruhlari."""
-    await state.clear()
-    groups = get_all_user_groups()
-    if not groups:
-        await message.answer(
-            "Hozircha foydalanuvchilar guruh qo'shmagan."
-        )
-        return
-
-    await message.answer(f"👥 Barcha guruhlar — {len(groups)} ta:")
-    for row in groups:
-        gid, owner, input_value, chat_id, title, is_active, status, last_error = row
-        if status == "ok":
-            line = "✅ Kuzatilmoqda" if is_active else "⏸ Stop"
-        elif status == "pending":
-            line = "⏳ Tekshiruvda"
-        else:
-            line = f"⚠️ {last_error or 'xato'}"
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="🗑 O'chirish (admin)", callback_data=f"agdel:{gid}")
-        ]])
-        await message.answer(
-            f"👥 <b>{html.escape(title or input_value or '')}</b>\n"
-            f"Egasi: <code>{owner}</code> • {line}",
-            parse_mode="HTML",
-            reply_markup=kb,
-        )
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("agdel:"))
-async def admin_delete_user_group(callback: types.CallbackQuery):
-    try:
-        gid = int(callback.data.split(":", 1)[1])
-    except ValueError:
-        await callback.answer("Xato.", show_alert=True)
-        return
-    delete_user_group(gid)
-    await callback.message.edit_text("🗑 Guruh admin tomonidan o'chirildi.")
-    await callback.answer("O'chirildi")
-
-
 @dp.callback_query(AdminFilter(), F.data.startswith("gact:"))
 async def toggle_managed_callback(callback: types.CallbackQuery):
     """⏸/▶️ — tugma o'z o'rnida qarama-qarshi holatga almashadi."""
@@ -1440,29 +1397,148 @@ async def delete_group_callback(callback: types.CallbackQuery):
     await callback.answer("O'chirildi")
 
 
-# --- Admin: foydalanuvchilar boshqaruvi ---
-def _user_status_line(row) -> str:
-    _uid, name, uname, blocked, expires, _created = row
+# --- Admin: foydalanuvchilar boshqaruvi (bitta to'liq kartochka) ---
+def _short_text(value, limit: int = 38) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _admin_user_card_text(row) -> str:
+    """Bitta foydalanuvchi haqida barcha ma'lumot bitta kartochkada.
+
+    Alohida "guruhlar" bo'limi yo'q: guruhlar, shart, skaner holati,
+    tarif, sessiya va statistika shu kartochkaning o'zida ko'rsatiladi.
+    """
+    (uid, first_name, uname, blocked, expires, created, full_name, phone,
+     session_enc, pending_enc, awaiting, session_status, _warn,
+     last_found, scanner_enabled) = row
     now = int(time.time())
+    groups = get_user_groups(uid)
+    ok_groups = [g for g in groups if g[6] == "ok"]
+    pending_groups = [g for g in groups if g[6] == "pending"]
+    error_groups = [g for g in groups if g[6] == "error"]
+
+    try:
+        import scanner_manager
+
+        client_online = scanner_manager.is_client_online(uid)
+    except Exception:
+        client_online = False
+
     if blocked:
-        status = "⛔ Bloklangan"
+        tariff_line = "⛔ Bloklangan"
     elif expires and expires > now:
-        status = f"✅ Faol ({format_date(expires)} gacha)"
+        days = (expires - now + 86399) // 86400
+        tariff_line = (
+            f"✅ Faol — {format_date(expires)} gacha ({days} kun qoldi)"
+        )
     else:
-        status = "❌ Tarif yo'q/tugagan"
-    uname_text = f"@{html.escape(uname)}" if uname else "username yo'q"
+        tariff_line = "❌ Faol emas / muddati tugagan"
+
+    if awaiting:
+        session_line = "⏳ Login qilingan, admin tasdig'i kutilmoqda"
+    elif session_enc:
+        session_line = (
+            f"{'✅ Ulangan, client onlayn' if client_online else '⚠️ Sessiya bor, client offline'}"
+            f" ({html.escape(session_status or 'unknown')})"
+        )
+    else:
+        session_line = "❌ Telegram akkaunt ulanmagan"
+
+    keywords = get_keywords()
+    required = get_user_match_count(uid)
+    if not keywords:
+        condition_line = "❌ Kalit so'zlar kiritilmagan"
+        condition_ok = False
+    elif required > len(keywords):
+        condition_line = (
+            f"⚠️ Kamida {required} ta kalit kerak, lekin kalitlar "
+            f"{len(keywords)} ta — shart bajarilmaydi"
+        )
+        condition_ok = False
+    else:
+        condition_line = (
+            f"✅ Kamida {required} ta kalit topilsa xabar boradi "
+            f"(kalitlar: {len(keywords)} ta)"
+        )
+        condition_ok = True
+
+    system_on = get_setting("is_active") == "1"
+    if blocked:
+        working_line = "❌ Ishlamaydi — foydalanuvchi bloklangan"
+    elif awaiting or not session_enc:
+        working_line = "❌ Ishlamaydi — akkaunt tasdiqlanmagan/ulanmagan"
+    elif not system_on:
+        working_line = "❌ Ishlamaydi — admin tizimni umumiy to'xtatgan"
+    elif not (expires and expires > now):
+        working_line = "❌ Ishlamaydi — tarif faol emas"
+    elif not scanner_enabled:
+        working_line = "❌ Ishlamaydi — foydalanuvchi umumiy Stop bosgan"
+    elif not client_online:
+        working_line = "⚠️ Ishlamayapti — sessiya clienti hozir offline"
+    elif not ok_groups:
+        working_line = "❌ Ishlamaydi — tayyor ulangan guruh yo'q"
+    elif not condition_ok:
+        working_line = "❌ Ishlamaydi — xabar sharti bajarilmaydigan holatda"
+    else:
+        working_line = "✅ Ishlayapti — guruhlar kuzatilmoqda"
+
+    if groups:
+        group_lines = []
+        for index, g in enumerate(groups, 1):
+            name = _short_text(g[4] or g[2] or "Nomsiz guruh")
+            if g[6] == "ok":
+                state = "✅ ulangan"
+            elif g[6] == "pending":
+                state = "⏳ tekshiruvda"
+            else:
+                state = f"⚠️ xato: {_short_text(g[7] or 'nomaʼlum', 55)}"
+            group_lines.append(
+                f"{index}. {html.escape(name)} — {state}"
+            )
+        groups_text = "\n".join(group_lines)
+    else:
+        groups_text = "Guruh qo'shilmagan"
+
+    last_found_text = (
+        time.strftime("%d.%m.%Y %H:%M", time.localtime(last_found))
+        if last_found else "hali yo'q"
+    )
+    created_text = format_date(created) if created else "—"
+    display_name = full_name or first_name or "—"
+    username_text = f"@{html.escape(uname)}" if uname else "username yo'q"
+
     return (
-        f"👤 <b>{html.escape(name or '—')}</b> ({uname_text})\n"
-        f"🆔 <code>{_uid}</code>\n{status}"
+        "👤 <b>Foydalanuvchi kartochkasi</b>\n\n"
+        f"👤 Ism: <b>{html.escape(display_name)}</b> ({username_text})\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"📱 Telefon: <b>{html.escape(phone or '—')}</b>\n"
+        f"🗓 Ro'yxatdan o'tgan: {created_text}\n\n"
+        f"💳 Tarif: {tariff_line}\n"
+        f"🔐 Sessiya: {session_line}\n"
+        f"📡 Foydalanuvchi skaneri: {'🟢 Start holatida' if scanner_enabled else '🔴 Stop holatida'}\n"
+        f"⚙️ Umumiy tizim: {'✅ yoniq' if system_on else '⏸ admin toʻxtatgan'}\n"
+        f"🧪 Skaner holati: <b>{working_line}</b>\n\n"
+        f"🔔 Xabar sharti: {condition_line}\n\n"
+        f"👥 <b>Guruhlari: {len(groups)} ta</b> "
+        f"(ulangan: {len(ok_groups)}, tekshiruvda: {len(pending_groups)}, "
+        f"xato: {len(error_groups)})\n"
+        f"{groups_text}\n\n"
+        "📊 <b>Statistikasi</b>\n"
+        f"🚖 Topilgan xabarlar: <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
+        f"🕐 Oxirgi topilgan xabar: {last_found_text}"
     )
 
 
-def _user_keyboard(row) -> InlineKeyboardMarkup:
-    uid, _name, _uname, blocked, _expires, _created = row
+def _user_keyboard(uid: int, blocked: int) -> InlineKeyboardMarkup:
     block_btn = (
-        InlineKeyboardButton(text="✅ Blokdan chiqarish", callback_data=f"ublock:{uid}")
+        InlineKeyboardButton(
+            text="✅ Blokdan chiqarish", callback_data=f"ublock:{uid}"
+        )
         if blocked
-        else InlineKeyboardButton(text="⛔ Bloklash", callback_data=f"ublock:{uid}")
+        else InlineKeyboardButton(
+            text="⛔ Bloklash", callback_data=f"ublock:{uid}"
+        )
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1474,7 +1550,8 @@ def _user_keyboard(row) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="👥 Guruhlari", callback_data=f"ugroups:{uid}"
+                    text="🔄 Kartochkani yangilash",
+                    callback_data=f"urefresh:{uid}",
                 ),
                 InlineKeyboardButton(
                     text="🔌 Sessiyani uzish", callback_data=f"ukick:{uid}"
@@ -1482,7 +1559,8 @@ def _user_keyboard(row) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🗑 Foydalanuvchini o'chirish", callback_data=f"udel:{uid}"
+                    text="🗑 Foydalanuvchini o'chirish",
+                    callback_data=f"udel:{uid}",
                 )
             ],
         ]
@@ -1492,36 +1570,51 @@ def _user_keyboard(row) -> InlineKeyboardMarkup:
 @dp.message(AdminFilter(), F.text == BTN_USERS)
 async def list_users(message: types.Message, state: FSMContext):
     await state.clear()
-    users = [u for u in get_all_users() if u[0] != ADMIN_ID]
+    users = [u for u in get_all_users_full() if u[0] != ADMIN_ID]
     if not users:
         await message.answer(
             "👥 Hozircha foydalanuvchilar yo'q.\n"
             "Bot havolasini ulashing — /start bosganlar shu yerda chiqadi."
         )
         return
-    active_n = sum(1 for u in users if is_subscription_active(u[0]) and not u[3])
+    active_n = sum(
+        1 for u in users if is_subscription_active(u[0]) and not u[3]
+    )
     await message.answer(
         f"👥 <b>Foydalanuvchilar: {len(users)} ta</b> "
         f"(faol tarif: {active_n} ta)\n"
-        "Har birida: ➕ 30 kun (tarif uzaytirish) va bloklash tugmasi.",
+        "Har bir foydalanuvchining guruhlari, sharti, skaner holati "
+        "va statistikasi bitta kartochkada ko'rsatiladi.",
         parse_mode="HTML",
     )
     for row in users:
         await message.answer(
-            _user_status_line(row),
+            _admin_user_card_text(row),
             parse_mode="HTML",
-            reply_markup=_user_keyboard(row),
+            reply_markup=_user_keyboard(row[0], row[3]),
         )
 
 
 async def _refresh_user_card(callback: types.CallbackQuery, user_id: int):
-    row = get_user(user_id)
+    row = get_user_full(user_id)
     if row:
         await callback.message.edit_text(
-            _user_status_line(row),
+            _admin_user_card_text(row),
             parse_mode="HTML",
-            reply_markup=_user_keyboard(row),
+            reply_markup=_user_keyboard(row[0], row[3]),
         )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("urefresh:"))
+async def refresh_user_card_callback(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    await _refresh_user_card(callback, user_id)
+    await callback.answer("🔄 Yangilandi")
+
 
 
 async def _apply_new_term(admin_message: types.Message, target_id: int, days: int):
@@ -1605,25 +1698,6 @@ async def user_term_days_input(message: types.Message, state: FSMContext):
     await state.clear()
     if target:
         await _apply_new_term(message, int(target), int(text))
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("ugroups:"))
-async def admin_user_groups(callback: types.CallbackQuery):
-    try:
-        user_id = int(callback.data.split(":", 1)[1])
-    except ValueError:
-        await callback.answer("Xato.", show_alert=True)
-        return
-    groups = get_user_groups(user_id)
-    if not groups:
-        await callback.answer("Bu foydalanuvchida guruhlar yo'q.", show_alert=True)
-        return
-    lines = [f"👥 Foydalanuvchi {user_id} guruhlari ({len(groups)} ta):"]
-    for g in groups:
-        st = "✅" if g[6] == "ok" and g[5] == 1 else ("⏸" if g[6] == "ok" else "⚠️")
-        lines.append(f"{st} {html.escape(g[4] or g[2] or '')}")
-    await callback.message.answer("\n".join(lines), parse_mode="HTML")
-    await callback.answer()
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("ukick:"))

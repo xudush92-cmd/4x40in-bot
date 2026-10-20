@@ -65,8 +65,14 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 ## Rollar: Admin va foydalanuvchilar (biznes, server modeli)
 
 - **Admin** (`ADMIN_ID`, bitta odam): kalitlar (faqat admin kiritadi),
-  xabar sharti, tizim stop/start, 🧪 test, 📊 umumiy statistika,
-  👥 foydalanuvchilar, 📝 arizalar, 📣 xabar yuborish (broadcast).
+  xabar sharti (standart), tizim stop/start, 🧪 test, 📊 umumiy
+  statistika, 👥 foydalanuvchilar, 📝 arizalar, 📣 xabar yuborish.
+  Admindan alohida "guruhlar" bo'limi YO'Q va admin guruh o'chirmaydi —
+  har bir foydalanuvchining guruhlari, xabar sharti, skaner holati,
+  tarifi, sessiyasi va statistikasi **bitta foydalanuvchi
+  kartochkasida** ko'rsatiladi. Kartochkadagi tartibli tugmalar:
+  ⏰ Muddat berish, ⛔ Bloklash, 🔄 Kartochkani yangilash,
+  🔌 Sessiyani uzish, 🗑 Foydalanuvchini o'chirish.
 - **Registratsiya (QR siz)**: ism-familiya (bitta xabar) → telefon
   `+998...` → kod DARHOL so'raladi va faqat botdagi **raqamli
   tugmalar** bilan teriladi (matn kod o'chiriladi) → 2FA (bo'lsa) →
