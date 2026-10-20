@@ -104,9 +104,11 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 3. **➕ Kalit so'z qo'shish** orqali kalitlar qo'shing. Har bir so'z —
    alohida kalit, kalitlar soni **cheklanmagan**. Bitta xabarda bir
    nechta so'z yuborsangiz, har biri alohida kalit bo'lib saqlanadi.
-4. **🔔 Xabar sharti** tugmasida admin bitta son belgilaydi: xabarda
-   kalitlardan kamida nechtasi topilsa xabar berilishi. Sonni xohlagan
-   vaqtda o'zgartirish mumkin — qayta ishga tushirish shart emas.
+4. **🔔 Xabar sharti**: kalitlardan kamida nechtasi topilsa xabar
+   berilishi. Admin umumiy (standart) sonni belgilaydi; har bir
+   foydalanuvchi menyudagi **🔔 Xabar sharti** dan O'Z shartini
+   alohida belgilashi mumkin — bu faqat o'ziga ta'sir qiladi.
+   Kalit so'zlarning o'zi esa umumiy (faqat admin kiritadi).
 5. **🧪 Skaner testi** tugmasi diagnostika uchun: tizim/userbot/guruhlar
    holatini ko'rsatadi va namuna xabarni kalitlarga tekshirib beradi.
    Bildirishnomalar faqat Secrets dagi `ADMIN_ID` ga — shu bot bilan

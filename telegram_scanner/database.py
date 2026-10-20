@@ -87,6 +87,7 @@ def _migrate_user_columns(conn) -> None:
         "last_warn_date": "TEXT DEFAULT ''",
         "last_found_at": "INTEGER DEFAULT 0",
         "scanner_enabled": "INTEGER DEFAULT 1",
+        "own_match_count": "INTEGER DEFAULT 0",
     }
     for name, ddl in additions.items():
         if name not in columns:
@@ -448,6 +449,32 @@ def set_user_scanner_enabled(user_id: int, enabled: bool) -> bool:
             (1 if enabled else 0, user_id),
         )
     return enabled
+
+
+def get_user_match_count(user_id: int) -> int:
+    """Foydalanuvchining O'Z xabar sharti.
+
+    O'zi belgilamagan bo'lsa (0) — adminning umumiy sharti ishlatiladi.
+    """
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(own_match_count,0) FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    if row and row[0]:
+        return max(1, int(row[0]))
+    return get_match_count()
+
+
+def set_user_match_count(user_id: int, value: int) -> int:
+    """Foydalanuvchi o'z shartini belgilaydi (faqat o'ziga ta'sir qiladi)."""
+    value = max(1, int(value))
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET own_match_count = ? WHERE user_id = ?",
+            (value, user_id),
+        )
+    return value
 
 
 def delete_user_completely(user_id: int) -> None:

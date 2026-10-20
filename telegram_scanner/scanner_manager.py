@@ -22,6 +22,7 @@ from database import (
     get_notification_recipients,  # noqa: F401 (eski moslik)
     get_owner_active_chat_ids,
     get_pending_user_groups,
+    get_user_match_count,
     get_user_scanner_enabled,
     get_setting,
     get_user_full,
@@ -136,9 +137,9 @@ def _make_handler(owner_id: int, client: TelegramClient):
         # 3. Faqat EGASINING faol guruhlari
         if event.chat_id not in get_owner_active_chat_ids(owner_id):
             return
-        # 4. Admin kalitlari + admin sharti
+        # 4. Admin kalitlari (umumiy) + EGASINING o'z sharti (alohida)
         keywords = get_keywords()
-        required = get_match_count()
+        required = get_user_match_count(owner_id)
         result = match_keywords(event.raw_text, keywords, required)
         logger.info(
             "[SCAN] owner=%s chat=%s topildi=%s/%s",

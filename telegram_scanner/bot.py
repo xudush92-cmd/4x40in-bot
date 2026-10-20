@@ -45,6 +45,7 @@ from database import (
     get_user_full,
     get_user_group,
     get_user_groups,
+    get_user_match_count,
     get_user_scanner_enabled,
     increment_counter,
     init_db,
@@ -56,6 +57,7 @@ from database import (
     set_pending_session,
     set_registration_info,
     set_session_status,
+    set_user_match_count,
     set_user_scanner_enabled,
     set_setting,
     set_user_blocked,
@@ -191,7 +193,7 @@ def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
         [KeyboardButton(text=BTN_TEST), KeyboardButton(text=toggle)],
-        [KeyboardButton(text=BTN_HELP)],
+        [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_HELP)],
     ]
 
 
@@ -259,7 +261,8 @@ def account_status_text(user_id: int) -> str:
         f"👤 Ism: <b>{html.escape(full_name or _name or '—')}</b>\n"
         f"📞 Telefon: <b>{html.escape(phone_text)}</b>\n"
         f"🔐 Sessiya: {conn} ({html.escape(status or 'none')})\n"
-        f"📡 Skaner: {'▶️ yoniq' if _scanner_on else '⏸ oʻchirilgan'}\n\n"
+        f"📡 Skaner: {'▶️ yoniq' if _scanner_on else '⏸ oʻchirilgan'}\n"
+        f"🔔 Xabar sharti: kamida <b>{get_user_match_count(_uid)}</b> ta kalit\n\n"
         + subscription_text(get_user(user_id))
         + f"\n🕐 Oxirgi topilgan xabar: {last}\n\n"
         "Tarif masalasi admin bilan og'zaki hal qilinadi."
@@ -997,7 +1000,7 @@ async def user_scan_test_check(message: types.Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
     keywords = get_keywords()
-    required = get_match_count()
+    required = get_user_match_count(uid)
     result = match_keywords(message.text or "", keywords, required)
     verdict = (
         "🎯 <b>Xabar berilardi</b> — shart bajarildi."
@@ -1015,6 +1018,77 @@ async def user_scan_test_check(message: types.Message, state: FSMContext):
     )
 
 
+# --- Foydalanuvchi: O'Z xabar sharti (har kimniki alohida) ---
+def _user_count_keyboard() -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text=str(n), callback_data=f"usetcnt:{n}")
+        for n in (1, 2, 3, 4, 5)
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+
+@dp.message(NotAdminFilter(), F.text == BTN_COUNT)
+async def user_ask_match_count(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    await state.set_state(SetCount.waiting_count)
+    await message.answer(
+        f"🔔 <b>Sizning xabar shartingiz:</b> xabarda kamida "
+        f"<b>{get_user_match_count(uid)}</b> ta kalit so'z topilsa "
+        "sizga xabar keladi.\n\n"
+        "Yangi sonni tugmadan tanlang yoki raqam yozib yuboring "
+        "(masalan: 2). Bu faqat <b>sizga</b> ta'sir qiladi.\n\n"
+        "Bekor qilish: /cancel",
+        parse_mode="HTML",
+        reply_markup=_user_count_keyboard(),
+    )
+
+
+async def _apply_user_match_count(message: types.Message, state: FSMContext,
+                                  uid: int, value: int):
+    total = len(get_keywords())
+    await state.clear()
+    if value < 1:
+        await message.answer("⚠️ Son kamida 1 bo'lishi kerak.",
+                             reply_markup=user_menu_for(uid))
+        return
+    set_user_match_count(uid, value)
+    note = ""
+    if total and value > total:
+        note = (f"\n⚠️ Diqqat: hozir kalitlar {total} ta, shartingiz "
+                f"{value} ta — bunday holda xabar kelmasligi mumkin.")
+    await message.answer(
+        f"✅ Sizning shartingiz o'rnatildi: kamida <b>{value}</b> ta "
+        f"kalit so'z topilsa xabar keladi.{note}",
+        parse_mode="HTML",
+        reply_markup=user_menu_for(uid),
+    )
+
+
+@dp.callback_query(NotAdminFilter(), StateFilter(SetCount.waiting_count),
+                   F.data.startswith("usetcnt:"))
+async def user_set_count_callback(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        value = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    await _apply_user_match_count(
+        callback.message, state, callback.from_user.id, value)
+    await callback.answer("Saqlandi!")
+
+
+@dp.message(NotAdminFilter(), StateFilter(SetCount.waiting_count), F.text)
+async def user_set_count_message(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    if not text.isdigit():
+        await message.answer("⚠️ Faqat raqam yuboring, masalan: 2")
+        return
+    await _apply_user_match_count(message, state, message.from_user.id, int(text))
+
+
 @dp.message(F.text == BTN_HELP)
 async def help_user(message: types.Message, state: FSMContext):
     await state.clear()
@@ -1026,6 +1100,7 @@ async def help_user(message: types.Message, state: FSMContext):
         "ℹ️ <b>Yordam</b>\n\n"
         "• 🔑 Login — Telegram akkauntingizni ulaysiz (kod raqamli tugmalarda teriladi).\n"
         "• ➕ Guruh qo'shish — o'z guruhlaringizni kuzatuvga qo'shasiz, xabarlar faqat sizga keladi.\n"
+        "• 🔔 Xabar sharti — xabarda nechta kalit topilsa sizga xabar kelishini o'zingiz belgilaysiz (faqat sizga ta'sir qiladi).\n"
         "• Tarif admin bilan og'zaki kelishiladi — botda to'lov yo'q.\n"
         "• Savollar bo'lsa adminga yozing.",
         parse_mode="HTML",
@@ -1094,8 +1169,9 @@ def _count_keyboard() -> InlineKeyboardMarkup:
 async def ask_match_count(message: types.Message, state: FSMContext):
     await state.set_state(SetCount.waiting_count)
     await message.answer(
-        f"Hozirgi shart: xabarda kamida <b>{get_match_count()}</b> ta "
-        "kalit so'z topilsa xabar beriladi.\n\n"
+        f"Hozirgi UMUMIY (standart) shart: xabarda kamida <b>{get_match_count()}</b> ta "
+        "kalit so'z topilsa xabar beriladi. Bu — o'z shartini "
+        "belgilamagan foydalanuvchilar uchun standart qiymat.\n\n"
         "Yangi sonni tugmadan tanlang yoki o'zingiz raqam yozib yuboring "
         "(masalan: 6). Kalitlar nechta bo'lishidan qat'iy nazar, shu son ishlatiladi.\n\n"
         "Bekor qilish: /cancel",
