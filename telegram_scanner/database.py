@@ -86,6 +86,7 @@ def _migrate_user_columns(conn) -> None:
         "session_status": "TEXT DEFAULT 'none'",
         "last_warn_date": "TEXT DEFAULT ''",
         "last_found_at": "INTEGER DEFAULT 0",
+        "scanner_enabled": "INTEGER DEFAULT 1",
     }
     for name, ddl in additions.items():
         if name not in columns:
@@ -342,7 +343,7 @@ USER_COLUMNS = (
     "COALESCE(full_name,''), COALESCE(phone,''), COALESCE(session_enc,''), "
     "COALESCE(pending_session_enc,''), COALESCE(awaiting_approval,0), "
     "COALESCE(session_status,'none'), COALESCE(last_warn_date,''), "
-    "COALESCE(last_found_at,0)"
+    "COALESCE(last_found_at,0), COALESCE(scanner_enabled,1)"
 )
 
 
@@ -428,6 +429,25 @@ def clear_session(user_id: int) -> None:
             "WHERE user_id = ?",
             (user_id,),
         )
+
+
+def get_user_scanner_enabled(user_id: int) -> bool:
+    """Foydalanuvchining UMUMIY skaneri yoniqmi (bitta Stop/Start)."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(scanner_enabled,1) FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return bool(row[0]) if row else True
+
+
+def set_user_scanner_enabled(user_id: int, enabled: bool) -> bool:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET scanner_enabled = ? WHERE user_id = ?",
+            (1 if enabled else 0, user_id),
+        )
+    return enabled
 
 
 def delete_user_completely(user_id: int) -> None:

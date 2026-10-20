@@ -75,7 +75,7 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   sessiya qayta tekshirilib aktiv bo'ladi.
 - **Har kimniki alohida**: har foydalanuvchi o'z sessiyasi bilan
   ishlaydi, o'z guruhlarini qo'shadi (maks. **100 ta**), o'chiradi,
-  bitta almashuvchi ⏸Stop/▶️Start tugmasi bor. Xabar FAQAT o'sha
+  menyuda bitta UMUMIY ⏸Stop/▶️Start tugmasi bor. Xabar FAQAT o'sha
   guruh egasiga boradi.
 - **Foydalanuvchi menyusi**: ➕ Guruh qo'shish, 📋 Guruhlarim,
   📊 Statistika (faqat o'ziniki), 📱 Akkaunt holati (sessiya + tarif
@@ -96,9 +96,11 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
    Userbot akkaunti guruhda a'zo bo'lishi shart: userbot 30 soniya
    ichida tekshirib, "✅ Guruh ulandi" yoki sababi bilan xato xabarini
    yuboradi. Xato bo'lsa 🔄 Qayta tekshirish tugmasi bor.
-2. **📋 Guruhlarim** da har bir guruh yonida o'rnini almashtiradigan
-   **⏸ To'xtatish / ▶️ Yoqish** tugmasi (skanerni yoqish/o'chirish) va
-   **🗑 O'chirish** tugmasi (guruh butunlay o'chib ketadi) bor.
+2. **📋 Guruhlarim** da har bir guruhda faqat **🗑 O'chirish** tugmasi
+   bor. Stop/Start guruhga alohida EMAS — foydalanuvchi menyusida
+   bitta UMUMIY tugma: yoniq bo'lsa `⏸ Stop`, o'chiq bo'lsa
+   `▶️ Start` chiqadi va barcha guruhlariga bir vaqtda ta'sir qiladi.
+   Menyuda shuningdek bitta umumiy **🧪 Skaner testi** tugmasi bor.
 3. **➕ Kalit so'z qo'shish** orqali kalitlar qo'shing. Har bir so'z —
    alohida kalit, kalitlar soni **cheklanmagan**. Bitta xabarda bir
    nechta so'z yuborsangiz, har biri alohida kalit bo'lib saqlanadi.

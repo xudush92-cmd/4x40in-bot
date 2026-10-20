@@ -45,6 +45,7 @@ from database import (
     get_user_full,
     get_user_group,
     get_user_groups,
+    get_user_scanner_enabled,
     increment_counter,
     init_db,
     is_subscription_active,
@@ -55,6 +56,7 @@ from database import (
     set_pending_session,
     set_registration_info,
     set_session_status,
+    set_user_scanner_enabled,
     set_setting,
     set_user_blocked,
     toggle_managed_group,
@@ -95,11 +97,14 @@ BTN_APPLICATIONS = "📝 Arizalar"
 BTN_LOGIN = "🔑 Login"
 BTN_ACCOUNT = "📱 Akkaunt holati"
 BTN_HELP = "ℹ️ Yordam"
+# Foydalanuvchining UMUMIY skaner boshqaruvi (bitta tugma, menyuda)
+BTN_SCAN_PAUSE = "⏸ Stop"
+BTN_SCAN_RESUME = "▶️ Start"
 MENU_BUTTONS = {
     BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
     BTN_COUNT, BTN_TOGGLE, BTN_TEST, BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS,
-    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP,
+    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -174,16 +179,18 @@ def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
-def user_menu_keyboard(connected: bool = True):
-    """Foydalanuvchi menyusi: kalit, shart, test, tarif tugmasi YO'Q."""
+def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
+    """Foydalanuvchi menyusi: bitta UMUMIY Stop/Start + skaner testi bor."""
     if not connected:
         return [
             [KeyboardButton(text=BTN_LOGIN)],
             [KeyboardButton(text=BTN_HELP)],
         ]
+    toggle = BTN_SCAN_PAUSE if scanner_enabled else BTN_SCAN_RESUME
     return [
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
+        [KeyboardButton(text=BTN_TEST), KeyboardButton(text=toggle)],
         [KeyboardButton(text=BTN_HELP)],
     ]
 
@@ -219,7 +226,10 @@ def user_connected(user_id: int) -> bool:
 
 def user_menu_for(user_id: int) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=user_menu_keyboard(connected=user_connected(user_id)),
+        keyboard=user_menu_keyboard(
+            connected=user_connected(user_id),
+            scanner_enabled=get_user_scanner_enabled(user_id),
+        ),
         resize_keyboard=True,
     )
 
@@ -229,7 +239,8 @@ def account_status_text(user_id: int) -> str:
     if not row:
         return "📱 Akkaunt ulanmagan."
     (_uid, _name, _uname, blocked, expires, _created, full_name,
-     phone, session_enc, pending_enc, awaiting, status, _warn, last_found) = row
+     phone, session_enc, pending_enc, awaiting, status, _warn, last_found,
+     _scanner_on) = row
     if awaiting:
         conn = "⏳ Login qilingan — admin tasdig'i kutilmoqda"
     elif session_enc:
@@ -247,7 +258,8 @@ def account_status_text(user_id: int) -> str:
         "📱 <b>Akkaunt holati</b>\n\n"
         f"👤 Ism: <b>{html.escape(full_name or _name or '—')}</b>\n"
         f"📞 Telefon: <b>{html.escape(phone_text)}</b>\n"
-        f"🔐 Sessiya: {conn} ({html.escape(status or 'none')})\n\n"
+        f"🔐 Sessiya: {conn} ({html.escape(status or 'none')})\n"
+        f"📡 Skaner: {'▶️ yoniq' if _scanner_on else '⏸ oʻchirilgan'}\n\n"
         + subscription_text(get_user(user_id))
         + f"\n🕐 Oxirgi topilgan xabar: {last}\n\n"
         "Tarif masalasi admin bilan og'zaki hal qilinadi."
@@ -783,7 +795,7 @@ def _user_group_text(row) -> str:
     gid, owner, input_value, chat_id, title, is_active, status, last_error = row
     name = title or input_value
     if status == "ok":
-        line = "✅ Kuzatilmoqda" if is_active else "⏸ Stop qilingan"
+        line = "✅ Kuzatuvda (umumiy Stop menyuda)"
     elif status == "pending":
         line = "⏳ Tekshirilmoqda..."
     else:
@@ -792,13 +804,12 @@ def _user_group_text(row) -> str:
 
 
 def _user_group_keyboard(row) -> InlineKeyboardMarkup:
+    # Stop/Start guruhga EMAS — bitta UMUMIY tugma menyuda. Bu yerda
+    # faqat o'chirish (va xato bo'lsa qayta tekshirish) qoladi.
     gid, owner, input_value, chat_id, title, is_active, status, last_error = row
     rows = []
     if status == "ok":
-        # Bitta almashuvchi tugma: Stop <-> Start
-        toggle = "⏸ Stop" if is_active else "▶️ Start"
         rows.append([
-            InlineKeyboardButton(text=toggle, callback_data=f"ugact:{gid}:{is_active}"),
             InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"ugdel:{gid}"),
         ])
     else:
@@ -913,6 +924,92 @@ async def user_stats(message: types.Message, state: FSMContext):
         f"🚖 Topilgan xabarlar (jami): <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
         f"🕐 Oxirgi topilgan: {last_found}\n\n"
         + subscription_text(get_user(uid)),
+        parse_mode="HTML",
+        reply_markup=user_menu_for(uid),
+    )
+
+
+# --- Foydalanuvchi: UMUMIY Stop/Start (bitta tugma, menyuda) ---
+@dp.message(NotAdminFilter(), F.text.in_({BTN_SCAN_PAUSE, BTN_SCAN_RESUME}))
+async def user_scanner_toggle(message: types.Message, state: FSMContext):
+    await state.clear()
+    uid = message.from_user.id
+    enable = (message.text or "").strip() == BTN_SCAN_RESUME
+    set_user_scanner_enabled(uid, enable)
+    if enable:
+        text = "▶️ <b>Skaner yoqildi.</b>\nGuruhlaringiz yana kuzatiladi."
+    else:
+        text = ("⏸ <b>Skaner to'xtatildi.</b>\nBarcha guruhlaringizdan "
+                "xabar kelishi to'xtaydi (guruhlar o'chmaydi).")
+    await message.answer(text, parse_mode="HTML", reply_markup=user_menu_for(uid))
+
+
+def _user_scan_status_text(uid: int) -> str:
+    groups = get_user_groups(uid)
+    ok = sum(1 for g in groups if g[6] == "ok")
+    pending = sum(1 for g in groups if g[6] == "pending")
+    errored = sum(1 for g in groups if g[6] == "error")
+    try:
+        import scanner_manager
+
+        online = scanner_manager.is_client_online(uid)
+    except Exception:
+        online = False
+    lines = [
+        "🧪 <b>Skaner testi — sizning holatingiz</b>",
+        "",
+        f"📱 Akkaunt: {'✅ ulangan' if user_connected(uid) else '❌ ulanmagan'}",
+        f"🔐 Sessiya: {'✅ onlayn' if online else '❌ onlayn emas (server ishga tushganini tekshiring)'}",
+        f"📡 Umumiy skaner: {'▶️ yoniq' if get_user_scanner_enabled(uid) else '⏸ oʻchirilgan — menyudagi ▶️ Start ni bosing'}",
+        f"👥 Guruhlaringiz: <b>{len(groups)}</b> ta (ulangan: {ok}, tekshiruvda: {pending}, xato: {errored})",
+    ]
+    if get_setting("is_active") != "1":
+        lines.append("⚠️ Tizim admin tomonidan to'xtatilgan.")
+    lines += ["", subscription_text(get_user(uid))]
+    return "\n".join(lines)
+
+
+# --- Foydalanuvchi: skaner testi (menyuda, bitta umumiy) ---
+@dp.message(NotAdminFilter(), F.text == BTN_TEST)
+async def user_scan_test_start(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    if not user_connected(uid):
+        await state.clear()
+        await message.answer(
+            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            reply_markup=user_menu_for(uid),
+        )
+        return
+    await state.set_state(ScanTest.waiting_text)
+    await message.answer(
+        _user_scan_status_text(uid)
+        + "\n\n🧪 Endi <b>namuna xabar</b> yozib yuboring — shart "
+        "bajarilishini tekshirib beraman. Bekor qilish: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(NotAdminFilter(), StateFilter(ScanTest.waiting_text), F.text)
+async def user_scan_test_check(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    await state.clear()
+    uid = message.from_user.id
+    keywords = get_keywords()
+    required = get_match_count()
+    result = match_keywords(message.text or "", keywords, required)
+    verdict = (
+        "🎯 <b>Xabar berilardi</b> — shart bajarildi."
+        if result.matched_count >= required and required > 0
+        else "❌ <b>Xabar berilmasdi</b> — shart bajarilmadi."
+    )
+    extra = ""
+    if not get_user_scanner_enabled(uid):
+        extra = "\n⚠️ Sizning umumiy skaneringiz ⏸ oʻchirilgan."
+    await message.answer(
+        f"🔍 Topilgan kalitlar: <b>{result.matched_count}</b> ta "
+        f"(shart: {required} ta)\n{verdict}{extra}",
         parse_mode="HTML",
         reply_markup=user_menu_for(uid),
     )

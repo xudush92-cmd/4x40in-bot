@@ -22,6 +22,7 @@ from database import (
     get_notification_recipients,  # noqa: F401 (eski moslik)
     get_owner_active_chat_ids,
     get_pending_user_groups,
+    get_user_scanner_enabled,
     get_setting,
     get_user_full,
     increment_counter,
@@ -128,6 +129,9 @@ def _make_handler(owner_id: int, client: TelegramClient):
             return
         # 2. Egasi: bloklangan/tarifi tugagan bo'lsa — xabar yo'q
         if not is_subscription_active(owner_id):
+            return
+        # 2b. Foydalanuvchining UMUMIY Stop/Start tugmasi (bitta, menyuda)
+        if not get_user_scanner_enabled(owner_id):
             return
         # 3. Faqat EGASINING faol guruhlari
         if event.chat_id not in get_owner_active_chat_ids(owner_id):
