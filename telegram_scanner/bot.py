@@ -17,28 +17,64 @@ from aiogram.types import (
 
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
 from database import (
+    MAX_USER_GROUPS,
     add_keyword,
     add_managed_group,
+    add_user_group,
+    approve_pending_session,
+    clear_pending_session,
+    clear_session,
+    count_user_groups,
     delete_managed_group,
     delete_phrase,
+    delete_user_completely,
+    delete_user_group,
     extend_subscription,
     get_all_phrases_with_id,
+    get_all_user_groups,
     get_all_users,
+    get_all_users_full,
     get_counter,
     get_keywords,
     get_managed_groups,
     get_match_count,
     get_setting,
     get_user,
+    get_user_by_phone,
+    get_user_counter,
+    get_user_full,
+    get_user_group,
+    get_user_groups,
     increment_counter,
     init_db,
     is_subscription_active,
+    mark_user_group_error,  # noqa: F401
     requeue_managed_group,
+    requeue_user_group,
+    set_new_term,
+    set_pending_session,
+    set_registration_info,
+    set_session_status,
     set_setting,
     set_user_blocked,
     toggle_managed_group,
+    toggle_user_group,
     upsert_user,
 )
+from login_manager import (
+    LoginError,
+    check_session,
+    cleanup as login_cleanup,
+    request_code,
+    revoke_session,
+    sign_in_code,
+    sign_in_password,
+    take_signed_client,
+    validate_account,
+    validate_full_name,
+    validate_phone,
+)
+from session_crypto import decrypt_session, encrypt_session
 from matcher import find_match, match_keywords, parse_key_words
 
 logging.basicConfig(level=logging.INFO)
@@ -53,14 +89,17 @@ BTN_TOGGLE = "⏸ To'xtatish / ▶️ Davom ettirish"
 BTN_TEST = "🧪 Skaner testi"
 BTN_USERS = "👥 Foydalanuvchilar"
 BTN_STATS = "📊 Statistika"
+BTN_BROADCAST = "📣 Xabar yuborish"
+BTN_APPLICATIONS = "📝 Arizalar"
 # Foydalanuvchi tugmalari (boshqaruv tugmalari ularda BO'LMAYDI)
-BTN_MY_TARIFF = "💳 Tarifim"
-BTN_RECEIPT = "🧾 Chek yuborish"
+BTN_LOGIN = "🔑 Login"
+BTN_ACCOUNT = "📱 Akkaunt holati"
 BTN_HELP = "ℹ️ Yordam"
 MENU_BUTTONS = {
     BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
     BTN_COUNT, BTN_TOGGLE, BTN_TEST, BTN_USERS, BTN_STATS,
-    BTN_MY_TARIFF, BTN_RECEIPT, BTN_HELP,
+    BTN_BROADCAST, BTN_APPLICATIONS,
+    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -74,6 +113,14 @@ class AdminFilter(BaseFilter):
     async def __call__(self, event: types.TelegramObject) -> bool:
         user = getattr(event, "from_user", None)
         return bool(ADMIN_ID) and user is not None and user.id == ADMIN_ID
+
+
+class NotAdminFilter(BaseFilter):
+    async def __call__(self, event: types.TelegramObject) -> bool:
+        user = getattr(event, "from_user", None)
+        return user is not None and not (
+            bool(ADMIN_ID) and user.id == ADMIN_ID
+        )
 
 
 class AddPhrase(StatesGroup):
@@ -92,8 +139,21 @@ class ScanTest(StatesGroup):
     waiting_text = State()  # tekshirish uchun namuna xabar kutilmoqda
 
 
-class Payment(StatesGroup):
-    waiting_receipt = State()  # foydalanuvchidan to'lov cheki kutilmoqda
+class Registration(StatesGroup):
+    full_name = State()
+    phone = State()
+    code = State()       # kod raqamli tugmalarda teriladi
+    password = State()   # 2FA parol
+
+
+class AdminTerm(StatesGroup):
+    waiting_days = State()  # admin muddatni raqam bilan yozadi
+
+
+class Broadcast(StatesGroup):
+    choosing_audience = State()
+    waiting_message = State()
+    confirming = State()
 
 
 def is_admin(user_id: int | None) -> bool:
@@ -103,20 +163,29 @@ def is_admin(user_id: int | None) -> bool:
 def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
     if admin:
         kb = [
-            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUP_ADD)],
-            [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_GROUPS)],
-            [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_TOGGLE)],
-            [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_STATS)],
-            [KeyboardButton(text=BTN_USERS)],
+            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUPS)],
+            [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_COUNT)],
+            [KeyboardButton(text=BTN_TOGGLE), KeyboardButton(text=BTN_TEST)],
+            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_USERS)],
+            [KeyboardButton(text=BTN_APPLICATIONS), KeyboardButton(text=BTN_BROADCAST)],
         ]
     else:
-        # Oddiy foydalanuvchi: FAQAT tarif/yordam. Stop-start, xabar
-        # sharti, skaner test, guruh va kalit boshqaruvi BO'LMAYDI.
-        kb = [
-            [KeyboardButton(text=BTN_MY_TARIFF), KeyboardButton(text=BTN_RECEIPT)],
+        kb = user_menu_keyboard()
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def user_menu_keyboard(connected: bool = True):
+    """Foydalanuvchi menyusi: kalit, shart, test, tarif tugmasi YO'Q."""
+    if not connected:
+        return [
+            [KeyboardButton(text=BTN_LOGIN)],
             [KeyboardButton(text=BTN_HELP)],
         ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+    return [
+        [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
+        [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
+        [KeyboardButton(text=BTN_HELP)],
+    ]
 
 
 def format_date(ts) -> str:
@@ -141,6 +210,48 @@ def subscription_text(user_row) -> str:
             f"({days} kun qoldi)"
         )
     return "💳 Tarif: ❌ faol emas (muddati tugagan yoki yoqilmagan)"
+
+
+def user_connected(user_id: int) -> bool:
+    row = get_user_full(user_id)
+    return bool(row and row[8] and not row[10])
+
+
+def user_menu_for(user_id: int) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=user_menu_keyboard(connected=user_connected(user_id)),
+        resize_keyboard=True,
+    )
+
+
+def account_status_text(user_id: int) -> str:
+    row = get_user_full(user_id)
+    if not row:
+        return "📱 Akkaunt ulanmagan."
+    (_uid, _name, _uname, blocked, expires, _created, full_name,
+     phone, session_enc, pending_enc, awaiting, status, _warn, last_found) = row
+    if awaiting:
+        conn = "⏳ Login qilingan — admin tasdig'i kutilmoqda"
+    elif session_enc:
+        conn = "✅ Telegram akkaunt ulangan"
+    else:
+        conn = "❌ Telegram akkaunt ulanmagan"
+    phone_text = phone or "—"
+    if phone and len(phone) > 6:
+        phone_text = phone[:4] + " *** " + phone[-2:]
+    last = (
+        time.strftime("%d.%m.%Y %H:%M", time.localtime(last_found))
+        if last_found else "hali yo'q"
+    )
+    return (
+        "📱 <b>Akkaunt holati</b>\n\n"
+        f"👤 Ism: <b>{html.escape(full_name or _name or '—')}</b>\n"
+        f"📞 Telefon: <b>{html.escape(phone_text)}</b>\n"
+        f"🔐 Sessiya: {conn} ({html.escape(status or 'none')})\n\n"
+        + subscription_text(get_user(user_id))
+        + f"\n🕐 Oxirgi topilgan xabar: {last}\n\n"
+        "Tarif masalasi admin bilan og'zaki hal qilinadi."
+    )
 
 
 def current_status_text() -> str:
@@ -196,155 +307,634 @@ async def cmd_start(message: types.Message, state: FSMContext):
         + subscription_text(row)
         + "\n\nTarif faol bo'lsa, topilgan xabarlar shu chatga keladi.",
         parse_mode="HTML",
-        reply_markup=main_menu(admin=False),
+        reply_markup=user_menu_for(user.id),
     )
 
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
+    await login_cleanup(message.from_user.id)
     await message.answer(
         "Bekor qilindi.",
-        reply_markup=main_menu(admin=is_admin(message.from_user.id)),
+        reply_markup=(
+            main_menu(admin=True)
+            if is_admin(message.from_user.id)
+            else user_menu_for(message.from_user.id)
+        ),
     )
 
 
-# --- Oddiy foydalanuvchi bo'limi (boshqaruv tugmalari yo'q) ---
-@dp.message(F.text == BTN_MY_TARIFF)
-async def my_tariff(message: types.Message, state: FSMContext):
+# --- Oddiy foydalanuvchi: registratsiya (QR siz), akkaunt, guruhlar, statistika ---
+
+def _numpad_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for chunk in (("1", "2", "3"), ("4", "5", "6"), ("7", "8", "9")):
+        rows.append([
+            InlineKeyboardButton(text=d, callback_data=f"code:{d}") for d in chunk
+        ])
+    rows.append([
+        InlineKeyboardButton(text="⌫", callback_data="code:back"),
+        InlineKeyboardButton(text="0", callback_data="code:0"),
+        InlineKeyboardButton(text="✅", callback_data="code:ok"),
+    ])
+    rows.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="code:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _numpad_text(buffer: str, length: int = 5) -> str:
+    dots = "●" * len(buffer) + "○" * max(0, length - len(buffer))
+    return (
+        "🔐 <b>Telegram tasdiq kodini kiriting</b>\n\n"
+        f"<code>{dots}</code>\n\n"
+        "Kod faqat quyidagi raqamli tugmalar bilan teriladi. "
+        "Kodni oddiy xabar qilib yubormang."
+    )
+
+
+@dp.message(F.text == BTN_LOGIN)
+async def begin_login(message: types.Message, state: FSMContext, user_id: int | None = None):
+    uid = user_id or message.from_user.id
+    if is_admin(uid):
+        return
+    row = get_user_full(uid)
+    if row and row[3]:
+        await message.answer("⛔ Hisobingiz bloklangan. Admin bilan bog'laning.")
+        return
+    if row and row[10]:
+        await message.answer(
+            "⏳ Arizangiz admin tasdig'ini kutmoqda.",
+            reply_markup=user_menu_for(uid),
+        )
+        return
+    if row and row[8]:
+        await message.answer(
+            "✅ Akkauntingiz allaqachon ulangan.",
+            reply_markup=user_menu_for(uid),
+        )
+        return
+    await login_cleanup(uid)
+    if row and row[6] and row[7]:
+        # Ism/telefon bor — darhol kod so'raymiz
+        try:
+            length = await request_code(uid, row[7])
+        except LoginError as e:
+            await message.answer(str(e), reply_markup=user_menu_for(uid))
+            return
+        if length == 0:
+            await _complete_signed_in(message, state, uid)
+            return
+        await state.set_state(Registration.code)
+        await state.update_data(code_buffer="", code_length=length, phone=row[7])
+        await message.answer(_numpad_text("", length), parse_mode="HTML",
+                             reply_markup=_numpad_keyboard())
+        return
+    await state.set_state(Registration.full_name)
+    await message.answer(
+        "👤 Ism va familiyangizni <b>bitta xabarda</b> yozing.\n"
+        "Masalan: <i>Ali Valiyev</i>\n\nBekor qilish: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(StateFilter(Registration.full_name), F.text)
+async def reg_full_name(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    name = " ".join((message.text or "").split())
+    if not validate_full_name(name):
+        await message.answer("⚠️ Ism va familiyani to'liq yozing. Masalan: <i>Ali Valiyev</i>", parse_mode="HTML")
+        return
+    set_registration_info(message.from_user.id, name)
+    await state.set_state(Registration.phone)
+    await message.answer(
+        f"✅ {html.escape(name)}\n\n📱 Telefon raqamingizni yuboring:\n"
+        "Format: <code>+998XXXXXXXXX</code>",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(StateFilter(Registration.phone), F.text)
+async def reg_phone(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    uid = message.from_user.id
+    phone = validate_phone(message.text or "")
+    if not phone:
+        await message.answer("⚠️ Format noto'g'ri. Masalan: <code>+998901234567</code>", parse_mode="HTML")
+        return
+    owner = get_user_by_phone(phone)
+    if owner and owner[0] != uid:
+        await message.answer("⚠️ Bu telefon boshqa foydalanuvchiga tegishli.")
+        return
+    row = get_user_full(uid)
+    set_registration_info(uid, (row[6] if row else "") or message.from_user.first_name or "", phone)
+    try:
+        length = await request_code(uid, phone)
+    except LoginError as e:
+        await state.clear()
+        await message.answer(str(e), reply_markup=user_menu_for(uid))
+        return
+    if length == 0:
+        await _complete_signed_in(message, state, uid)
+        return
+    await state.set_state(Registration.code)
+    await state.update_data(code_buffer="", code_length=length, phone=phone)
+    await message.answer(_numpad_text("", length), parse_mode="HTML",
+                         reply_markup=_numpad_keyboard())
+
+
+@dp.callback_query(StateFilter(Registration.code), F.data.startswith("code:"))
+async def code_numpad(callback: types.CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    action = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    buffer = data.get("code_buffer", "")
+    length = int(data.get("code_length") or 5)
+
+    if action == "cancel":
+        await login_cleanup(uid)
+        await state.clear()
+        await callback.message.edit_text("❌ Login bekor qilindi.")
+        await callback.answer()
+        return
+    if action == "back":
+        buffer = buffer[:-1]
+    elif action == "ok":
+        if len(buffer) < 4:
+            await callback.answer("Kodni to'liq kiriting.", show_alert=True)
+            return
+        await callback.answer("Tekshirilmoqda...")
+        await _try_code(callback.message, state, uid, buffer)
+        return
+    elif action.isdigit() and len(buffer) < 8:
+        buffer += action
+
+    await state.update_data(code_buffer=buffer)
+    try:
+        await callback.message.edit_text(
+            _numpad_text(buffer, length), parse_mode="HTML",
+            reply_markup=_numpad_keyboard(),
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+async def _try_code(message: types.Message, state: FSMContext, uid: int, code: str):
+    status, _client, me = await sign_in_code(uid, code)
+    if status == "ok":
+        error = validate_account(uid, me, (await state.get_data()).get("phone", ""))
+        if error:
+            await login_cleanup(uid)
+            await state.clear()
+            await message.answer(error, reply_markup=user_menu_for(uid))
+            return
+        await _complete_signed_in(message, state, uid)
+        return
+    if status == "password":
+        await state.set_state(Registration.password)
+        await message.answer(
+            "🔐 Ikki bosqichli parolingizni (2FA) yuboring.\n"
+            "Xabaringiz darhol o'chiriladi. Bekor qilish: /cancel"
+        )
+        return
+    if status == "wrong":
+        data = await state.get_data()
+        length = int(data.get("code_length") or 5)
+        await state.update_data(code_buffer="")
+        await message.answer(
+            "❌ Kod noto'g'ri. Qayta kiriting:",
+            parse_mode="HTML",
+        )
+        await message.answer(_numpad_text("", length), parse_mode="HTML",
+                             reply_markup=_numpad_keyboard())
+        return
+    await login_cleanup(uid)
     await state.clear()
-    upsert_user(
-        message.from_user.id,
-        message.from_user.first_name or "",
-        message.from_user.username or "",
+    await message.answer(
+        "❌ Kod muddati o'tgan yoki urinishlar tugadi. 🔑 Login dan qayta boshlang.",
+        reply_markup=user_menu_for(uid),
+    )
+
+
+@dp.message(StateFilter(Registration.code), F.text)
+async def code_as_text(message: types.Message, state: FSMContext):
+    """Kodni matn qilib yuborsa — o'chiramiz va ogohlantiramiz (xavfsizlik)."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    data = await state.get_data()
+    length = int(data.get("code_length") or 5)
+    await message.answer(
+        "⚠️ Kodni oddiy xabar qilib yubormang! Raqamli tugmalar bilan tering:",
+        parse_mode="HTML",
+    )
+    await message.answer(_numpad_text(data.get("code_buffer", ""), length),
+                         parse_mode="HTML", reply_markup=_numpad_keyboard())
+
+
+@dp.message(StateFilter(Registration.password), F.text)
+async def reg_password(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    password = message.text or ""
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    status, _client, me = await sign_in_password(uid, password)
+    if status == "ok":
+        error = validate_account(uid, me, (await state.get_data()).get("phone", ""))
+        if error:
+            await login_cleanup(uid)
+            await state.clear()
+            await message.answer(error, reply_markup=user_menu_for(uid))
+            return
+        await _complete_signed_in(message, state, uid)
+        return
+    await login_cleanup(uid)
+    await state.clear()
+    await message.answer(
+        "❌ Parol noto'g'ri yoki login buzildi. 🔑 Login dan qayta boshlang.",
+        reply_markup=user_menu_for(uid),
+    )
+
+
+async def _complete_signed_in(message: types.Message, state: FSMContext, uid: int):
+    """Login tugadi: sessiya pending (shifrlangan) -> admin tasdig'i."""
+    client = take_signed_client(uid)
+    if client is None:
+        await state.clear()
+        await message.answer("❌ Login jarayoni buzildi. Qayta urining.",
+                             reply_markup=user_menu_for(uid))
+        return
+    try:
+        session_str = client.session.save()
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+    set_pending_session(uid, encrypt_session(session_str))
+    await state.clear()
+    await message.answer(
+        "✅ <b>Login muvaffaqiyatli!</b>\n\n"
+        "⏳ Endi admin tasdiqlashini kuting — tasdiqlangach, akkauntingiz "
+        "ishlaydi va xabar keladi.",
+        parse_mode="HTML",
+        reply_markup=user_menu_for(uid),
+    )
+    if ADMIN_ID:
+        row = get_user_full(uid)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"regok:{uid}"),
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"regno:{uid}"),
+        ]])
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                "🆕 <b>Ro'yxatdan o'tish arizasi!</b>\n\n"
+                f"👤 {html.escape((row[6] or '') if row else '')} "
+                f"(@{html.escape((row[2] or 'yoʻq') if row else '')})\n"
+                f"📱 {html.escape((row[7] or '') if row else '')}\n"
+                f"🆔 <code>{uid}</code>\n\n"
+                "Tasdiqlasangiz, sessiya aktiv bo'ladi. Tarif muddatini "
+                "keyin foydalanuvchi kartasidan ⏰ orqali berasiz.",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        except Exception:
+            logger.exception("Adminga ariza xabari yuborilmadi")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("regok:"))
+async def registration_approve(callback: types.CallbackQuery):
+    try:
+        uid = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    row = get_user_full(uid)
+    if not row or not row[9]:
+        await callback.answer("Pending sessiya topilmadi.", show_alert=True)
+        return
+    status, me = await check_session(decrypt_session(row[9]))
+    if status == "temporary":
+        await callback.answer(
+            "⏳ Vaqtinchalik xato (Telegram/tarmoq). Sessiya saqlandi — keyinroq qayta bosing.",
+            show_alert=True,
+        )
+        return
+    if status != "ok" or not me or me.id != uid:
+        # Yaroqsiz yoki boshqa akkaunt: pending tozalanadi, qayta login qiladi
+        if status == "ok" and me:
+            await revoke_session(decrypt_session(row[9]))
+        clear_pending_session(uid)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await callback.answer("❌ Sessiya yaroqsiz/mos emas — tozalandi", show_alert=True)
+        try:
+            await bot.send_message(uid, "❌ Sessiyangiz tasdiqlanmadi. 🔑 Login dan qayta kiring.")
+        except Exception:
+            pass
+        return
+    if not approve_pending_session(uid):
+        await callback.answer("Holat o'zgargan.", show_alert=True)
+        return
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("✅ Tasdiqlandi")
+    try:
+        import scanner_manager
+        await scanner_manager.start_user_client(uid)
+    except Exception:
+        logger.exception("Client start (approve)")
+    try:
+        await bot.send_message(
+            uid,
+            "🎉 <b>Hisobingiz tasdiqlandi!</b>\n\n"
+            "Endi guruhlaringizni qo'shishingiz mumkin. Topilgan xabarlar "
+            "tarif faol bo'lganda keladi.\n\n" + account_status_text(uid),
+            parse_mode="HTML",
+            reply_markup=user_menu_for(uid),
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("regno:"))
+async def registration_reject(callback: types.CallbackQuery):
+    try:
+        uid = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    row = get_user_full(uid)
+    if row and row[9]:
+        await revoke_session(decrypt_session(row[9]))
+    delete_user_completely(uid)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("❌ Rad etildi, foydalanuvchi o'chirildi")
+    try:
+        await bot.send_message(uid, "❌ Ro'yxatdan o'tish arizangiz rad etildi.")
+    except Exception:
+        pass
+
+
+# --- Foydalanuvchi: akkaunt holati ---
+@dp.message(F.text == BTN_ACCOUNT)
+async def account_status(message: types.Message, state: FSMContext):
+    if is_admin(message.from_user.id):
+        return
+    await state.clear()
+    uid = message.from_user.id
+    row = get_user_full(uid)
+    kb_rows = []
+    if row and row[8] and not row[10]:
+        kb_rows.append([InlineKeyboardButton(
+            text="🔌 Sessiyani uzish", callback_data="sess_out")])
+    elif not (row and row[10]):
+        kb_rows.append([InlineKeyboardButton(
+            text="📱 Akkauntni ulash", callback_data="sess_in")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+    await message.answer(account_status_text(uid), parse_mode="HTML",
+                         reply_markup=kb)
+
+
+@dp.callback_query(F.data == "sess_in")
+async def sess_in_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await begin_login(callback.message, state, user_id=callback.from_user.id)
+
+
+@dp.callback_query(F.data == "sess_out")
+async def sess_out_callback(callback: types.CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    try:
+        import scanner_manager
+        await scanner_manager.stop_user_client(uid, revoke=True)
+    except Exception:
+        logger.exception("Sessiya uzish")
+    clear_session(uid)
+    await callback.message.edit_text(
+        "🔌 Sessiya uzildi. Qayta ulash uchun 🔑 Login bosing.")
+    await callback.answer("Uzildi")
+
+
+# --- Foydalanuvchi: o'z guruhlari ---
+@dp.message(NotAdminFilter(), F.text == BTN_GROUP_ADD)
+async def user_ask_group(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    if not user_connected(uid):
+        await message.answer(
+            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            reply_markup=user_menu_for(uid),
+        )
+        return
+    if count_user_groups(uid) >= MAX_USER_GROUPS:
+        await message.answer(f"⚠️ Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha olasiz.")
+        return
+    await state.set_state(AddGroup.waiting_group)
+    await message.answer(
+        "Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
+        "• <code>@guruh_nomi</code> yoki <code>https://t.me/guruh_nomi</code>\n"
+        "• <code>-1001234567890</code> (raqamli ID)\n\n"
+        "⚠️ Ulangan Telegram akkauntingiz shu guruhda a'zo bo'lishi shart.\n\n"
+        "Bekor qilish: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(NotAdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
+async def user_save_group(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    uid = message.from_user.id
+    value = normalize_group_input(message.text or "")
+    if value is None:
+        await message.answer("⚠️ Manzil (@username / t.me havola) yoki ID (-100...) yuboring.")
+        return
+    await state.clear()
+    ok, err = add_user_group(uid, value)
+    if not ok:
+        await message.answer(f"⚠️ {html.escape(err)}", reply_markup=user_menu_for(uid))
+        return
+    await message.answer(
+        f"✅ Guruh qabul qilindi: <b>{html.escape(value)}</b>\n"
+        "⏳ Akkauntingiz orqali tekshirilmoqda (odatda 1 daqiqagacha). "
+        "Holat: 📋 Guruhlarim",
+        parse_mode="HTML",
+        reply_markup=user_menu_for(uid),
+    )
+
+
+def _user_group_text(row) -> str:
+    gid, owner, input_value, chat_id, title, is_active, status, last_error = row
+    name = title or input_value
+    if status == "ok":
+        line = "✅ Kuzatilmoqda" if is_active else "⏸ Stop qilingan"
+    elif status == "pending":
+        line = "⏳ Tekshirilmoqda..."
+    else:
+        line = f"⚠️ Xato: {last_error or 'nomaʼlum'}"
+    return f"👥 <b>{html.escape(name or '')}</b>\n{line}"
+
+
+def _user_group_keyboard(row) -> InlineKeyboardMarkup:
+    gid, owner, input_value, chat_id, title, is_active, status, last_error = row
+    rows = []
+    if status == "ok":
+        # Bitta almashuvchi tugma: Stop <-> Start
+        toggle = "⏸ Stop" if is_active else "▶️ Start"
+        rows.append([
+            InlineKeyboardButton(text=toggle, callback_data=f"ugact:{gid}:{is_active}"),
+            InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"ugdel:{gid}"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton(text="🔄 Qayta tekshirish", callback_data=f"ugrecheck:{gid}"),
+            InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"ugdel:{gid}"),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(NotAdminFilter(), F.text.in_({BTN_GROUPS, "📋 Guruhlar ro'yxati"}))
+async def user_list_groups(message: types.Message, state: FSMContext):
+    await state.clear()
+    uid = message.from_user.id
+    groups = get_user_groups(uid)
+    if not groups:
+        await message.answer(
+            "Sizda hali guruhlar yo'q. ➕ Guruh qo'shish orqali qo'shing.",
+            reply_markup=user_menu_for(uid),
+        )
+        return
+    await message.answer(f"📋 Sizning guruhlaringiz — {len(groups)} ta:")
+    for row in groups:
+        await message.answer(_user_group_text(row), parse_mode="HTML",
+                             reply_markup=_user_group_keyboard(row))
+
+
+def _find_user_group(uid: int, gid: int):
+    row = get_user_group(gid)
+    return row if row and row[1] == uid else None
+
+
+@dp.callback_query(F.data.startswith("ugact:"))
+async def user_group_toggle(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    try:
+        _, gid_s, cur_s = callback.data.split(":")
+        gid, cur = int(gid_s), int(cur_s)
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    if not _find_user_group(uid, gid):
+        await callback.answer("Bu guruh sizniki emas.", show_alert=True)
+        return
+    new = 0 if cur == 1 else 1
+    toggle_user_group(gid, uid, new)
+    row = get_user_group(gid)
+    if row:
+        await callback.message.edit_text(
+            _user_group_text(row), parse_mode="HTML",
+            reply_markup=_user_group_keyboard(row))
+    await callback.answer("⏸ Stop" if new == 0 else "▶️ Start")
+
+
+@dp.callback_query(F.data.startswith("ugdel:"))
+async def user_group_delete(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    try:
+        gid = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    row = _find_user_group(uid, gid)
+    if not row:
+        await callback.answer("Bu guruh sizniki emas.", show_alert=True)
+        return
+    name = row[4] or row[2]
+    delete_user_group(gid, uid)
+    await callback.message.edit_text(
+        f"🗑 Guruh o'chirildi: <b>{html.escape(str(name))}</b>\n"
+        "Endi bu guruhdan sizga xabar kelmaydi.",
+        parse_mode="HTML",
+    )
+    await callback.answer("O'chirildi")
+
+
+@dp.callback_query(F.data.startswith("ugrecheck:"))
+async def user_group_recheck(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    try:
+        gid = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    if not _find_user_group(uid, gid):
+        await callback.answer("Bu guruh sizniki emas.", show_alert=True)
+        return
+    requeue_user_group(gid)
+    row = get_user_group(gid)
+    if row:
+        await callback.message.edit_text(
+            _user_group_text(row), parse_mode="HTML",
+            reply_markup=_user_group_keyboard(row))
+    await callback.answer("🔄 Tekshiruvga qo'yildi")
+
+
+# --- Foydalanuvchi: statistika (faqat o'ziniki) + yordam ---
+@dp.message(NotAdminFilter(), F.text == BTN_STATS)
+async def user_stats(message: types.Message, state: FSMContext):
+    await state.clear()
+    uid = message.from_user.id
+    groups = get_user_groups(uid)
+    active_groups = sum(1 for g in groups if g[6] == "ok" and g[5] == 1)
+    row = get_user_full(uid)
+    last_found = (
+        time.strftime("%d.%m.%Y %H:%M", time.localtime(row[13]))
+        if row and row[13] else "hali yo'q"
     )
     await message.answer(
-        subscription_text(get_user(message.from_user.id))
-        + "\n\nTarifni yangilash uchun to'lov qilib, "
-        "🧾 Chek yuborish tugmasi orqali chekni yuboring.",
+        "📊 <b>Sizning statistikangiz</b>\n\n"
+        f"👥 Guruhlaringiz: <b>{len(groups)}</b> ta (faol: {active_groups} ta)\n"
+        f"🚖 Topilgan xabarlar (jami): <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
+        f"🕐 Oxirgi topilgan: {last_found}\n\n"
+        + subscription_text(get_user(uid)),
         parse_mode="HTML",
-        reply_markup=main_menu(admin=False),
+        reply_markup=user_menu_for(uid),
     )
 
 
 @dp.message(F.text == BTN_HELP)
 async def help_user(message: types.Message, state: FSMContext):
     await state.clear()
+    if is_admin(message.from_user.id):
+        await message.answer("Siz adminsiz — menyudan foydalaning.",
+                             reply_markup=main_menu(admin=True))
+        return
     await message.answer(
         "ℹ️ <b>Yordam</b>\n\n"
-        "• Bu bot topilgan mijozlar xabarlarini sizga yuboradi.\n"
-        "• Xizmatdan foydalanish uchun oylik tarif faol bo'lishi kerak.\n"
-        "• Tarif olish: to'lov qiling va 🧾 Chek yuborish orqali "
-        "chek rasmini yuboring — admin tekshirib, tarifingizni yoqadi.\n"
+        "• 🔑 Login — Telegram akkauntingizni ulaysiz (kod raqamli tugmalarda teriladi).\n"
+        "• ➕ Guruh qo'shish — o'z guruhlaringizni kuzatuvga qo'shasiz, xabarlar faqat sizga keladi.\n"
+        "• Tarif admin bilan og'zaki kelishiladi — botda to'lov yo'q.\n"
         "• Savollar bo'lsa adminga yozing.",
         parse_mode="HTML",
-        reply_markup=main_menu(admin=False),
+        reply_markup=user_menu_for(message.from_user.id),
     )
 
-
-@dp.message(F.text == BTN_RECEIPT)
-async def ask_receipt(message: types.Message, state: FSMContext):
-    row = get_user(message.from_user.id)
-    if row and row[3]:
-        await message.answer("⛔ Hisobingiz bloklangan. Admin bilan bog'laning.")
-        return
-    await state.set_state(Payment.waiting_receipt)
-    await message.answer(
-        "🧾 To'lov cheki rasmini (skrinshot) yuboring — admin tekshirib, "
-        "tarifingizni yoqadi.\n\nBekor qilish: /cancel"
-    )
-
-
-@dp.message(StateFilter(Payment.waiting_receipt), F.photo | F.document)
-async def receive_receipt(message: types.Message, state: FSMContext):
-    await state.clear()
-    user = message.from_user
-    upsert_user(user.id, user.first_name or "", user.username or "")
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ 30 kunga yoqish", callback_data=f"payok:{user.id}"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Rad etish", callback_data=f"payno:{user.id}"
-                ),
-            ]
-        ]
-    )
-    try:
-        await message.copy_to(ADMIN_ID, reply_markup=kb)
-        await bot.send_message(
-            ADMIN_ID,
-            "🧾 <b>To'lov cheki keldi!</b>\n\n"
-            f"👤 {html.escape(user.first_name or '')} "
-            f"(@{html.escape(user.username or 'yoʻq')})\n"
-            f"🆔 <code>{user.id}</code>\n\n"
-            "Yuqoridagi chek xabaridagi tugmadan tarifni yoqing.",
-            parse_mode="HTML",
-        )
-        await message.answer(
-            "✅ Chekingiz adminga yuborildi. Tekshirilgach, "
-            "tarifingiz yoqiladi va sizga xabar keladi.",
-            reply_markup=main_menu(admin=False),
-        )
-    except Exception:
-        logger.exception("Chekni adminga yuborishda xato")
-        await message.answer(
-            "⚠️ Chekni yuborishda xato bo'ldi. Keyinroq qayta urining.",
-            reply_markup=main_menu(admin=False),
-        )
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("payok:"))
-async def payment_approve(callback: types.CallbackQuery):
-    try:
-        user_id = int(callback.data.split(":", 1)[1])
-    except ValueError:
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    row = get_user(user_id)
-    if not row:
-        await callback.answer("Foydalanuvchi topilmadi.", show_alert=True)
-        return
-    expiry = extend_subscription(user_id, days=30)
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await callback.answer("✅ 30 kunga yoqildi")
-    try:
-        await bot.send_message(
-            user_id,
-            "🎉 <b>Tarifingiz yoqildi!</b>\n\n"
-            f"📅 Amalda: <b>{format_date(expiry)}</b> gacha.\n"
-            "Endi topilgan xabarlar sizga keladi.",
-            parse_mode="HTML",
-        )
-    except Exception:
-        logger.exception("Foydalanuvchiga tarif xabari yuborilmadi")
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("payno:"))
-async def payment_reject(callback: types.CallbackQuery):
-    try:
-        user_id = int(callback.data.split(":", 1)[1])
-    except ValueError:
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    await callback.answer("❌ Rad etildi")
-    try:
-        await bot.send_message(
-            user_id,
-            "❌ To'lov chekingiz tasdiqlanmadi. To'lovni tekshirib, "
-            "chekning aniq rasmini qayta yuboring yoki admin bilan bog'laning.",
-        )
-    except Exception:
-        logger.exception("Foydalanuvchiga rad xabari yuborilmadi")
 
 
 @dp.message(AdminFilter(), F.text == BTN_ADD)
@@ -519,16 +1109,12 @@ def normalize_group_input(text: str) -> str | None:
 
 @dp.message(AdminFilter(), F.text == BTN_GROUP_ADD)
 async def ask_group(message: types.Message, state: FSMContext):
-    await state.set_state(AddGroup.waiting_group)
+    await state.clear()
     await message.answer(
-        "Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
-        "• <code>@guruh_nomi</code>\n"
-        "• <code>https://t.me/guruh_nomi</code>\n"
-        "• <code>-1001234567890</code> (raqamli ID)\n\n"
-        "⚠️ Skaner qiluvchi akkaunt (userbot) shu guruhda <b>a'zo bo'lishi "
-        "shart</b> — bo'lmasa bot xato haqida xabar beradi.\n\n"
-        "Bekor qilish: /cancel",
+        "Guruhlarni har bir foydalanuvchi <b>o'z akkauntidan</b> qo'shadi. "
+        "Siz 📋 Guruhlarim (barcha guruhlar) dan ularni nazorat qilasiz.",
         parse_mode="HTML",
+        reply_markup=main_menu(admin=True),
     )
 
 
@@ -606,21 +1192,46 @@ def _find_group(group_id: int):
 
 @dp.message(AdminFilter(), F.text.in_({BTN_GROUPS, "📋 Guruhlar ro'yxati"}))
 async def list_groups(message: types.Message, state: FSMContext):
+    """Admin: BARCHA foydalanuvchilarning guruhlari."""
     await state.clear()
-    groups = get_managed_groups()
+    groups = get_all_user_groups()
     if not groups:
         await message.answer(
-            "Hozircha guruhlar yo'q.\n"
-            "➕ Guruh qo'shish tugmasi orqali manzil yoki ID yuboring — "
-            "skaner faqat shu yerda qo'shilgan guruhlarni tekshiradi."
+            "Hozircha foydalanuvchilar guruh qo'shmagan."
         )
         return
 
-    await message.answer(f"Sizning guruhlaringiz — {len(groups)} ta:")
+    await message.answer(f"👥 Barcha guruhlar — {len(groups)} ta:")
     for row in groups:
+        gid, owner, input_value, chat_id, title, is_active, status, last_error = row
+        if status == "ok":
+            line = "✅ Kuzatilmoqda" if is_active else "⏸ Stop"
+        elif status == "pending":
+            line = "⏳ Tekshiruvda"
+        else:
+            line = f"⚠️ {last_error or 'xato'}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🗑 O'chirish (admin)", callback_data=f"agdel:{gid}")
+        ]])
         await message.answer(
-            _group_text(row), parse_mode="HTML", reply_markup=_group_keyboard(row)
+            f"👥 <b>{html.escape(title or input_value or '')}</b>\n"
+            f"Egasi: <code>{owner}</code> • {line}",
+            parse_mode="HTML",
+            reply_markup=kb,
         )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("agdel:"))
+async def admin_delete_user_group(callback: types.CallbackQuery):
+    try:
+        gid = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    delete_user_group(gid)
+    await callback.message.edit_text("🗑 Guruh admin tomonidan o'chirildi.")
+    await callback.answer("O'chirildi")
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("gact:"))
@@ -704,10 +1315,23 @@ def _user_keyboard(row) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="➕ 30 kun", callback_data=f"uextend:{uid}"
+                    text="⏰ Muddat berish", callback_data=f"uterm:{uid}"
                 ),
                 block_btn,
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👥 Guruhlari", callback_data=f"ugroups:{uid}"
+                ),
+                InlineKeyboardButton(
+                    text="🔌 Sessiyani uzish", callback_data=f"ukick:{uid}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Foydalanuvchini o'chirish", callback_data=f"udel:{uid}"
+                )
+            ],
         ]
     )
 
@@ -747,25 +1371,142 @@ async def _refresh_user_card(callback: types.CallbackQuery, user_id: int):
         )
 
 
-@dp.callback_query(AdminFilter(), F.data.startswith("uextend:"))
-async def user_extend_callback(callback: types.CallbackQuery):
+async def _apply_new_term(admin_message: types.Message, target_id: int, days: int):
+    """Yangi muddat eskisini BEKOR qiladi (ustiga qo'shilmaydi)."""
+    old = get_user(target_id)
+    old_text = format_date(old[4]) if old and old[4] else "yo'q edi"
+    expiry = set_new_term(target_id, days)
+    await admin_message.answer(
+        f"✅ Yangi muddat berildi: <b>{format_date(expiry)}</b> gacha "
+        f"({days} kun, hozirdan).\nBekor qilingan eski muddat: {old_text}",
+        parse_mode="HTML",
+    )
+    try:
+        await bot.send_message(
+            target_id,
+            "⏰ <b>Tarifingiz yangilandi!</b>\n\n"
+            f"📅 Amal qilish muddati: <b>{format_date(expiry)}</b> gacha.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("uterm:"))
+async def user_term_start(callback: types.CallbackQuery, state: FSMContext):
     try:
         user_id = int(callback.data.split(":", 1)[1])
     except ValueError:
         await callback.answer("Xato.", show_alert=True)
         return
-    expiry = extend_subscription(user_id, days=30)
-    await _refresh_user_card(callback, user_id)
-    await callback.answer(f"✅ {format_date(expiry)} gacha uzaytirildi")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{d} kun", callback_data=f"utermset:{user_id}:{d}")
+         for d in (1, 7, 30)],
+        [InlineKeyboardButton(text="90 kun", callback_data=f"utermset:{user_id}:90"),
+         InlineKeyboardButton(text="✏️ Qo'lda yozish", callback_data=f"utermwrite:{user_id}")],
+    ])
+    await callback.message.answer(
+        "⏰ Yangi muddat tanlang yoki qo'lda yozing.\n"
+        "⚠️ Yangi muddat <b>eskisini bekor qiladi</b> — ustiga qo'shilmaydi.",
+        parse_mode="HTML", reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("utermset:"))
+async def user_term_set(callback: types.CallbackQuery, state: FSMContext):
     try:
-        await bot.send_message(
-            user_id,
-            "🎉 Tarifingiz uzaytirildi!\n"
-            f"📅 Amalda: <b>{format_date(expiry)}</b> gacha.",
-            parse_mode="HTML",
-        )
+        _p, uid_s, days_s = callback.data.split(":")
+        user_id, days = int(uid_s), int(days_s)
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    await _apply_new_term(callback.message, user_id, days)
+    await callback.answer("✅ Muddat berildi")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("utermwrite:"))
+async def user_term_write(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    await state.set_state(AdminTerm.waiting_days)
+    await state.update_data(term_target=user_id)
+    await callback.message.answer(
+        "✏️ Muddatni kun hisobida yozing (masalan: 45).\n"
+        "⚠️ Yangi muddat eskisini bekor qiladi. Bekor qilish: /cancel"
+    )
+    await callback.answer()
+
+
+@dp.message(AdminFilter(), StateFilter(AdminTerm.waiting_days), F.text)
+async def user_term_days_input(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit() or not (1 <= int(text) <= 3650):
+        await message.answer("⚠️ 1 dan 3650 gacha butun son yozing.")
+        return
+    data = await state.get_data()
+    target = data.get("term_target")
+    await state.clear()
+    if target:
+        await _apply_new_term(message, int(target), int(text))
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("ugroups:"))
+async def admin_user_groups(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    groups = get_user_groups(user_id)
+    if not groups:
+        await callback.answer("Bu foydalanuvchida guruhlar yo'q.", show_alert=True)
+        return
+    lines = [f"👥 Foydalanuvchi {user_id} guruhlari ({len(groups)} ta):"]
+    for g in groups:
+        st = "✅" if g[6] == "ok" and g[5] == 1 else ("⏸" if g[6] == "ok" else "⚠️")
+        lines.append(f"{st} {html.escape(g[4] or g[2] or '')}")
+    await callback.message.answer("\n".join(lines), parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("ukick:"))
+async def admin_user_kick_session(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    try:
+        import scanner_manager
+        await scanner_manager.stop_user_client(user_id, revoke=True)
+    except Exception:
+        logger.exception("Admin sessiya uzish")
+    clear_session(user_id)
+    await callback.answer("🔌 Sessiya uzildi", show_alert=True)
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("udel:"))
+async def admin_user_delete(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    try:
+        import scanner_manager
+        await scanner_manager.stop_user_client(user_id, revoke=True)
     except Exception:
         pass
+    row = get_user_full(user_id)
+    if row and row[8]:
+        await revoke_session(decrypt_session(row[8]))
+    delete_user_completely(user_id)
+    await callback.message.edit_text("🗑 Foydalanuvchi butunlay o'chirildi.")
+    await callback.answer("O'chirildi")
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("ublock:"))
@@ -784,6 +1525,130 @@ async def user_block_callback(callback: types.CallbackQuery):
     await callback.answer("⛔ Bloklandi" if not row[3] else "✅ Blokdan chiqarildi")
 
 
+# --- Admin: ro'yxatdan o'tish arizalari ---
+@dp.message(AdminFilter(), F.text == BTN_APPLICATIONS)
+async def list_applications(message: types.Message, state: FSMContext):
+    await state.clear()
+    pending = [u for u in get_all_users_full() if u[10] and u[0] != ADMIN_ID]
+    if not pending:
+        await message.answer("📝 Tasdiq kutayotgan arizalar yo'q.")
+        return
+    await message.answer(f"📝 Arizalar: {len(pending)} ta")
+    for row in pending:
+        uid = row[0]
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"regok:{uid}"),
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"regno:{uid}"),
+        ]])
+        await message.answer(
+            f"👤 {html.escape(row[6] or row[1] or '—')} "
+            f"(@{html.escape(row[2] or 'yoʻq')})\n"
+            f"📱 {html.escape(row[7] or '')}\n🆔 <code>{uid}</code>",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+
+
+# --- Admin: foydalanuvchilarga xabar yuborish (broadcast) ---
+_BROADCAST_AUDIENCES = {
+    "all": "👥 Hammaga",
+    "active": "✅ Tarifi faol",
+    "expiring": "⏰ Tugayotganlar (3 kun)",
+    "expired": "❌ Tarifi tugaganlar",
+}
+
+
+def _broadcast_recipients(kind: str) -> list[int]:
+    import time as _t
+
+    now = int(_t.time())
+    users = [u for u in get_all_users_full() if u[0] != ADMIN_ID and not u[3]]
+    if kind == "active":
+        return [u[0] for u in users if (u[4] or 0) > now]
+    if kind == "expiring":
+        return [u[0] for u in users if now < (u[4] or 0) <= now + 3 * 86400]
+    if kind == "expired":
+        return [u[0] for u in users if (u[4] or 0) <= now]
+    return [u[0] for u in users]
+
+
+@dp.message(AdminFilter(), F.text == BTN_BROADCAST)
+async def broadcast_start(message: types.Message, state: FSMContext):
+    await state.set_state(Broadcast.choosing_audience)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=f"bcast:{key}")]
+        for key, label in _BROADCAST_AUDIENCES.items()
+    ])
+    await message.answer("📣 Kimlarga yuboramiz?", reply_markup=kb)
+
+
+@dp.callback_query(AdminFilter(), StateFilter(Broadcast.choosing_audience),
+                   F.data.startswith("bcast:"))
+async def broadcast_audience(callback: types.CallbackQuery, state: FSMContext):
+    kind = callback.data.split(":", 1)[1]
+    recipients = _broadcast_recipients(kind)
+    await state.update_data(bcast_kind=kind, bcast_recipients=recipients)
+    await state.set_state(Broadcast.waiting_message)
+    await callback.message.answer(
+        f"{_BROADCAST_AUDIENCES.get(kind, kind)} — {len(recipients)} kishi.\n"
+        "Endi xabarni yuboring (matn yoki rasm+hujjat, izohi bilan)."
+    )
+    await callback.answer()
+
+
+@dp.message(AdminFilter(), StateFilter(Broadcast.waiting_message),
+            F.text | F.photo | F.document | F.video)
+async def broadcast_collect(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    recipients = data.get("bcast_recipients") or []
+    await state.update_data(
+        bcast_from_chat=message.chat.id, bcast_from_msg=message.message_id
+    )
+    await state.set_state(Broadcast.confirming)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Yuborish", callback_data="bcastgo"),
+        InlineKeyboardButton(text="❌ Bekor qilish", callback_data="bcastcancel"),
+    ]])
+    await message.answer(
+        f"📣 Xabar <b>{len(recipients)}</b> kishiga yuboriladi. Tasdiqlaysizmi?",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(AdminFilter(), StateFilter(Broadcast.confirming),
+                   F.data == "bcastcancel")
+async def broadcast_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Xabar yuborish bekor qilindi.")
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), StateFilter(Broadcast.confirming),
+                   F.data == "bcastgo")
+async def broadcast_go(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    recipients = data.get("bcast_recipients") or []
+    from_chat, from_msg = data.get("bcast_from_chat"), data.get("bcast_from_msg")
+    await state.clear()
+    await callback.answer("Yuborilmoqda...")
+    sent = failed = 0
+    for uid in recipients:
+        try:
+            await bot.copy_message(
+                chat_id=uid, from_chat_id=from_chat, message_id=from_msg
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)  # Telegram limiti uchun pauza
+    await callback.message.answer(
+        "📣 <b>Xabar yuborildi!</b>\n\n"
+        f"✅ Yetkazildi: {sent} ta\n❌ Yetkazilmadi: {failed} ta",
+        parse_mode="HTML",
+    )
+
+
 # --- Admin: statistika ---
 @dp.message(AdminFilter(), F.text == BTN_STATS)
 async def show_stats(message: types.Message, state: FSMContext):
@@ -791,8 +1656,8 @@ async def show_stats(message: types.Message, state: FSMContext):
     users = [u for u in get_all_users() if u[0] != ADMIN_ID]
     active_users = sum(1 for u in users if is_subscription_active(u[0]) and not u[3])
     blocked_users = sum(1 for u in users if u[3])
-    groups = get_managed_groups()
-    active_groups = sum(1 for g in groups if g[5] == "ok" and g[4] == 1)
+    groups = get_all_user_groups()
+    active_groups = sum(1 for g in groups if g[6] == "ok" and g[5] == 1)
     now = int(time.time())
     expiring = sum(
         1
@@ -816,11 +1681,11 @@ async def show_stats(message: types.Message, state: FSMContext):
 
 def scanner_status_text() -> str:
     """Diagnostika: nega xabar kelmayotganini bir qarashda ko'rsatadi."""
-    groups = get_managed_groups()
-    active = [g for g in groups if g[5] == "ok" and g[4] == 1]
-    pending = [g for g in groups if g[5] == "pending"]
-    errored = [g for g in groups if g[5] == "error"]
-    paused = [g for g in groups if g[5] == "ok" and g[4] != 1]
+    groups = get_all_user_groups()
+    active = [g for g in groups if g[6] == "ok" and g[5] == 1]
+    pending = [g for g in groups if g[6] == "pending"]
+    errored = [g for g in groups if g[6] == "error"]
+    paused = [g for g in groups if g[6] == "ok" and g[5] != 1]
 
     last_seen_raw = get_setting("userbot_last_seen")
     if last_seen_raw:
@@ -941,7 +1806,7 @@ async def user_fallback(message: types.Message, state: FSMContext):
         "Quyidagi menyudan foydalaning 👇\n\n"
         + subscription_text(get_user(message.from_user.id)),
         parse_mode="HTML",
-        reply_markup=main_menu(admin=False),
+        reply_markup=user_menu_for(message.from_user.id),
     )
 
 

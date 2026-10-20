@@ -62,21 +62,30 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
 Eslatma: Replit bepul tarifida loyiha "uxlab" qolishi mumkin — bot
 to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 
-## Rollar: Admin va foydalanuvchilar (biznes)
+## Rollar: Admin va foydalanuvchilar (biznes, server modeli)
 
-- **Admin** (Secrets dagi `ADMIN_ID`, bitta odam): to'liq boshqaruv —
-  kalit so'zlar, guruhlar, xabar sharti, tizim stop/start, skaner testi,
-  📊 statistika va 👥 foydalanuvchilar paneli.
-- **Foydalanuvchilar** (oylik tarif): /start bosib ro'yxatdan o'tadi.
-  Ularda boshqaruv tugmalari **bo'lmaydi** — faqat 💳 Tarifim,
-  🧾 Chek yuborish, ℹ️ Yordam. Kalitlarni faqat admin kiritadi.
-- **Tarif**: foydalanuvchi chek rasmini yuboradi → adminga tugma bilan
-  keladi → admin "✅ 30 kunga yoqish" ni bosadi → obuna faollashadi.
-  Admin foydalanuvchini istalgan vaqt bloklashi/uzaytirishi mumkin.
-- **Tarqatish**: topilgan xabar adminga va tarifi faol (bloklanmagan)
-  barcha foydalanuvchilarga alohida-alohida yuboriladi.
-- Yangi foydalanuvchi /start bossa, adminga "🆕 Yangi foydalanuvchi"
-  xabari boradi.
+- **Admin** (`ADMIN_ID`, bitta odam): kalitlar (faqat admin kiritadi),
+  xabar sharti, tizim stop/start, 🧪 test, 📊 umumiy statistika,
+  👥 foydalanuvchilar, 📝 arizalar, 📣 xabar yuborish (broadcast).
+- **Registratsiya (QR siz)**: ism-familiya (bitta xabar) → telefon
+  `+998...` → kod DARHOL so'raladi va faqat botdagi **raqamli
+  tugmalar** bilan teriladi (matn kod o'chiriladi) → 2FA (bo'lsa) →
+  Telegram UID == bot UID tekshiruvi → sessiya Fernet bilan
+  shifrlangan `pending` holatda → admin ✅/❌ tasdig'i. Tasdiqda
+  sessiya qayta tekshirilib aktiv bo'ladi.
+- **Har kimniki alohida**: har foydalanuvchi o'z sessiyasi bilan
+  ishlaydi, o'z guruhlarini qo'shadi (maks. **100 ta**), o'chiradi,
+  bitta almashuvchi ⏸Stop/▶️Start tugmasi bor. Xabar FAQAT o'sha
+  guruh egasiga boradi.
+- **Foydalanuvchi menyusi**: ➕ Guruh qo'shish, 📋 Guruhlarim,
+  📊 Statistika (faqat o'ziniki), 📱 Akkaunt holati (sessiya + tarif
+  shu yerda), ℹ️ Yordam. Kalit/shart/test/alohida tarif tugmasi YO'Q.
+- **Tarif**: to'lov tizimi yo'q — og'zaki. Admin muddatni qo'lda
+  yozadi (yoki 1/7/30/90 tugma); **yangi muddat eskisini bekor
+  qiladi** (ustiga qo'shilmaydi). Tugashga 3/2/1 kun qolganda
+  kuniga 1 marta ogohlantirish boradi.
+- Sessiyalar `SESSION_ENCRYPTION_KEY` bilan shifrlanadi (serverda
+  alohida maxfiy kalit qo'ying).
 
 ## Ish tartibi
 

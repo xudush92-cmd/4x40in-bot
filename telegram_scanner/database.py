@@ -45,6 +45,24 @@ def init_db() -> None:
                             is_blocked INTEGER DEFAULT 0,
                             sub_expires_at INTEGER DEFAULT 0,
                             created_at INTEGER DEFAULT 0)""")
+        _migrate_user_columns(conn)
+        # Har bir foydalanuvchining O'Z guruhlari (egasi bilan).
+        conn.execute("""CREATE TABLE IF NOT EXISTS user_groups (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            owner_user_id INTEGER NOT NULL,
+                            input_value TEXT NOT NULL,
+                            chat_id INTEGER,
+                            title TEXT,
+                            is_active INTEGER DEFAULT 1,
+                            status TEXT DEFAULT 'pending',
+                            last_error TEXT,
+                            UNIQUE(owner_user_id, input_value))""")
+        # Foydalanuvchi statistikasi hisoblagichlari
+        conn.execute("""CREATE TABLE IF NOT EXISTS user_counters (
+                            user_id INTEGER NOT NULL,
+                            key TEXT NOT NULL,
+                            value INTEGER DEFAULT 0,
+                            PRIMARY KEY (user_id, key))""")
         # Standart sozlamalar
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
@@ -54,6 +72,24 @@ def init_db() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('match_count', '3')"
         )
+
+
+def _migrate_user_columns(conn) -> None:
+    """Mavjud users jadvaliga sessiya/registratsiya ustunlarini qo'shadi."""
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(users)")]
+    additions = {
+        "full_name": "TEXT DEFAULT ''",
+        "phone": "TEXT DEFAULT ''",
+        "session_enc": "TEXT DEFAULT ''",
+        "pending_session_enc": "TEXT DEFAULT ''",
+        "awaiting_approval": "INTEGER DEFAULT 0",
+        "session_status": "TEXT DEFAULT 'none'",
+        "last_warn_date": "TEXT DEFAULT ''",
+        "last_found_at": "INTEGER DEFAULT 0",
+    }
+    for name, ddl in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
 
 
 def _migrate_old_sets(conn) -> None:
@@ -297,6 +333,306 @@ def get_active_subscriber_ids() -> list[int]:
             (int(time.time()),),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+# --- Registratsiya, sessiyalar, foydalanuvchi guruhlari ---
+
+USER_COLUMNS = (
+    "user_id, first_name, username, is_blocked, sub_expires_at, created_at, "
+    "COALESCE(full_name,''), COALESCE(phone,''), COALESCE(session_enc,''), "
+    "COALESCE(pending_session_enc,''), COALESCE(awaiting_approval,0), "
+    "COALESCE(session_status,'none'), COALESCE(last_warn_date,''), "
+    "COALESCE(last_found_at,0)"
+)
+
+
+def get_user_full(user_id: int):
+    with closing(_connect()) as conn:
+        return conn.execute(
+            f"SELECT {USER_COLUMNS} FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+
+
+def get_all_users_full() -> list[tuple]:
+    with closing(_connect()) as conn:
+        return conn.execute(
+            f"SELECT {USER_COLUMNS} FROM users ORDER BY created_at"
+        ).fetchall()
+
+
+def set_registration_info(user_id: int, full_name: str, phone: str = "") -> None:
+    with closing(_connect()) as conn, conn:
+        if phone:
+            conn.execute(
+                "UPDATE users SET full_name = ?, phone = ? WHERE user_id = ?",
+                (full_name, phone, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET full_name = ? WHERE user_id = ?",
+                (full_name, user_id),
+            )
+
+
+def get_user_by_phone(phone: str):
+    with closing(_connect()) as conn:
+        return conn.execute(
+            f"SELECT {USER_COLUMNS} FROM users WHERE phone = ?", (phone,)
+        ).fetchone()
+
+
+def set_pending_session(user_id: int, session_enc: str) -> None:
+    """Login tugadi: sessiya pending (shifrlangan) + tasdiq kutilmoqda — atomik."""
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET pending_session_enc = ?, awaiting_approval = 1, "
+            "session_status = 'pending' WHERE user_id = ?",
+            (session_enc, user_id),
+        )
+
+
+def approve_pending_session(user_id: int) -> bool:
+    """pending_session -> session (atomik). Pending bo'lmasa False."""
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE users SET session_enc = pending_session_enc, "
+            "pending_session_enc = '', awaiting_approval = 0, "
+            "session_status = 'active' WHERE user_id = ? "
+            "AND pending_session_enc != ''",
+            (user_id,),
+        )
+    return cur.rowcount > 0
+
+
+def clear_pending_session(user_id: int) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET pending_session_enc = '', awaiting_approval = 0, "
+            "session_status = 'none' WHERE user_id = ?",
+            (user_id,),
+        )
+
+
+def set_session_status(user_id: int, status: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET session_status = ? WHERE user_id = ?",
+            (status, user_id),
+        )
+
+
+def clear_session(user_id: int) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET session_enc = '', session_status = 'none' "
+            "WHERE user_id = ?",
+            (user_id,),
+        )
+
+
+def delete_user_completely(user_id: int) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM user_groups WHERE owner_user_id = ?", (user_id,))
+        conn.execute("DELETE FROM user_counters WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+
+
+def set_new_term(user_id: int, days: int) -> int:
+    """YANGI muddat: eskisi BEKOR bo'ladi, hozirdan boshlanadi.
+
+    Qaytaradi: yangi tugash vaqti (unix). Ogohlantirish belgisi ham tozalanadi.
+    """
+    import time
+
+    expiry = int(time.time()) + int(days) * 86400
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET sub_expires_at = ?, last_warn_date = '' "
+            "WHERE user_id = ?",
+            (expiry, user_id),
+        )
+    return expiry
+
+
+def get_expiring_users(within_days: int = 3) -> list[tuple]:
+    """Muddati within_days ichida tugaydigan (hali tugamagan) foydalanuvchilar."""
+    import time
+
+    now = int(time.time())
+    with closing(_connect()) as conn:
+        return conn.execute(
+            f"SELECT {USER_COLUMNS} FROM users WHERE is_blocked = 0 "
+            "AND sub_expires_at > ? AND sub_expires_at <= ?",
+            (now, now + within_days * 86400),
+        ).fetchall()
+
+
+def mark_warned_today(user_id: int) -> None:
+    import datetime
+
+    today = datetime.date.today().isoformat()
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET last_warn_date = ? WHERE user_id = ?",
+            (today, user_id),
+        )
+
+
+MAX_USER_GROUPS = 100
+
+
+def count_user_groups(owner_user_id: int) -> int:
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM user_groups WHERE owner_user_id = ?",
+            (owner_user_id,),
+        ).fetchone()[0]
+
+
+def add_user_group(owner_user_id: int, input_value: str):
+    """(True, '') yoki (False, xato matni). Limit: MAX_USER_GROUPS."""
+    if count_user_groups(owner_user_id) >= MAX_USER_GROUPS:
+        return False, f"Limit: bitta foydalanuvchi ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha oladi"
+    try:
+        with closing(_connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO user_groups (owner_user_id, input_value) VALUES (?, ?)",
+                (owner_user_id, input_value),
+            )
+        return True, ""
+    except sqlite3.IntegrityError:
+        return False, "Bu guruh sizda allaqachon qo'shilgan"
+
+
+def get_user_groups(owner_user_id: int) -> list[tuple]:
+    """(id, owner, input, chat_id, title, is_active, status, last_error)."""
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, owner_user_id, input_value, chat_id, title, "
+            "is_active, status, last_error FROM user_groups "
+            "WHERE owner_user_id = ? ORDER BY id",
+            (owner_user_id,),
+        ).fetchall()
+
+
+def get_all_user_groups() -> list[tuple]:
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, owner_user_id, input_value, chat_id, title, "
+            "is_active, status, last_error FROM user_groups ORDER BY id"
+        ).fetchall()
+
+
+def delete_user_group(group_id: int, owner_user_id: int | None = None) -> None:
+    with closing(_connect()) as conn, conn:
+        if owner_user_id is None:
+            conn.execute("DELETE FROM user_groups WHERE id = ?", (group_id,))
+        else:
+            conn.execute(
+                "DELETE FROM user_groups WHERE id = ? AND owner_user_id = ?",
+                (group_id, owner_user_id),
+            )
+
+
+def toggle_user_group(group_id: int, owner_user_id: int, status: int) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE user_groups SET is_active = ? WHERE id = ? "
+            "AND owner_user_id = ?",
+            (1 if status else 0, group_id, owner_user_id),
+        )
+
+
+def get_user_group(group_id: int):
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, owner_user_id, input_value, chat_id, title, "
+            "is_active, status, last_error FROM user_groups WHERE id = ?",
+            (group_id,),
+        ).fetchone()
+
+
+def get_pending_user_groups(owner_user_id: int | None = None) -> list[tuple]:
+    with closing(_connect()) as conn:
+        if owner_user_id is None:
+            return conn.execute(
+                "SELECT id, owner_user_id, input_value, chat_id, status "
+                "FROM user_groups WHERE status IN ('pending','error')"
+            ).fetchall()
+        return conn.execute(
+            "SELECT id, owner_user_id, input_value, chat_id, status "
+            "FROM user_groups WHERE owner_user_id = ? "
+            "AND status IN ('pending','error')",
+            (owner_user_id,),
+        ).fetchall()
+
+
+def resolve_user_group(group_id: int, chat_id: int, title: str) -> bool:
+    try:
+        with closing(_connect()) as conn, conn:
+            conn.execute(
+                "UPDATE user_groups SET chat_id = ?, title = ?, status = 'ok', "
+                "last_error = NULL WHERE id = ?",
+                (chat_id, title, group_id),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def mark_user_group_error(group_id: int, error: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE user_groups SET status = 'error', last_error = ? WHERE id = ?",
+            (str(error)[:300], group_id),
+        )
+
+
+def requeue_user_group(group_id: int) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE user_groups SET status = 'pending', last_error = NULL "
+            "WHERE id = ?",
+            (group_id,),
+        )
+
+
+def get_owner_active_chat_ids(owner_user_id: int) -> list[int]:
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT chat_id FROM user_groups WHERE owner_user_id = ? "
+            "AND status = 'ok' AND is_active = 1 AND chat_id IS NOT NULL",
+            (owner_user_id,),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def increment_user_counter(user_id: int, key: str, amount: int = 1) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO user_counters (user_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value = value + ?",
+            (user_id, key, amount, amount),
+        )
+
+
+def get_user_counter(user_id: int, key: str) -> int:
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT value FROM user_counters WHERE user_id = ? AND key = ?",
+            (user_id, key),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def set_user_last_found(user_id: int) -> None:
+    import time
+
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET last_found_at = ? WHERE user_id = ?",
+            (int(time.time()), user_id),
+        )
 
 
 def get_notification_recipients(admin_id: int) -> list[int]:
