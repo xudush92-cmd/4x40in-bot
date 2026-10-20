@@ -61,7 +61,7 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
     if not rows:
         return
     try:
-        dialogs = await client.get_dialogs()
+        dialogs = await client.get_dialogs(limit=None)
     except Exception:
         logger.warning("Dialoglarni olishda xato owner=%s", owner_id, exc_info=True)
         return
@@ -125,21 +125,30 @@ def _make_handler(owner_id: int, client: TelegramClient):
     async def _handler(event):
         if not event.raw_text:
             return
+        # Har bir o'tkazib yuborish sababi logga yoziladi — Replit
+        # loglaridan "nega xabar kelmadi" ni darhol ko'rish mumkin.
         # 1. Tizim (admin) to'xtatganmi?
         if get_setting("is_active") != "1":
+            logger.info("[SCAN] skip owner=%s: tizim admin tomonidan off", owner_id)
             return
         # 2. Egasi: bloklangan/tarifi tugagan bo'lsa — xabar yo'q
         if not is_subscription_active(owner_id):
+            logger.info("[SCAN] skip owner=%s chat=%s: tarif faol emas/blok", owner_id, event.chat_id)
             return
         # 2b. Foydalanuvchining UMUMIY Stop/Start tugmasi (bitta, menyuda)
         if not get_user_scanner_enabled(owner_id):
+            logger.info("[SCAN] skip owner=%s chat=%s: foydalanuvchi Stop bosgan", owner_id, event.chat_id)
             return
         # 3. Faqat EGASINING faol guruhlari
         if event.chat_id not in get_owner_active_chat_ids(owner_id):
+            logger.info("[SCAN] skip owner=%s chat=%s: guruh egasiniki emas/ulanmagan", owner_id, event.chat_id)
             return
-        # 4. Admin kalitlari (umumiy) + EGASINING o'z sharti (alohida)
+        # 4. Kalitlar ADMIN bazasidan (phrases jadvali), shart — EGASINIKI
         keywords = get_keywords()
         required = get_user_match_count(owner_id)
+        if not keywords:
+            logger.info("[SCAN] skip owner=%s: bazada kalit so'z yo'q (admin kiritmagan)", owner_id)
+            return
         result = match_keywords(event.raw_text, keywords, required)
         logger.info(
             "[SCAN] owner=%s chat=%s topildi=%s/%s",
@@ -181,12 +190,15 @@ def _make_handler(owner_id: int, client: TelegramClient):
             rows.append([{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}])
         markup = {"inline_keyboard": rows} if rows else None
 
-        # FAQAT egasiga (va adminga nusxa — admin nazorati uchun)
+        # Bildirishnoma FAQAT guruh egasiga yuboriladi (chat_id=owner_id)
         increment_user_counter(owner_id, "leads_found")
         set_user_last_found(owner_id)
         increment_counter("leads_found")
         if await send_to_bot_api(text, markup, chat_id=owner_id):
             increment_counter("notifications_sent")
+            logger.info("[SCAN] sent owner=%s chat=%s", owner_id, event.chat_id)
+        else:
+            logger.warning("[SCAN] SEND FAILED owner=%s chat=%s", owner_id, event.chat_id)
 
     return _handler
 

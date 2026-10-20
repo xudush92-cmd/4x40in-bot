@@ -1530,7 +1530,7 @@ def _admin_user_card_text(row) -> str:
     )
 
 
-def _user_keyboard(uid: int, blocked: int) -> InlineKeyboardMarkup:
+def _user_keyboard(uid: int, blocked: int, with_back: bool = True) -> InlineKeyboardMarkup:
     block_btn = (
         InlineKeyboardButton(
             text="✅ Blokdan chiqarish", callback_data=f"ublock:{uid}"
@@ -1540,30 +1540,64 @@ def _user_keyboard(uid: int, blocked: int) -> InlineKeyboardMarkup:
             text="⛔ Bloklash", callback_data=f"ublock:{uid}"
         )
     )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⏰ Muddat berish", callback_data=f"uterm:{uid}"
-                ),
-                block_btn,
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🔄 Kartochkani yangilash",
-                    callback_data=f"urefresh:{uid}",
-                ),
-                InlineKeyboardButton(
-                    text="🔌 Sessiyani uzish", callback_data=f"ukick:{uid}"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Foydalanuvchini o'chirish",
-                    callback_data=f"udel:{uid}",
-                )
-            ],
-        ]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="⏰ Muddat berish", callback_data=f"uterm:{uid}"
+            ),
+            block_btn,
+        ],
+        [
+            InlineKeyboardButton(
+                text="🔄 Kartochkani yangilash",
+                callback_data=f"urefresh:{uid}",
+            ),
+            InlineKeyboardButton(
+                text="🔌 Sessiyani uzish", callback_data=f"ukick:{uid}"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🗑 Foydalanuvchini o'chirish",
+                callback_data=f"udel:{uid}",
+            )
+        ],
+    ]
+    if with_back:
+        rows.append([
+            InlineKeyboardButton(text="⬅️ Orqaga", callback_data="uback")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _users_list_keyboard(users) -> InlineKeyboardMarkup:
+    """Ro'yxat: har bir foydalanuvchi — ism-familiya yozilgan tugma."""
+    rows = []
+    now = int(time.time())
+    for row in users:
+        uid, blocked, expires, awaiting = row[0], row[3], row[4], row[10]
+        if blocked:
+            icon = "⛔"
+        elif awaiting:
+            icon = "⏳"
+        elif expires and expires > now:
+            icon = "✅"
+        else:
+            icon = "❌"
+        name = _short_text(row[6] or row[1] or "Nomsiz", 30)
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {name}", callback_data=f"ucard:{uid}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _users_list_text(users) -> str:
+    active_n = sum(
+        1 for u in users if is_subscription_active(u[0]) and not u[3]
+    )
+    return (
+        f"👥 <b>Foydalanuvchilar: {len(users)} ta</b> "
+        f"(faol tarif: {active_n} ta)\n\n"
+        "Kartochkasini ochish uchun ismni bosing 👇"
     )
 
 
@@ -1577,22 +1611,45 @@ async def list_users(message: types.Message, state: FSMContext):
             "Bot havolasini ulashing — /start bosganlar shu yerda chiqadi."
         )
         return
-    active_n = sum(
-        1 for u in users if is_subscription_active(u[0]) and not u[3]
-    )
     await message.answer(
-        f"👥 <b>Foydalanuvchilar: {len(users)} ta</b> "
-        f"(faol tarif: {active_n} ta)\n"
-        "Har bir foydalanuvchining guruhlari, sharti, skaner holati "
-        "va statistikasi bitta kartochkada ko'rsatiladi.",
+        _users_list_text(users),
         parse_mode="HTML",
+        reply_markup=_users_list_keyboard(users),
     )
-    for row in users:
-        await message.answer(
-            _admin_user_card_text(row),
-            parse_mode="HTML",
-            reply_markup=_user_keyboard(row[0], row[3]),
-        )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("ucard:"))
+async def open_user_card(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    row = get_user_full(user_id)
+    if not row:
+        await callback.answer("Foydalanuvchi topilmadi.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        _admin_user_card_text(row),
+        parse_mode="HTML",
+        reply_markup=_user_keyboard(row[0], row[3], with_back=True),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data == "uback")
+async def back_to_users(callback: types.CallbackQuery):
+    users = [u for u in get_all_users_full() if u[0] != ADMIN_ID]
+    if not users:
+        await callback.message.edit_text("👥 Foydalanuvchilar yo'q.")
+        await callback.answer()
+        return
+    await callback.message.edit_text(
+        _users_list_text(users),
+        parse_mode="HTML",
+        reply_markup=_users_list_keyboard(users),
+    )
+    await callback.answer()
 
 
 async def _refresh_user_card(callback: types.CallbackQuery, user_id: int):
