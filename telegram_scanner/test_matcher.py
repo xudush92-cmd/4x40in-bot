@@ -65,5 +65,32 @@ class TestParsingAndForms(unittest.TestCase):
         self.assertIsNone(find_match("Toshkent odam mashina", [], required_count=1))
 
 
+class TestCyrillic(unittest.TestCase):
+    """Lotin kalit kirill xabarni, kirill kalit lotin xabarni topadi."""
+
+    def test_latin_keys_cyrillic_message(self):
+        r = match_keywords("Тошкентдан одам керак, машина бор", KEYWORDS, required_count=3)
+        self.assertTrue(r.is_match)
+        self.assertGreaterEqual(r.matched_count, 3)
+
+    def test_cyrillic_keys_latin_message(self):
+        cyr_keys = ["тошкент", "одам", "керак", "машина"]
+        r = match_keywords("Toshkentdan odam kerak, mashina bor", cyr_keys, required_count=3)
+        self.assertTrue(r.is_match)
+
+    def test_cyrillic_forms_and_case(self):
+        r = match_keywords("ТОШКЕНТГА одамлар керакми", KEYWORDS, required_count=3)
+        self.assertTrue(r.is_match)
+
+    def test_cyrillic_below_count(self):
+        self.assertIsNone(find_match("Тошкентдан одам бор", KEYWORDS, required_count=3))
+
+    def test_uzbek_specific_letters(self):
+        # ў (o'), ғ (g'), қ (q), ҳ (h)
+        keys = ["o'zbekiston", "g'olib", "qishloq", "hozir"]
+        r = match_keywords("Ўзбекистон ғолиб, қишлоқ ҳозир", keys, required_count=3)
+        self.assertTrue(r.is_match)
+
+
 if __name__ == "__main__":
     unittest.main()

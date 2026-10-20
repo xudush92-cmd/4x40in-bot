@@ -21,6 +21,53 @@ from difflib import SequenceMatcher
 _TOKEN_RE = re.compile(r"[^\W_]+(?:['’ʻʼ][^\W_]+)*", re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`": "'"})
 
+# --- Lotin <-> kirill transliteratsiya (faqat SOLISHTIRISH uchun) ---
+# Bitta kalit ikkala alifbodagi xabarni ham topishi uchun har bir so'z
+# variantlarga aylantiriladi: asli + boshqa alifbodagi shakli.
+_CYR_TO_LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "j", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "x", "ц": "ts", "ч": "ch", "ш": "sh", "ъ": "'",
+    "э": "e", "ю": "yu", "я": "ya", "ў": "o'", "қ": "q", "ғ": "g'", "ҳ": "h",
+}
+_CYRILLIC_CHARS = set(_CYR_TO_LAT)
+
+# Lotin -> kirill: avval ko'p harfli birikmalar, keyin yakka harflar
+_LAT_DIGRAPHS = (
+    ("o'", "ў"), ("g'", "ғ"),
+    ("sh", "ш"), ("ch", "ч"), ("ng", "нг"),
+    ("ya", "я"), ("yo", "ё"), ("yu", "ю"), ("ye", "е"),
+    ("ts", "ц"),
+)
+_LAT_TO_CYR = {
+    "a": "а", "b": "б", "d": "д", "e": "е", "f": "ф", "g": "г",
+    "h": "ҳ", "i": "и", "j": "ж", "k": "к", "l": "л", "m": "м",
+    "n": "н", "o": "о", "p": "п", "q": "қ", "r": "р", "s": "с",
+    "t": "т", "u": "у", "v": "в", "x": "х", "y": "й", "z": "з",
+}
+
+
+def cyr_to_lat(word: str) -> str:
+    return "".join(_CYR_TO_LAT.get(ch, ch) for ch in word)
+
+
+def lat_to_cyr(word: str) -> str:
+    result = word
+    for src, dst in _LAT_DIGRAPHS:
+        result = result.replace(src, dst)
+    return "".join(_LAT_TO_CYR.get(ch, ch) for ch in result)
+
+
+def _word_variants(word: str) -> set[str]:
+    """So'zning solishtirish variantlari: asli + boshqa alifbodagi shakli."""
+    variants = {word}
+    if any(ch in _CYRILLIC_CHARS for ch in word):
+        variants.add(cyr_to_lat(word))
+    if any("a" <= ch <= "z" or ch == "'" for ch in word):
+        variants.add(lat_to_cyr(word))
+    return variants
+
 
 @dataclass
 class MatchResult:
@@ -68,7 +115,22 @@ def _common_prefix_len(a: str, b: str) -> int:
 
 
 def _word_matches(key_word: str, message_word: str) -> bool:
-    """Bitta kalit so'z xabardagi so'zga mosmi (shakl o'zgarishlari bilan)."""
+    """Bitta kalit so'z xabardagi so'zga mosmi (shakl o'zgarishlari bilan).
+
+    Lotin/kirill variantlar ham solishtiriladi: lotin kalit kirill
+    xabarni ham, kirill kalit lotin xabarni ham topadi.
+    """
+    key_variants = _word_variants(key_word)
+    msg_variants = _word_variants(message_word)
+    for kv in key_variants:
+        for mv in msg_variants:
+            if _word_matches_single(kv, mv):
+                return True
+    return False
+
+
+def _word_matches_single(key_word: str, message_word: str) -> bool:
+    """Bitta alifbo ichida moslik (shakl o'zgarishlari bilan)."""
     if key_word == message_word:
         return True
     # odam ~ odamlar, kerak ~ kerakmi: biri ikkinchisining boshi bo'lsa
