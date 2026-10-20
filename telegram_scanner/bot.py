@@ -21,15 +21,23 @@ from database import (
     add_managed_group,
     delete_managed_group,
     delete_phrase,
+    extend_subscription,
     get_all_phrases_with_id,
+    get_all_users,
+    get_counter,
     get_keywords,
     get_managed_groups,
     get_match_count,
     get_setting,
+    get_user,
+    increment_counter,
     init_db,
+    is_subscription_active,
     requeue_managed_group,
     set_setting,
+    set_user_blocked,
     toggle_managed_group,
+    upsert_user,
 )
 from matcher import find_match, match_keywords, parse_key_words
 
@@ -43,9 +51,16 @@ BTN_GROUPS = "📋 Guruhlarim"
 BTN_COUNT = "🔔 Xabar sharti"
 BTN_TOGGLE = "⏸ To'xtatish / ▶️ Davom ettirish"
 BTN_TEST = "🧪 Skaner testi"
+BTN_USERS = "👥 Foydalanuvchilar"
+BTN_STATS = "📊 Statistika"
+# Foydalanuvchi tugmalari (boshqaruv tugmalari ularda BO'LMAYDI)
+BTN_MY_TARIFF = "💳 Tarifim"
+BTN_RECEIPT = "🧾 Chek yuborish"
+BTN_HELP = "ℹ️ Yordam"
 MENU_BUTTONS = {
     BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
-    BTN_COUNT, BTN_TOGGLE, BTN_TEST,
+    BTN_COUNT, BTN_TOGGLE, BTN_TEST, BTN_USERS, BTN_STATS,
+    BTN_MY_TARIFF, BTN_RECEIPT, BTN_HELP,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -77,14 +92,55 @@ class ScanTest(StatesGroup):
     waiting_text = State()  # tekshirish uchun namuna xabar kutilmoqda
 
 
-def main_menu() -> ReplyKeyboardMarkup:
-    kb = [
-        [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUP_ADD)],
-        [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_GROUPS)],
-        [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_TOGGLE)],
-        [KeyboardButton(text=BTN_TEST)],
-    ]
+class Payment(StatesGroup):
+    waiting_receipt = State()  # foydalanuvchidan to'lov cheki kutilmoqda
+
+
+def is_admin(user_id: int | None) -> bool:
+    return bool(ADMIN_ID) and user_id is not None and user_id == ADMIN_ID
+
+
+def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
+    if admin:
+        kb = [
+            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_GROUP_ADD)],
+            [KeyboardButton(text=BTN_PHRASES), KeyboardButton(text=BTN_GROUPS)],
+            [KeyboardButton(text=BTN_COUNT), KeyboardButton(text=BTN_TOGGLE)],
+            [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_USERS)],
+        ]
+    else:
+        # Oddiy foydalanuvchi: FAQAT tarif/yordam. Stop-start, xabar
+        # sharti, skaner test, guruh va kalit boshqaruvi BO'LMAYDI.
+        kb = [
+            [KeyboardButton(text=BTN_MY_TARIFF), KeyboardButton(text=BTN_RECEIPT)],
+            [KeyboardButton(text=BTN_HELP)],
+        ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def format_date(ts) -> str:
+    if not ts:
+        return "—"
+    return time.strftime("%d.%m.%Y", time.localtime(int(ts)))
+
+
+def subscription_text(user_row) -> str:
+    """Foydalanuvchi tarif holati matni."""
+    now = int(time.time())
+    if not user_row:
+        return "💳 Tarif: faol emas"
+    _uid, _name, _uname, blocked, expires, _created = user_row
+    if blocked:
+        return "⛔ Hisobingiz bloklangan. Admin bilan bog'laning."
+    if expires and expires > now:
+        days = (expires - now + 86399) // 86400
+        return (
+            f"💳 Tarif: ✅ faol\n"
+            f"📅 Tugash sanasi: <b>{format_date(expires)}</b> "
+            f"({days} kun qoldi)"
+        )
+    return "💳 Tarif: ❌ faol emas (muddati tugagan yoki yoqilmagan)"
 
 
 def current_status_text() -> str:
@@ -97,30 +153,201 @@ def current_status_text() -> str:
 
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
-# Admin tekshiruvi HAR BIR handlerga global qo'llanadi
-dp.message.filter(AdminFilter())
-dp.callback_query.filter(AdminFilter())
+# DIQQAT: global admin filtri YO'Q — oddiy foydalanuvchilar ham botni
+# ishlatadi. Har bir admin handlerida alohida AdminFilter() turadi.
 
 
 # --- Handlers ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    user = message.from_user
+    # Har bir foydalanuvchi bazaga yoziladi (admin ro'yxatda ko'radi)
+    is_new = get_user(user.id) is None
+    upsert_user(user.id, user.first_name or "", user.username or "")
+
+    if is_admin(user.id):
+        await message.answer(
+            "Assalomu alaykum, Admin! 👑 Boshqaruv paneli.\n\n"
+            + current_status_text(),
+            parse_mode="HTML",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+
+    if is_new and ADMIN_ID:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                "🆕 <b>Yangi foydalanuvchi!</b>\n\n"
+                f"👤 {html.escape(user.first_name or '')} "
+                f"(@{html.escape(user.username or 'yoʻq')})\n"
+                f"🆔 <code>{user.id}</code>\n\n"
+                "Tarif yoqish: 👥 Foydalanuvchilar bo'limidan.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Yangi foydalanuvchi haqida adminga yuborilmadi")
+
+    row = get_user(user.id)
     await message.answer(
-        "Assalomu alaykum! Skaner boshqaruv botiga xush kelibsiz.\n\n"
-        + current_status_text(),
+        "Assalomu alaykum! 👋 Mijozlar xabarlarini qabul qilish "
+        "botiga xush kelibsiz.\n\n"
+        + subscription_text(row)
+        + "\n\nTarif faol bo'lsa, topilgan xabarlar shu chatga keladi.",
         parse_mode="HTML",
-        reply_markup=main_menu(),
+        reply_markup=main_menu(admin=False),
     )
 
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Bekor qilindi.", reply_markup=main_menu())
+    await message.answer(
+        "Bekor qilindi.",
+        reply_markup=main_menu(admin=is_admin(message.from_user.id)),
+    )
 
 
-@dp.message(F.text == BTN_ADD)
+# --- Oddiy foydalanuvchi bo'limi (boshqaruv tugmalari yo'q) ---
+@dp.message(F.text == BTN_MY_TARIFF)
+async def my_tariff(message: types.Message, state: FSMContext):
+    await state.clear()
+    upsert_user(
+        message.from_user.id,
+        message.from_user.first_name or "",
+        message.from_user.username or "",
+    )
+    await message.answer(
+        subscription_text(get_user(message.from_user.id))
+        + "\n\nTarifni yangilash uchun to'lov qilib, "
+        "🧾 Chek yuborish tugmasi orqali chekni yuboring.",
+        parse_mode="HTML",
+        reply_markup=main_menu(admin=False),
+    )
+
+
+@dp.message(F.text == BTN_HELP)
+async def help_user(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "ℹ️ <b>Yordam</b>\n\n"
+        "• Bu bot topilgan mijozlar xabarlarini sizga yuboradi.\n"
+        "• Xizmatdan foydalanish uchun oylik tarif faol bo'lishi kerak.\n"
+        "• Tarif olish: to'lov qiling va 🧾 Chek yuborish orqali "
+        "chek rasmini yuboring — admin tekshirib, tarifingizni yoqadi.\n"
+        "• Savollar bo'lsa adminga yozing.",
+        parse_mode="HTML",
+        reply_markup=main_menu(admin=False),
+    )
+
+
+@dp.message(F.text == BTN_RECEIPT)
+async def ask_receipt(message: types.Message, state: FSMContext):
+    row = get_user(message.from_user.id)
+    if row and row[3]:
+        await message.answer("⛔ Hisobingiz bloklangan. Admin bilan bog'laning.")
+        return
+    await state.set_state(Payment.waiting_receipt)
+    await message.answer(
+        "🧾 To'lov cheki rasmini (skrinshot) yuboring — admin tekshirib, "
+        "tarifingizni yoqadi.\n\nBekor qilish: /cancel"
+    )
+
+
+@dp.message(StateFilter(Payment.waiting_receipt), F.photo | F.document)
+async def receive_receipt(message: types.Message, state: FSMContext):
+    await state.clear()
+    user = message.from_user
+    upsert_user(user.id, user.first_name or "", user.username or "")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ 30 kunga yoqish", callback_data=f"payok:{user.id}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Rad etish", callback_data=f"payno:{user.id}"
+                ),
+            ]
+        ]
+    )
+    try:
+        await message.copy_to(ADMIN_ID, reply_markup=kb)
+        await bot.send_message(
+            ADMIN_ID,
+            "🧾 <b>To'lov cheki keldi!</b>\n\n"
+            f"👤 {html.escape(user.first_name or '')} "
+            f"(@{html.escape(user.username or 'yoʻq')})\n"
+            f"🆔 <code>{user.id}</code>\n\n"
+            "Yuqoridagi chek xabaridagi tugmadan tarifni yoqing.",
+            parse_mode="HTML",
+        )
+        await message.answer(
+            "✅ Chekingiz adminga yuborildi. Tekshirilgach, "
+            "tarifingiz yoqiladi va sizga xabar keladi.",
+            reply_markup=main_menu(admin=False),
+        )
+    except Exception:
+        logger.exception("Chekni adminga yuborishda xato")
+        await message.answer(
+            "⚠️ Chekni yuborishda xato bo'ldi. Keyinroq qayta urining.",
+            reply_markup=main_menu(admin=False),
+        )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("payok:"))
+async def payment_approve(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = get_user(user_id)
+    if not row:
+        await callback.answer("Foydalanuvchi topilmadi.", show_alert=True)
+        return
+    expiry = extend_subscription(user_id, days=30)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("✅ 30 kunga yoqildi")
+    try:
+        await bot.send_message(
+            user_id,
+            "🎉 <b>Tarifingiz yoqildi!</b>\n\n"
+            f"📅 Amalda: <b>{format_date(expiry)}</b> gacha.\n"
+            "Endi topilgan xabarlar sizga keladi.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.exception("Foydalanuvchiga tarif xabari yuborilmadi")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("payno:"))
+async def payment_reject(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("❌ Rad etildi")
+    try:
+        await bot.send_message(
+            user_id,
+            "❌ To'lov chekingiz tasdiqlanmadi. To'lovni tekshirib, "
+            "chekning aniq rasmini qayta yuboring yoki admin bilan bog'laning.",
+        )
+    except Exception:
+        logger.exception("Foydalanuvchiga rad xabari yuborilmadi")
+
+
+@dp.message(AdminFilter(), F.text == BTN_ADD)
 async def ask_phrase(message: types.Message, state: FSMContext):
     await state.set_state(AddPhrase.waiting_phrase)
     await message.answer(
@@ -134,7 +361,7 @@ async def ask_phrase(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(StateFilter(AddPhrase.waiting_phrase), F.text)
+@dp.message(AdminFilter(), StateFilter(AddPhrase.waiting_phrase), F.text)
 async def save_new_phrase(message: types.Message, state: FSMContext):
     if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
         await state.clear()
@@ -176,7 +403,7 @@ def _count_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
-@dp.message(F.text == BTN_COUNT)
+@dp.message(AdminFilter(), F.text == BTN_COUNT)
 async def ask_match_count(message: types.Message, state: FSMContext):
     await state.set_state(SetCount.waiting_count)
     await message.answer(
@@ -213,7 +440,7 @@ async def _apply_match_count(message: types.Message, state: FSMContext, value: i
     )
 
 
-@dp.callback_query(StateFilter(SetCount.waiting_count), F.data.startswith("setcnt:"))
+@dp.callback_query(AdminFilter(), StateFilter(SetCount.waiting_count), F.data.startswith("setcnt:"))
 async def set_count_callback(callback: types.CallbackQuery, state: FSMContext):
     try:
         value = int(callback.data.split(":", 1)[1])
@@ -224,7 +451,7 @@ async def set_count_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer("Saqlandi!")
 
 
-@dp.message(StateFilter(SetCount.waiting_count), F.text)
+@dp.message(AdminFilter(), StateFilter(SetCount.waiting_count), F.text)
 async def set_count_message(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
     if text in MENU_BUTTONS | _LEGACY_BUTTONS:
@@ -236,7 +463,7 @@ async def set_count_message(message: types.Message, state: FSMContext):
     await _apply_match_count(message, state, int(text))
 
 
-@dp.message(F.text == BTN_PHRASES)
+@dp.message(AdminFilter(), F.text == BTN_PHRASES)
 async def list_phrases(message: types.Message, state: FSMContext):
     await state.clear()
     phrases = get_all_phrases_with_id()
@@ -259,7 +486,7 @@ async def list_phrases(message: types.Message, state: FSMContext):
         )
 
 
-@dp.callback_query(F.data.startswith("del:"))
+@dp.callback_query(AdminFilter(), F.data.startswith("del:"))
 async def delete_phrase_callback(callback: types.CallbackQuery):
     try:
         p_id = int(callback.data.split(":", 1)[1])
@@ -290,7 +517,7 @@ def normalize_group_input(text: str) -> str | None:
     return None
 
 
-@dp.message(F.text == BTN_GROUP_ADD)
+@dp.message(AdminFilter(), F.text == BTN_GROUP_ADD)
 async def ask_group(message: types.Message, state: FSMContext):
     await state.set_state(AddGroup.waiting_group)
     await message.answer(
@@ -305,7 +532,7 @@ async def ask_group(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(StateFilter(AddGroup.waiting_group), F.text)
+@dp.message(AdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
 async def save_group(message: types.Message, state: FSMContext):
     if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
         await state.clear()
@@ -377,7 +604,7 @@ def _find_group(group_id: int):
     return None
 
 
-@dp.message(F.text.in_({BTN_GROUPS, "📋 Guruhlar ro'yxati"}))
+@dp.message(AdminFilter(), F.text.in_({BTN_GROUPS, "📋 Guruhlar ro'yxati"}))
 async def list_groups(message: types.Message, state: FSMContext):
     await state.clear()
     groups = get_managed_groups()
@@ -396,7 +623,7 @@ async def list_groups(message: types.Message, state: FSMContext):
         )
 
 
-@dp.callback_query(F.data.startswith("gact:"))
+@dp.callback_query(AdminFilter(), F.data.startswith("gact:"))
 async def toggle_managed_callback(callback: types.CallbackQuery):
     """⏸/▶️ — tugma o'z o'rnida qarama-qarshi holatga almashadi."""
     try:
@@ -415,7 +642,7 @@ async def toggle_managed_callback(callback: types.CallbackQuery):
     await callback.answer("⏸ To'xtatildi" if new_status == 0 else "▶️ Yoqildi")
 
 
-@dp.callback_query(F.data.startswith("grecheck:"))
+@dp.callback_query(AdminFilter(), F.data.startswith("grecheck:"))
 async def recheck_group_callback(callback: types.CallbackQuery):
     try:
         gid = int(callback.data.split(":", 1)[1])
@@ -431,7 +658,7 @@ async def recheck_group_callback(callback: types.CallbackQuery):
     await callback.answer("🔄 Tekshiruv navbatga qo'yildi (30 soniyagacha)")
 
 
-@dp.callback_query(F.data.startswith("gdel:"))
+@dp.callback_query(AdminFilter(), F.data.startswith("gdel:"))
 async def delete_group_callback(callback: types.CallbackQuery):
     try:
         gid = int(callback.data.split(":", 1)[1])
@@ -447,6 +674,144 @@ async def delete_group_callback(callback: types.CallbackQuery):
         parse_mode="HTML",
     )
     await callback.answer("O'chirildi")
+
+
+# --- Admin: foydalanuvchilar boshqaruvi ---
+def _user_status_line(row) -> str:
+    _uid, name, uname, blocked, expires, _created = row
+    now = int(time.time())
+    if blocked:
+        status = "⛔ Bloklangan"
+    elif expires and expires > now:
+        status = f"✅ Faol ({format_date(expires)} gacha)"
+    else:
+        status = "❌ Tarif yo'q/tugagan"
+    uname_text = f"@{html.escape(uname)}" if uname else "username yo'q"
+    return (
+        f"👤 <b>{html.escape(name or '—')}</b> ({uname_text})\n"
+        f"🆔 <code>{_uid}</code>\n{status}"
+    )
+
+
+def _user_keyboard(row) -> InlineKeyboardMarkup:
+    uid, _name, _uname, blocked, _expires, _created = row
+    block_btn = (
+        InlineKeyboardButton(text="✅ Blokdan chiqarish", callback_data=f"ublock:{uid}")
+        if blocked
+        else InlineKeyboardButton(text="⛔ Bloklash", callback_data=f"ublock:{uid}")
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ 30 kun", callback_data=f"uextend:{uid}"
+                ),
+                block_btn,
+            ]
+        ]
+    )
+
+
+@dp.message(AdminFilter(), F.text == BTN_USERS)
+async def list_users(message: types.Message, state: FSMContext):
+    await state.clear()
+    users = [u for u in get_all_users() if u[0] != ADMIN_ID]
+    if not users:
+        await message.answer(
+            "👥 Hozircha foydalanuvchilar yo'q.\n"
+            "Bot havolasini ulashing — /start bosganlar shu yerda chiqadi."
+        )
+        return
+    active_n = sum(1 for u in users if is_subscription_active(u[0]) and not u[3])
+    await message.answer(
+        f"👥 <b>Foydalanuvchilar: {len(users)} ta</b> "
+        f"(faol tarif: {active_n} ta)\n"
+        "Har birida: ➕ 30 kun (tarif uzaytirish) va bloklash tugmasi.",
+        parse_mode="HTML",
+    )
+    for row in users:
+        await message.answer(
+            _user_status_line(row),
+            parse_mode="HTML",
+            reply_markup=_user_keyboard(row),
+        )
+
+
+async def _refresh_user_card(callback: types.CallbackQuery, user_id: int):
+    row = get_user(user_id)
+    if row:
+        await callback.message.edit_text(
+            _user_status_line(row),
+            parse_mode="HTML",
+            reply_markup=_user_keyboard(row),
+        )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("uextend:"))
+async def user_extend_callback(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    expiry = extend_subscription(user_id, days=30)
+    await _refresh_user_card(callback, user_id)
+    await callback.answer(f"✅ {format_date(expiry)} gacha uzaytirildi")
+    try:
+        await bot.send_message(
+            user_id,
+            "🎉 Tarifingiz uzaytirildi!\n"
+            f"📅 Amalda: <b>{format_date(expiry)}</b> gacha.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("ublock:"))
+async def user_block_callback(callback: types.CallbackQuery):
+    try:
+        user_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Xato.", show_alert=True)
+        return
+    row = get_user(user_id)
+    if not row:
+        await callback.answer("Topilmadi.", show_alert=True)
+        return
+    set_user_blocked(user_id, not bool(row[3]))
+    await _refresh_user_card(callback, user_id)
+    await callback.answer("⛔ Bloklandi" if not row[3] else "✅ Blokdan chiqarildi")
+
+
+# --- Admin: statistika ---
+@dp.message(AdminFilter(), F.text == BTN_STATS)
+async def show_stats(message: types.Message, state: FSMContext):
+    await state.clear()
+    users = [u for u in get_all_users() if u[0] != ADMIN_ID]
+    active_users = sum(1 for u in users if is_subscription_active(u[0]) and not u[3])
+    blocked_users = sum(1 for u in users if u[3])
+    groups = get_managed_groups()
+    active_groups = sum(1 for g in groups if g[5] == "ok" and g[4] == 1)
+    now = int(time.time())
+    expiring = sum(
+        1
+        for u in users
+        if u[4] and now < u[4] <= now + 3 * 86400 and not u[3]
+    )
+    await message.answer(
+        "📊 <b>Statistika</b>\n\n"
+        f"👥 Foydalanuvchilar: <b>{len(users)}</b> ta\n"
+        f"✅ Faol tarif: <b>{active_users}</b> ta\n"
+        f"⏰ 3 kun ichida tugaydi: <b>{expiring}</b> ta\n"
+        f"⛔ Bloklangan: <b>{blocked_users}</b> ta\n\n"
+        f"🚖 Topilgan mijozlar (jami): <b>{get_counter('leads_found')}</b> ta\n"
+        f"📨 Yuborilgan bildirishnomalar: <b>{get_counter('notifications_sent')}</b> ta\n\n"
+        f"🔑 Kalitlar: <b>{len(get_keywords())}</b> ta\n"
+        f"👥 Faol guruhlar: <b>{active_groups}</b> / {len(groups)} ta\n"
+        f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ toʻxtatilgan'}",
+        parse_mode="HTML",
+    )
 
 
 def scanner_status_text() -> str:
@@ -500,7 +865,7 @@ def scanner_status_text() -> str:
     return "\n".join(lines)
 
 
-@dp.message(F.text == BTN_TEST)
+@dp.message(AdminFilter(), F.text == BTN_TEST)
 async def scan_test_start(message: types.Message, state: FSMContext):
     await state.set_state(ScanTest.waiting_text)
     await message.answer(
@@ -512,7 +877,7 @@ async def scan_test_start(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(StateFilter(ScanTest.waiting_text), F.text)
+@dp.message(AdminFilter(), StateFilter(ScanTest.waiting_text), F.text)
 async def scan_test_check(message: types.Message, state: FSMContext):
     if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
         await state.clear()
@@ -544,7 +909,7 @@ async def scan_test_check(message: types.Message, state: FSMContext):
     await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
 
 
-@dp.message(F.text == BTN_TOGGLE)
+@dp.message(AdminFilter(), F.text == BTN_TOGGLE)
 async def toggle_system(message: types.Message, state: FSMContext):
     await state.clear()
     current = get_setting("is_active")
@@ -554,6 +919,29 @@ async def toggle_system(message: types.Message, state: FSMContext):
     status_text = "⏸ To'xtatildi" if new_status == "0" else "▶️ Davom ettirildi"
     await message.answer(
         f"Tizim holati: <b>{status_text}</b>", parse_mode="HTML"
+    )
+
+
+class NotAdminFilter(BaseFilter):
+    async def __call__(self, event: types.TelegramObject) -> bool:
+        user = getattr(event, "from_user", None)
+        return user is not None and not is_admin(user.id)
+
+
+@dp.message(NotAdminFilter(), F.text)
+async def user_fallback(message: types.Message, state: FSMContext):
+    """Oddiy foydalanuvchiga admin tugmalari ishlamaydi - o'z menyusi chiqadi."""
+    await state.clear()
+    upsert_user(
+        message.from_user.id,
+        message.from_user.first_name or "",
+        message.from_user.username or "",
+    )
+    await message.answer(
+        "Quyidagi menyudan foydalaning 👇\n\n"
+        + subscription_text(get_user(message.from_user.id)),
+        parse_mode="HTML",
+        reply_markup=main_menu(admin=False),
     )
 
 

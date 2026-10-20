@@ -20,8 +20,10 @@ from database import (
     get_active_groups_ids,
     get_keywords,
     get_match_count,
+    get_notification_recipients,
     get_pending_groups,
     get_setting,
+    increment_counter,
     init_db,
     mark_managed_group_error,
     resolve_managed_group,
@@ -45,16 +47,17 @@ PHONE_REGEX = re.compile(
 )
 
 
-async def send_to_bot_api(text, reply_markup=None) -> bool:
-    """Topilgan xabarni boshqaruv boti orqali ADMIN_ID ga yuborish.
+async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
+    """Xabarni boshqaruv boti orqali berilgan chatga yuborish.
 
-    Manzil FAQAT Secrets dagi ADMIN_ID — boshqa joyga ketmaydi.
+    chat_id berilmasa — ADMIN_ID (tizim xabarlari faqat adminga).
     Asosiy yuborish xato bersa (tugma/HTML sababli), bildirishnoma
     yo'qolmasligi uchun oddiy matn bilan qayta yuboriladi.
     """
+    target = chat_id or ADMIN_ID
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": ADMIN_ID,
+        "chat_id": target,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -67,13 +70,13 @@ async def send_to_bot_api(text, reply_markup=None) -> bool:
             async with session.post(url, json=payload) as resp:
                 body = await resp.text()
                 if resp.status == 200:
-                    logger.info("[NOTIFY] Adminga yuborildi (ADMIN_ID=%s)", ADMIN_ID)
+                    logger.info("[NOTIFY] Yuborildi (chat_id=%s)", target)
                     return True
                 logger.warning("[NOTIFY] Bot API xatosi (%s): %s", resp.status, body)
             # Zaxira: tugmalarsiz va HTMLsiz oddiy matn
             plain = re.sub(r"<[^>]+>", "", text)
             async with session.post(
-                url, json={"chat_id": ADMIN_ID, "text": plain}
+                url, json={"chat_id": target, "text": plain}
             ) as resp2:
                 if resp2.status == 200:
                     logger.info("[NOTIFY] Zaxira matn yuborildi")
@@ -264,7 +267,19 @@ async def handler(event):
         )
     buttons = {"inline_keyboard": button_rows} if button_rows else None
 
-    await send_to_bot_api(result_text, buttons)
+    # Tarqatish: admin + tarifi faol foydalanuvchilar (har biriga alohida)
+    recipients = get_notification_recipients(ADMIN_ID)
+    increment_counter("leads_found")
+    sent = 0
+    for recipient_id in recipients:
+        if await send_to_bot_api(result_text, buttons, chat_id=recipient_id):
+            sent += 1
+    if sent:
+        increment_counter("notifications_sent", sent)
+    logger.info(
+        "[NOTIFY] Mijoz %s kishiga yuborildi (jami oluvchilar: %s)",
+        sent, len(recipients),
+    )
 
 
 def _is_group_entity(entity) -> bool:

@@ -35,6 +35,16 @@ def init_db() -> None:
                             is_active INTEGER DEFAULT 1,
                             status TEXT DEFAULT 'pending',
                             last_error TEXT)""")
+        # Foydalanuvchilar (tarifli obunachilar) jadvali.
+        # Admin (Secrets dagi ADMIN_ID) bu jadvalda bo'lishi shart emas —
+        # u har doim to'liq huquqqa ega.
+        conn.execute("""CREATE TABLE IF NOT EXISTS users (
+                            user_id INTEGER PRIMARY KEY,
+                            first_name TEXT,
+                            username TEXT,
+                            is_blocked INTEGER DEFAULT 0,
+                            sub_expires_at INTEGER DEFAULT 0,
+                            created_at INTEGER DEFAULT 0)""")
         # Standart sozlamalar
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
@@ -208,6 +218,119 @@ def get_active_chat_ids() -> list[int]:
             "WHERE status = 'ok' AND is_active = 1 AND chat_id IS NOT NULL"
         ).fetchall()
     return [row[0] for row in rows]
+
+
+# --- Foydalanuvchilar va tariflar ---
+
+def upsert_user(user_id: int, first_name: str = "", username: str = "") -> None:
+    import time
+
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO users (user_id, first_name, username, created_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET first_name = excluded.first_name, "
+            "username = excluded.username",
+            (user_id, first_name or "", username or "", int(time.time())),
+        )
+
+
+def get_user(user_id: int):
+    """(user_id, first_name, username, is_blocked, sub_expires_at, created_at)."""
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT user_id, first_name, username, is_blocked, "
+            "sub_expires_at, created_at FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+
+
+def get_all_users() -> list[tuple]:
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT user_id, first_name, username, is_blocked, "
+            "sub_expires_at, created_at FROM users ORDER BY created_at"
+        ).fetchall()
+
+
+def set_user_blocked(user_id: int, blocked: bool) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET is_blocked = ? WHERE user_id = ?",
+            (1 if blocked else 0, user_id),
+        )
+
+
+def extend_subscription(user_id: int, days: int = 30) -> int:
+    """Obunani uzaytiradi (mavjud muddatdan davom etadi). Yangi tugash vaqtini qaytaradi."""
+    import time
+
+    now = int(time.time())
+    row = get_user(user_id)
+    current = row[4] if row and row[4] else 0
+    new_expiry = max(now, current) + int(days) * 86400
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET sub_expires_at = ? WHERE user_id = ?",
+            (new_expiry, user_id),
+        )
+    return new_expiry
+
+
+def is_subscription_active(user_id: int) -> bool:
+    import time
+
+    row = get_user(user_id)
+    if not row or row[3]:
+        return False
+    return (row[4] or 0) > int(time.time())
+
+
+def get_active_subscriber_ids() -> list[int]:
+    """Tarifi faol va bloklanmagan foydalanuvchilar."""
+    import time
+
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT user_id FROM users WHERE is_blocked = 0 "
+            "AND sub_expires_at > ?",
+            (int(time.time()),),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def get_notification_recipients(admin_id: int) -> list[int]:
+    """Bildirishnoma oluvchilar: admin + faol obunachilar (takrorsiz)."""
+    recipients = []
+    for uid in [admin_id, *get_active_subscriber_ids()]:
+        if uid and uid not in recipients:
+            recipients.append(uid)
+    return recipients
+
+
+def increment_counter(key: str, amount: int = 1) -> int:
+    """Statistika hisoblagichi (topilgan mijozlar, yuborilgan xabarlar...)."""
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + ?",
+            (key, amount, amount),
+        )
+        res = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+    return int(res[0]) if res else 0
+
+
+def get_counter(key: str) -> int:
+    with closing(_connect()) as conn:
+        res = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+    try:
+        return int(res[0]) if res else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def save_groups(groups_list) -> None:

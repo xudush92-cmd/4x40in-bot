@@ -62,6 +62,22 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
 Eslatma: Replit bepul tarifida loyiha "uxlab" qolishi mumkin — bot
 to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 
+## Rollar: Admin va foydalanuvchilar (biznes)
+
+- **Admin** (Secrets dagi `ADMIN_ID`, bitta odam): to'liq boshqaruv —
+  kalit so'zlar, guruhlar, xabar sharti, tizim stop/start, skaner testi,
+  📊 statistika va 👥 foydalanuvchilar paneli.
+- **Foydalanuvchilar** (oylik tarif): /start bosib ro'yxatdan o'tadi.
+  Ularda boshqaruv tugmalari **bo'lmaydi** — faqat 💳 Tarifim,
+  🧾 Chek yuborish, ℹ️ Yordam. Kalitlarni faqat admin kiritadi.
+- **Tarif**: foydalanuvchi chek rasmini yuboradi → adminga tugma bilan
+  keladi → admin "✅ 30 kunga yoqish" ni bosadi → obuna faollashadi.
+  Admin foydalanuvchini istalgan vaqt bloklashi/uzaytirishi mumkin.
+- **Tarqatish**: topilgan xabar adminga va tarifi faol (bloklanmagan)
+  barcha foydalanuvchilarga alohida-alohida yuboriladi.
+- Yangi foydalanuvchi /start bossa, adminga "🆕 Yangi foydalanuvchi"
+  xabari boradi.
+
 ## Ish tartibi
 
 1. **➕ Guruh qo'shish** tugmasi orqali guruh manzili (`@username`,
