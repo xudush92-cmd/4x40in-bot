@@ -95,14 +95,15 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   kuniga 1 marta ogohlantirish boradi.
 - Sessiyalar `SESSION_ENCRYPTION_KEY` bilan shifrlanadi (serverda
   alohida maxfiy kalit qo'ying).
-- **Haydovchi filtri (2 bosqich)**: admin menyusidagi **🚫 Stop-so'zlar**
-  tugmasidan boshqariladi. (1) Xabarda stop-so'zdan bittasi bo'lsa —
-  haydovchi e'loni, darhol bloklanadi (`olamiz, chiqamiz, kelishamiz,
-  kobalt, jentra, konditsioner...`; lotin/kirill, emoji aralash matn,
-  xato yozuvlar ham taniladi). (2) Qolgan xabarda asosiy kalitlar
-  (har bir foydalanuvchining o'z sharti bo'yicha) + kamida bitta
-  **mijoz so'zi** (`bormi, kerak, ketmoqchiman...`) bo'lishi shart —
-  shundagina bildirishnoma egasiga boradi.
+- **Haydovchi filtri**: admin menyusidagi **🚫 Stop-so'zlar**
+  tugmasidan boshqariladi. Tartib: (0) xabarda emoji bo'lsa yoki
+  stiker bo'lsa — mijoz izlayotgan haydovchi deb bloklanadi;
+  (1) admin kiritgan stop-so'zlardan bittasi bo'lsa — bloklanadi;
+  (2) qolgan xabarda asosiy kalitlar (har bir foydalanuvchining o'z
+  sharti bo'yicha) + admin kiritgan mijoz so'zlaridan kamida bittasi
+  bo'lishi shart. Kodda tayyor so'z ro'yxatlari yo'q — barcha
+  so'zlarni admin kiritadi, takroriy so'z (katta/kichik harf va
+  lotin/kirill farqi bilan ham) ikkinchi marta qo'shilmaydi.
 
 ## Ish tartibi
 

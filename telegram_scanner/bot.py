@@ -1136,7 +1136,7 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
         )
     if already:
         parts.append(
-            f"ℹ️ Allaqachon bor ({len(already)} ta): "
+            f"⚠️ Bazada bor, qo'shilmadi ({len(already)} ta): "
             f"{html.escape(', '.join(already))}"
         )
     parts.append("")
@@ -1278,10 +1278,14 @@ async def stopwords_menu(message: types.Message, state: FSMContext):
     ])
     await message.answer(
         "🚫 <b>Haydovchi filtri</b>\n\n"
+        "0. <b>Emoji/stiker</b>: xabarda emoji bo'lsa yoki stiker bo'lsa — "
+        "avtomatik bloklanadi.\n"
         "1. <b>Stop-so'zlar</b>: xabarda shulardan <b>bittasi</b> bo'lsa ham — "
         "xabar haydovchiniki, bloklanadi.\n"
         "2. <b>Mijoz so'zlari</b>: xabar o'tishi uchun mijozga xos so'zdan "
         "kamida bittasi bo'lishi kerak (asosiy kalitlardan tashqari).\n\n"
+        "Barcha so'zlarni faqat admin kiritadi; takroriy so'z bazaga "
+        "ikkinchi marta qo'shilmaydi.\n\n"
         "Qaysi ro'yxatni ochamiz?",
         parse_mode="HTML",
         reply_markup=kb,
@@ -1329,9 +1333,16 @@ async def filter_add_save(message: types.Message, state: FSMContext):
             f"✅ Qo'shildi: <b>{html.escape(text.lower())}</b>",
             parse_mode="HTML", reply_markup=main_menu(admin=True),
         )
+    elif text:
+        await message.answer(
+            f"⚠️ <b>{html.escape(text.lower())}</b> bazada bor — "
+            "ikkinchi marta qo'shilmadi.",
+            parse_mode="HTML",
+            reply_markup=main_menu(admin=True),
+        )
     else:
         await message.answer(
-            "ℹ️ Bu yozuv allaqachon bor yoki bo'sh.",
+            "⚠️ Bo'sh yozuv qo'shib bo'lmaydi.",
             reply_markup=main_menu(admin=True),
         )
 
@@ -1643,7 +1654,8 @@ def _admin_user_card_text(row) -> str:
         f"⚙️ Umumiy tizim: {'✅ yoniq' if system_on else '⏸ admin toʻxtatgan'}\n"
         f"🧪 Skaner holati: <b>{working_line}</b>\n\n"
         f"🔔 Xabar sharti: {condition_line}\n"
-        f"🚫 Haydovchi filtri: faol ({len(get_stop_words())} stop-so'z, "
+        f"🚫 Haydovchi filtri: faol (emoji/stiker blok, "
+        f"{len(get_stop_words())} stop-so'z, "
         f"{len(get_client_words())} mijoz so'zi)\n\n"
         f"👥 <b>Guruhlari: {len(groups)} ta</b> "
         f"(ulangan: {len(ok_groups)}, tekshiruvda: {len(pending_groups)}, "

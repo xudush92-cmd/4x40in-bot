@@ -3,6 +3,8 @@ python -m unittest test_matcher -v"""
 import unittest
 
 from matcher import (
+    canonical_entry,
+    contains_emoji,
     find_client_words,
     find_match,
     find_stop_words,
@@ -119,7 +121,7 @@ class TestDriverFilter(unittest.TestCase):
         self.assertTrue(find_stop_words(text, self.STOP))
 
     def test_client_passes(self):
-        text = "ТОШКЕНТДАН ХОРАЗМГА МАШИНА БОРМИ? 🚕 2 ТА ЖОЙ КЕРАК 🙏"
+        text = "ТОШКЕНТДАН ХОРАЗМГА МАШИНА БОРМИ? 2 ТА ЖОЙ КЕРАК"
         self.assertFalse(find_stop_words(text, self.STOP))
         self.assertTrue(find_client_words(text, self.CLIENT))
         r = match_keywords(text, self.KEYS, required_count=3)
@@ -129,6 +131,19 @@ class TestDriverFilter(unittest.TestCase):
         text = "Xorazmga ketmoqchiman, mashina kerak"
         self.assertFalse(find_stop_words(text, self.STOP))
         self.assertTrue(find_client_words(text, self.CLIENT))
+
+
+class TestEmojiAndDuplicates(unittest.TestCase):
+    def test_emoji_detection(self):
+        self.assertTrue(contains_emoji("Toshkentga mashina kerak 🚕"))
+        self.assertTrue(contains_emoji("☎️ +998901234567"))
+        self.assertFalse(contains_emoji("Toshkentga mashina kerak"))
+        self.assertFalse(contains_emoji(""))
+
+    def test_canonical_duplicates(self):
+        self.assertEqual(canonical_entry("ТОШКЕНТ"), canonical_entry("toshkent"))
+        self.assertEqual(canonical_entry("  ОДАМ   ОЛАМИЗ! "), "odam olamiz")
+        self.assertEqual(canonical_entry("Bog‘dod"), canonical_entry("bog'dod"))
 
 
 if __name__ == "__main__":

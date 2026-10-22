@@ -39,6 +39,7 @@ from database import (
 )
 from login_manager import revoke_session
 from matcher import (
+    contains_emoji,
     find_client_words,
     find_match,
     find_stop_words,
@@ -127,10 +128,16 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
             mark_user_group_error(gid, "Bu guruh emas (kanal/foydalanuvchi)")
 
 
+def _has_sticker(message) -> bool:
+    """Telegram xabari stiker ekanini tekshiradi."""
+    return bool(message is not None and getattr(message, "sticker", None))
+
+
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
-        if not event.raw_text:
+        is_sticker = _has_sticker(getattr(event, "message", None))
+        if not event.raw_text and not is_sticker:
             return
         # Har bir o'tkazib yuborish sababi logga yoziladi — Replit
         # loglaridan "nega xabar kelmadi" ni darhol ko'rish mumkin.
@@ -150,7 +157,16 @@ def _make_handler(owner_id: int, client: TelegramClient):
         if event.chat_id not in get_owner_active_chat_ids(owner_id):
             logger.info("[SCAN] skip owner=%s chat=%s: guruh egasiniki emas/ulanmagan", owner_id, event.chat_id)
             return
-        # 4. 1-FILTR: stop-so'zlar — haydovchi e'loni bo'lsa darhol blok
+        # 4. 1-FILTR: emoji/stiker — mijoz izlayotgan haydovchi belgisi.
+        # Mijozlar emoji/stiker ishlatmaydi, shuning uchun bunday xabar
+        # matnidagi so'zlardan qat'i nazar bloklanadi.
+        if is_sticker or contains_emoji(event.raw_text):
+            logger.info(
+                "[SCAN] skip owner=%s chat=%s: DRIVER emoji/sticker",
+                owner_id, event.chat_id,
+            )
+            return
+        # 5. 2-FILTR: stop-so'zlar — haydovchi e'loni bo'lsa darhol blok
         stop_found = find_stop_words(event.raw_text, get_stop_words())
         if stop_found:
             logger.info(
@@ -158,7 +174,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 owner_id, event.chat_id, ", ".join(stop_found),
             )
             return
-        # 5. Kalitlar ADMIN bazasidan (phrases jadvali), shart — EGASINIKI
+        # 6. Kalitlar ADMIN bazasidan (phrases jadvali), shart — EGASINIKI
         keywords = get_keywords()
         required = get_user_match_count(owner_id)
         if not keywords:
@@ -172,7 +188,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
         match = find_match(event.raw_text, keywords, required)
         if not match:
             return
-        # 6. 2-FILTR: mijoz so'zi — mijoz niyati bo'lmasa xabar yo'q
+        # 7. 3-FILTR: mijoz so'zi — mijoz niyati bo'lmasa xabar yo'q
         client_found = find_client_words(event.raw_text, get_client_words())
         if not client_found:
             logger.info(

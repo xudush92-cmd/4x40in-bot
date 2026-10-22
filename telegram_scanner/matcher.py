@@ -243,3 +243,27 @@ def find_stop_words(message_text: str, stop_words) -> list[str]:
 def find_client_words(message_text: str, client_words) -> list[str]:
     """Xabardagi mijozga xos so'zlar/iboralar (topilmasa bo'sh)."""
     return find_stop_words(message_text, client_words)
+
+
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u20E3]"
+)
+
+
+def contains_emoji(text: str | None) -> bool:
+    """Matnda emoji yoki emoji-ega belgisi bormi?
+
+    Haydovchi e'lonlari odatda emoji bilan bezatiladi; mijoz matnida
+    emoji bo'lmasligi kutiladi. Shuning uchun emoji alohida belgidir.
+    """
+    return bool(text and _EMOJI_RE.search(text))
+
+
+def canonical_entry(text: str | None) -> str:
+    """Takroriylikni tekshirish uchun yozuvning yagona shakli.
+
+    Katta-kichik harf, ortiqcha bo'shliq, tinish belgilari va
+    lotin/kirill farqi hisobga olinmaydi: ``ТОШКЕНТ`` bilan
+    ``toshkent`` bitta yozuv hisoblanadi.
+    """
+    return " ".join(_canon(token) for token in normalize_tokens(text or ""))

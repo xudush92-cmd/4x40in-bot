@@ -2,6 +2,7 @@ import sqlite3
 from contextlib import closing
 
 from config import DB_NAME
+from matcher import canonical_entry
 
 
 def _connect() -> sqlite3.Connection:
@@ -71,7 +72,7 @@ def init_db() -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS client_words (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             text TEXT UNIQUE)""")
-        _seed_filter_words(conn)
+        # Filtr so'zlari kodda yozilmaydi: ularni faqat admin botdan kiritadi.
         # Standart sozlamalar
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
@@ -123,42 +124,8 @@ def _migrate_old_sets(conn) -> None:
             )
 
 
-# Haydovchi e'lonlaridagi tipik so'zlar (suratlardagi namunalardan).
-# Bitta shunday so'z/ibora topilsa — xabar bloklanadi.
-DEFAULT_STOP_WORDS = [
-    "olamiz", "olomiz", "chiqamiz", "ketamiz", "getamiz", "kelishamiz",
-    "yuramiz", "haydimiz", "olib boramiz", "yo'lga chiqamiz",
-    "yulga chiqamiz", "pochta olamiz", "pochta olomiz", "odam olamiz",
-    "odam olomiz", "odam garak", "kishi garak", "pulini kelishamiz",
-    "narxini kelishamiz", "narxni kelishamiz", "kelishilgan narxda",
-    "manzildan manzilgacha", "bagaj bor", "tom bagaj",
-    "kobalt", "kabalt", "cobalt", "sobalt", "jentra", "gentra",
-    "lacetti", "losetti", "lasetti", "konditsioner", "kondisaner",
-]
-
-# Mijozga xos so'zlar: kamida bittasi bo'lishi shart (asosiy kalitlardan tashqari).
-DEFAULT_CLIENT_WORDS = [
-    "bormi", "kerak", "garak", "joy kerak", "joy garak",
-    "ketmoqchiman", "ketishim kerak", "ketmoqchi",
-    "mashina kerak", "mashina bormi", "taksi kerak", "taksi bormi",
-    "yordam kerak", "jo'natmoqchiman", "olib ketadigan",
-]
-
-
-def _seed_filter_words(conn) -> None:
-    """Filtr jadvallari bo'sh bo'lsa, standart so'zlar yoziladi."""
-    if conn.execute("SELECT COUNT(*) FROM stop_words").fetchone()[0] == 0:
-        conn.executemany(
-            "INSERT OR IGNORE INTO stop_words (text) VALUES (?)",
-            [(w,) for w in DEFAULT_STOP_WORDS],
-        )
-    if conn.execute("SELECT COUNT(*) FROM client_words").fetchone()[0] == 0:
-        conn.executemany(
-            "INSERT OR IGNORE INTO client_words (text) VALUES (?)",
-            [(w,) for w in DEFAULT_CLIENT_WORDS],
-        )
-
-
+# Filtr so'zlari kodda saqlanmaydi va avtomatik yozilmaydi.
+# Ularni admin botdagi tegishli bo'limlardan bazaga kiritadi.
 _FILTER_TABLES = {"stop_words", "client_words"}
 
 
@@ -182,20 +149,28 @@ def get_filter_words_with_id(table: str) -> list[tuple[int, str]]:
 
 
 def add_filter_word(table: str, entry: str) -> bool:
-    """Yozuv (so'z yoki ibora) qo'shadi. True — qo'shildi."""
+    """Yozuv (so'z yoki ibora) qo'shadi. True — qo'shildi.
+
+    Takroriy yozuv saqlanmaydi: katta-kichik harf, bo'shliq, tinish
+    belgisi va lotin/kirill farqi bo'lsa ham bitta yozuv hisoblanadi.
+    """
     if table not in _FILTER_TABLES:
         raise ValueError(table)
     cleaned = " ".join((entry or "").split()).lower()
-    if not cleaned:
+    canonical = canonical_entry(cleaned)
+    if not canonical:
         return False
-    try:
-        with closing(_connect()) as conn, conn:
+    with closing(_connect()) as conn, conn:
+        existing = conn.execute(f"SELECT text FROM {table}").fetchall()
+        if any(canonical_entry(row[0]) == canonical for row in existing):
+            return False
+        try:
             conn.execute(
                 f"INSERT INTO {table} (text) VALUES (?)", (cleaned,)
             )
-        return True
-    except sqlite3.IntegrityError:
-        return False
+        except sqlite3.IntegrityError:
+            return False
+    return True
 
 
 def delete_filter_word(table: str, word_id: int) -> None:
@@ -226,13 +201,26 @@ def get_phrases() -> list[str]:
 
 
 def add_keyword(word: str) -> bool:
-    """True — saqlandi, False — bu so'z allaqachon kalitlarda bor."""
-    try:
-        with closing(_connect()) as conn, conn:
-            conn.execute("INSERT INTO phrases (text) VALUES (?)", (word,))
-        return True
-    except sqlite3.IntegrityError:
+    """True — saqlandi, False — bu so'z allaqachon kalitlarda bor.
+
+    Takroriylik lotin/kirill va katta-kichik harf farqini hisobga
+    olmasdan tekshiriladi: ``ТОШКЕНТ`` bilan ``toshkent`` bitta kalit.
+    """
+    cleaned = " ".join((word or "").split()).lower()
+    canonical = canonical_entry(cleaned)
+    if not canonical:
         return False
+    with closing(_connect()) as conn, conn:
+        existing = conn.execute("SELECT text FROM phrases").fetchall()
+        if any(canonical_entry(row[0]) == canonical for row in existing):
+            return False
+        try:
+            conn.execute(
+                "INSERT INTO phrases (text) VALUES (?)", (cleaned,)
+            )
+        except sqlite3.IntegrityError:
+            return False
+    return True
 
 
 def add_phrase(text: str, required_count: int = 2) -> bool:
