@@ -183,5 +183,93 @@ class TestShortWordGuard(unittest.TestCase):
         self.assertTrue(find_stop_words(text, stop))
 
 
+class TestLazyCyrillic(unittest.TestCase):
+    """O'zbek kirill alifbosini "dangasa" yozish ham tanilishi kerak.
+
+    Odamlar ў→у, қ→к, ғ→г, ҳ→х deb yozadi.
+    """
+
+    def test_lazy_cyrillic_matches_latin_key(self):
+        for text in ("қарши", "карши", "ҚАРШИ"):
+            self.assertTrue(find_stop_words(text, ["qarshi"]), text)
+        for text in ("ҳозир", "хозир", "ХОЗИР"):
+            self.assertTrue(find_stop_words(text, ["hozir"]), text)
+        for text in ("жўнаймиз", "жунаймиз"):
+            self.assertTrue(find_stop_words(text, ["jo'naymiz"]), text)
+
+    def test_lazy_cyrillic_in_keywords(self):
+        keys = ["toshkent", "xorazm", "pochta"]
+        text = "Тошкентдан Хоразмга почта бор, ким олиб кетади"
+        r = match_keywords(text, keys, required_count=3)
+        self.assertEqual(sorted(r.matched_words), ["pochta", "toshkent", "xorazm"])
+
+    def test_apostrophe_forms_still_match(self):
+        self.assertTrue(find_stop_words("бўш жойимиз", ["bo'sh joyimiz"]))
+        self.assertTrue(find_stop_words("bo'sh joy", ["bo'sh joy"]))
+
+
+class TestVerbPerson(unittest.TestCase):
+    """1-shaxs (biz) va 2-shaxs (siz) aralashtirilmaydi."""
+
+    def test_first_person_forms_match(self):
+        self.assertTrue(find_stop_words("olaman", ["olamiz"]))
+        self.assertTrue(find_stop_words("ketaman", ["ketamiz"]))
+        self.assertTrue(find_stop_words("Жўнайман", ["jo'naymiz"]))
+
+    def test_first_and_second_person_do_not_match(self):
+        self.assertEqual(find_stop_words("жўнайсиз", ["jo'naymiz"]), [])
+        self.assertEqual(find_stop_words("ketaсиз", ["ketamiz"]), [])
+        self.assertEqual(find_stop_words("borasiz", ["boramiz"]), [])
+
+    def test_client_question_not_blocked_by_driver_form(self):
+        # Mijoz "qachon jo'nasiz?" deb so'raydi — haydovchining
+        # "jo'naymiz" stop-so'zi buni bloklamasligi kerak.
+        text = "Тошкентдан Хоразмга 2 одам бор, қачон жўнайсизлар"
+        self.assertEqual(find_stop_words(text, ["jo'naymiz"]), [])
+
+    def test_intent_and_present_forms_do_not_match(self):
+        # "jo'natmoqchiman" (mijoz niyati) "jo'natamiz" (haydovchi) bilan
+        # tenglashtirilmaydi.
+        text = "Тошкентдан Хоразмга посилка жўнатмоқчиман, 3 дона"
+        self.assertEqual(find_stop_words(text, ["jo'natamiz"]), [])
+        self.assertTrue(find_client_words(text, ["jo'natmoqchiman"]))
+
+
+class TestQuestionParticle(unittest.TestCase):
+    """"жой бор" (haydovchi e'loni) va "жой борми" (mijoz savoli) farqi."""
+
+    STOP = ["joy bor", "bor joyimiz"]
+    CLIENT = ["bormi", "joy kerak"]
+
+    def test_driver_statement_blocked(self):
+        self.assertTrue(find_stop_words("Тошкент Хоразм 2 жой бор", self.STOP))
+        self.assertTrue(find_stop_words("Toshkent Xorazm 2 joy bor", self.STOP))
+
+    def test_client_question_not_blocked(self):
+        self.assertEqual(find_stop_words("Тошкент Хоразм 2 жой борми?", self.STOP), [])
+        self.assertEqual(find_stop_words("Toshkent Xorazm joy bormi?", self.STOP), [])
+        self.assertTrue(find_client_words("Toshkent Xorazm joy bormi?", self.CLIENT))
+
+    def test_bare_stop_word_does_not_block_question(self):
+        # Yakka "бор" stop-so'zi so'roq shaklini bloklamaydi — aks holda
+        # "жой борми?" kabi mijoz savollari yo'qolardi.
+        self.assertEqual(find_stop_words("жой борми?", ["бор"]), [])
+        self.assertTrue(find_stop_words("жой бор", ["бор"]))
+
+
+class TestLargeKeywordList(unittest.TestCase):
+    """Indeks katta ro'yxatda ham to'g'ri ishlashi kerak."""
+
+    def test_2000_keywords_still_match(self):
+        keys = ["toshkent", "xorazm", "posilka"] + ["soz%04d" % i for i in range(2000)]
+        text = "Тошкентдан Хоразмга 2 дона посилка бор"
+        r = match_keywords(text, keys, required_count=3)
+        self.assertEqual(sorted(r.matched_words), ["posilka", "toshkent", "xorazm"])
+
+    def test_no_false_positive_from_padding(self):
+        keys = ["toshkent", "soz0001"]
+        self.assertEqual(match_keywords("об-ҳаво қандай", keys, 1).matched_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

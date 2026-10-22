@@ -106,6 +106,23 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   lotin/kirill farqi bilan ham) ikkinchi marta qo'shilmaydi. So'z
   boshqa ro'yxatda (kalit/stop/mijoz) bo'lsa ham qo'shilmaydi —
   bot aynan qaysi ro'yxatda ekanini ko'rsatadi.
+- **Yozilish shakllari**: so'zlarni faqat **lotin** alifbosida kiritish
+  yetarli. Skaner kirill alifbosini ham, "dangasa" yozilgan kirillni
+  ham (ў→у, қ→к, ғ→г, ҳ→х) tanidi: `qarshi` = `қарши` = `карши`,
+  `jo'naymiz` = `жўнаймиз` = `жунаймиз`. Apostrof muhim:
+  `bo'sh` to'g'ri, `bosh` — boshqa so'z.
+- **Fe'l shaxsi**: `olamiz`/`olaman` bir shaxs (biz) — mos keladi;
+  `olamiz` va `olasiz` (siz) mos kelmaydi. Shuning uchun mijozning
+  "қачон жўнайсиз?" savoli haydovchining `jo'naymiz` stop-so'zi bilan
+  bloklanmaydi. Niyat shakli (`jo'natmoqchiman`) hozirgi zamondan
+  (`jo'natamiz`) ajratiladi.
+- **So'roq shakli**: stop-so'zlar uchun `-mi` qo'shimchasi qat'iy
+  hisobga olinadi. `жой бор` (haydovchi e'loni) bloklanadi, lekin
+  `жой борми` (mijoz savoli) o'tadi. Shu tufayli `joy bor`,
+  `bo'sh joyimiz` kabi iboralarni bemalol stop-so'z qilib qo'shsa
+  bo'ladi.
+- **Tezlik**: kalitlar prefiks indeksi bo'yicha qidiriladi. 5000 ta
+  kalitda bitta xabar ~2 ms (avval ~600 ms edi).
 
 ## Ish tartibi
 

@@ -11,12 +11,20 @@ Qo'shimcha imkoniyatlar:
   * so'z tartibi va oradagi boshqa so'zlar ahamiyatsiz;
   * katta/kichik harf, tinish belgilari hisobga olinmaydi;
   * so'z shakllari ham taniladi: "odam" ~ "odamlar",
-    "toshkent" ~ "toshkentdan" / "toshkentga" (umumiy o'zak bo'yicha).
+    "toshkent" ~ "toshkentdan" / "toshkentga" (umumiy o'zak bo'yicha);
+  * lotin/kirill alifbosi farqi hisobga olinmaydi, shu jumladan
+    "dangasa" yozilgan kirill (ў→у, қ→к, ғ→г, ҳ→х) ham;
+  * fe'l shaxsi ajratiladi: "jo'naymiz" (biz) "jo'naysiz" (siz) bilan
+    aralashtirilmaydi;
+  * stop-so'zlarda so'roq qo'shimchasi ajratiladi: "жой бор" (haydovchi
+    e'loni) "жой борми" (mijoz savoli) bilan tenglashtirilmaydi;
+  * katta ro'yxatlarda ham tez ishlashi uchun prefiks indeksi ishlatiladi.
 """
 
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 _TOKEN_RE = re.compile(r"[^\W_]+(?:['’ʻʼ][^\W_]+)*", re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`": "'"})
@@ -60,14 +68,83 @@ def lat_to_cyr(word: str) -> str:
     return "".join(_LAT_TO_CYR.get(ch, ch) for ch in result)
 
 
-def _word_variants(word: str) -> set[str]:
-    """So'zning solishtirish variantlari: asli + boshqa alifbodagi shakli."""
-    variants = {word}
-    if any(ch in _CYRILLIC_CHARS for ch in word):
-        variants.add(cyr_to_lat(word))
-    if any("a" <= ch <= "z" or ch == "'" for ch in word):
-        variants.add(lat_to_cyr(word))
-    return variants
+def _is_cyrillic(word: str) -> bool:
+    return any(ch in _CYRILLIC_CHARS for ch in word)
+
+
+def _lazy_latin(word: str) -> str:
+    """Lotin yozuvidagi "dangasalik"ni tenglashtiradi.
+
+    Odamlar kirillni ham, lotinni ham soddalashtirib yozadi:
+    ``ў`` o'rniga ``у``, ``қ`` o'rniga ``к``, ``ҳ`` o'rniga ``х``,
+    ``o'`` o'rniga ``o`` yoki ``u``. Solishtirishda ikkala tomon ham
+    shu yagona shaklga keltiriladi, shunda bitta lotin so'z kirillning
+    barcha yozilish variantini topadi.
+    """
+    w = word.replace("o'", "u").replace("g'", "g")
+    return w.replace("q", "k").replace("h", "x")
+
+
+@lru_cache(maxsize=16384)
+def _fold_variants(word: str) -> tuple[str, ...]:
+    """So'zning solishtirish uchun yagona (lotin) shakllari.
+
+    ``word`` allaqachon normallashtirilgan (kichik harf, apostrof bir xil).
+    """
+    base = cyr_to_lat(word) if _is_cyrillic(word) else word
+    variants = [base]
+    lazy = _lazy_latin(base)
+    if lazy not in variants:
+        variants.append(lazy)
+    plain = base.replace("o'", "o").replace("g'", "g")
+    if plain not in variants:
+        variants.append(plain)
+    return tuple(variants)
+
+
+# --- Shakl (qo'shimcha) tahlili ---
+
+# 1-shaxs (men/biz) va 2-shaxs (sen/siz) qo'shimchalari. Ular bir-biriga
+# tenglashtirilmaydi: "jo'naymiz" (haydovchi) va "jo'naysiz" (mijoz savoli)
+# har xil ma'no.
+_PERSON_SUFFIXES = (
+    ("moqchiman", 0), ("moqchimiz", 0), ("moqchisiz", 1),
+    ("yapman", 0), ("yapmiz", 0), ("yapsiz", 1), ("yapsan", 1),
+    ("yapdi", None), ("yapdilar", None), ("yapti", None), ("yaptilar", None),
+    ("aman", 0), ("amiz", 0), ("asiz", 1), ("asan", 1), ("adilar", None),
+    ("adi", None), ("am", 0), ("man", 0), ("miz", 0),
+    ("siz", 1), ("san", 1), ("ngiz", 1), ("dilar", None), ("di", None),
+)
+
+
+def _verb_parts(word: str) -> tuple[str, int | None, str]:
+    """So'zni o'zak, shaxs va zamonga ajratadi.
+
+    ``("olamiz")`` -> ``("ola", 0, "oddiy")``. Qo'shimcha topilmasa
+    o'zak — so'zning o'zi, shaxs — ``None``.
+
+    Zamon muhim: "jo'natamiz" (biz yuboramiz — haydovchi) va
+    "jo'natmoqchiman" (yubormoqchiman — mijoz) bir o'zakdan, lekin
+    har xil ma'no, shuning uchun ular tenglashtirilmaydi.
+    """
+    for suffix, person in _PERSON_SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            if "moqchi" in suffix:
+                tense = "moqchi"
+            elif "yap" in suffix:
+                tense = "yap"
+            else:
+                tense = "oddiy"
+            return word[: -len(suffix)], person, tense
+    return word, None, "oddiy"
+
+
+_QUESTION_PARTICLE = "mi"
+
+
+def _is_question_form(word: str) -> bool:
+    """So'z so'roq shakldami ("bormi", "керакми")."""
+    return word.endswith(_QUESTION_PARTICLE) and len(word) > len(_QUESTION_PARTICLE)
 
 
 @dataclass
@@ -115,25 +192,52 @@ def _common_prefix_len(a: str, b: str) -> int:
     return n
 
 
-def _word_matches(key_word: str, message_word: str) -> bool:
-    """Bitta kalit so'z xabardagi so'zga mosmi (shakl o'zgarishlari bilan).
-
-    Lotin/kirill variantlar ham solishtiriladi: lotin kalit kirill
-    xabarni ham, kirill kalit lotin xabarni ham topadi.
-    """
-    key_variants = _word_variants(key_word)
-    msg_variants = _word_variants(message_word)
-    for kv in key_variants:
-        for mv in msg_variants:
-            if _word_matches_single(kv, mv):
+def _word_matches(
+    key_word: str,
+    message_word: str,
+    strict_question: bool = False,
+) -> bool:
+    """Bitta yozuv xabardagi so'zga mosmi (shakl va alifbo o'zgarishlari bilan)."""
+    for kv in _fold_variants(key_word):
+        for mv in _fold_variants(message_word):
+            if _word_matches_single(kv, mv, strict_question=strict_question):
                 return True
     return False
 
 
-def _word_matches_single(key_word: str, message_word: str) -> bool:
-    """Bitta alifbo ichida moslik (shakl o'zgarishlari bilan)."""
+def _word_matches_single(
+    key_word: str,
+    message_word: str,
+    strict_question: bool = False,
+) -> bool:
+    """Bitta alifbo (allaqachon buklangan) ichida moslik.
+
+    ``strict_question`` — so'roq qo'shimchasini qat'iy ajratish. Stop-so'zlar
+    uchun yoqiladi: "жой бор" yozuvi "жой борми" savolini bloklamaydi.
+    """
+    if strict_question and _is_question_form(key_word) != _is_question_form(
+        message_word
+    ):
+        return False
     if key_word == message_word:
         return True
+
+    # Fe'l shaxsi: "olamiz" ~ "olaman" mos, "olamiz" ~ "olasiz" emas.
+    key_stem, key_person, key_tense = _verb_parts(key_word)
+    msg_stem, msg_person, msg_tense = _verb_parts(message_word)
+    if key_person is not None and msg_person is not None:
+        if key_person != msg_person:
+            return False
+        # O'zak AYNAN teng bo'lishi shart: "olamiz" ~ "olaman" (o'zak "ola")
+        # mos, lekin "jo'naymiz" (o'zak "jo'na") "jo'natmoqchiman"
+        # (o'zak "jo'nat") bilan aralashtirilmaydi — bular boshqa fe'llar.
+        if (
+            len(key_stem) >= 3
+            and key_stem == msg_stem
+            and key_tense == msg_tense
+        ):
+            return True
+
     # odam ~ odamlar, kerak ~ kerakmi: xabardagi so'z yozuvdan uzun bo'lsa —
     # yozuv o'zak bo'lib xizmat qiladi.
     if min(len(key_word), len(message_word)) >= 3 and message_word.startswith(
@@ -144,9 +248,11 @@ def _word_matches_single(key_word: str, message_word: str) -> bool:
     # qabul qilinadi: "ketadi" ~ "ketad", "ikki" ~ "ikk".
     # Aks holda "boramiz" yozuvi xabardagi oddiy "bor" so'zini ham
     # tutib qo'yardi va mijoz xabari bloklanardi.
-    if min(len(key_word), len(message_word)) >= 3 and key_word.startswith(
-        message_word
-    ) and len(key_word) - len(message_word) <= 2:
+    if (
+        min(len(key_word), len(message_word)) >= 3
+        and key_word.startswith(message_word)
+        and len(key_word) - len(message_word) <= 2
+    ):
         return True
     # toshkent ~ toshkentdan / toshkentga: uzun umumiy o'zak
     prefix = _common_prefix_len(key_word, message_word)
@@ -161,6 +267,52 @@ def _word_matches_single(key_word: str, message_word: str) -> bool:
     return False
 
 
+# --- Tez qidiruv indekslari ---
+# Ro'yxat yuzlab/minglab so'zdan iborat bo'lishi mumkin. Har bir kalitni
+# har bir xabar so'zi bilan solishtirish (O(n*m)) o'rniga so'zlar
+# prefikslari bo'yicha indekslanadi: mos kelishi mumkin bo'lgan kalit
+# nomzodlari O(1) aniqlanadi, keyin ular to'liq tekshiriladi.
+
+_MIN_PREFIX = 3
+
+
+@lru_cache(maxsize=32)
+def _build_index(words: tuple[str, ...]):
+    """``words`` uchun prefiks indeksi.
+
+    Qaytaradi: (aniq shakl -> id'lar, prefiks -> id'lar, variantlar).
+    """
+    exact: dict[str, list[int]] = {}
+    prefix: dict[str, set[int]] = {}
+    variants: list[tuple[str, ...]] = []
+    for idx, word in enumerate(words):
+        variants.append(_fold_variants(word))
+        for variant in variants[-1]:
+            exact.setdefault(variant, []).append(idx)
+            for size in range(_MIN_PREFIX, len(variant) + 1):
+                prefix.setdefault(variant[:size], set()).add(idx)
+    return exact, prefix, tuple(variants)
+
+
+def _candidate_ids(message_word: str, exact, prefix) -> set[int]:
+    """Xabar so'ziga o'xshash bo'lishi mumkin bo'lgan kalit id'lari."""
+    found: set[int] = set()
+    for variant in _fold_variants(message_word):
+        found.update(exact.get(variant, ()))
+        for size in range(_MIN_PREFIX, len(variant) + 1):
+            ids = prefix.get(variant[:size])
+            if ids:
+                found.update(ids)
+        # Yozuv xabar so'zidan uzun bo'lib, dumi 1-2 harf bo'lishi mumkin:
+        # "ketadi" ~ "ketad". Buning uchun so'zning o'zi prefiks bo'lib
+        # xizmat qiladi — u yuqoridagi tsiklda allaqachon tekshirilgan.
+    return found
+
+
+def _dedup_words(keywords) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(normalize_tokens(" ".join(keywords or []))))
+
+
 def match_keywords(
     message_text: str,
     keywords,
@@ -171,7 +323,7 @@ def match_keywords(
     keywords — barcha kalit so'zlar ro'yxati (soni cheksiz).
     required_count — admin belgilagan chegara (botda o'zgartiriladi).
     """
-    words = list(dict.fromkeys(normalize_tokens(" ".join(keywords or []))))
+    words = _dedup_words(keywords)
     try:
         required = int(required_count)
     except (TypeError, ValueError):
@@ -182,15 +334,19 @@ def match_keywords(
     if not words:
         return result
 
-    message_tokens = set(normalize_tokens(message_text))
+    message_tokens = list(dict.fromkeys(normalize_tokens(message_text)))
     if not message_tokens:
         return result
 
-    result.matched_words = [
-        word
-        for word in words
-        if any(_word_matches(word, msg_word) for msg_word in message_tokens)
-    ]
+    exact, prefix, _variants = _build_index(words)
+    matched: set[int] = set()
+    for token in message_tokens:
+        for idx in _candidate_ids(token, exact, prefix):
+            if idx in matched:
+                continue
+            if _word_matches(words[idx], token):
+                matched.add(idx)
+    result.matched_words = [words[i] for i in sorted(matched)]
     return result
 
 
@@ -208,50 +364,111 @@ def find_match(
 
 def _canon(word: str) -> str:
     """So'zni solishtirish uchun yagona (lotin) ko'rinishga keltiradi."""
-    if any(ch in _CYRILLIC_CHARS for ch in word):
+    if _is_cyrillic(word):
         return cyr_to_lat(word)
     return word
 
 
-def _entry_matches(entry_tokens: list[str], message_tokens: list[str]) -> bool:
-    """Bitta yozuv (so'z yoki ibora) xabarda topildimi?
+@lru_cache(maxsize=32)
+def _build_entry_index(entries: tuple[str, ...]):
+    """Stop/mijoz ro'yxati uchun indeks.
 
-    Ibora — yonma-yon kelgan so'zlar ketma-ketligi sifatida tekshiriladi,
-    har bir so'z shakl o'zgarishi bilan solishtiriladi.
+    Bir so'zli yozuvlar prefiks indeksiga tushadi, iboralar (bir necha
+    so'z) alohida ro'yxatda qoladi.
     """
-    if not entry_tokens or not message_tokens:
+    tokens_by_id: list[tuple[str, ...]] = []
+    exact: dict[str, list[int]] = {}
+    prefix: dict[str, set[int]] = {}
+    phrases: list[int] = []
+    for idx, entry in enumerate(entries):
+        tokens = tuple(normalize_tokens(entry))
+        tokens_by_id.append(tokens)
+        if not tokens:
+            continue
+        if len(tokens) > 1:
+            phrases.append(idx)
+            continue
+        for variant in _fold_variants(tokens[0]):
+            exact.setdefault(variant, []).append(idx)
+            for size in range(_MIN_PREFIX, len(variant) + 1):
+                prefix.setdefault(variant[:size], set()).add(idx)
+    return tuple(tokens_by_id), exact, prefix, tuple(phrases)
+
+
+def _phrase_matches(
+    entry_tokens,
+    message_tokens,
+    strict_question: bool = False,
+) -> bool:
+    """Ibora (yonma-yon so'zlar) xabarda topildimi."""
+    size = len(entry_tokens)
+    if size > len(message_tokens):
         return False
-    canon_msg = [_canon(t) for t in message_tokens]
-    canon_entry = [_canon(t) for t in entry_tokens]
-    if len(canon_entry) == 1:
-        return any(_word_matches_single(canon_entry[0], mt) for mt in canon_msg)
-    size = len(canon_entry)
-    for start in range(len(canon_msg) - size + 1):
-        window = canon_msg[start:start + size]
-        if all(_word_matches_single(e, m) for e, m in zip(canon_entry, window)):
+    for start in range(len(message_tokens) - size + 1):
+        window = message_tokens[start:start + size]
+        if all(
+            _word_matches(e, m, strict_question=strict_question)
+            for e, m in zip(entry_tokens, window)
+        ):
             return True
     return False
+
+
+def _find_entries(
+    message_text: str,
+    entries,
+    strict_question: bool = False,
+) -> list[str]:
+    entries = tuple(entries or ())
+    if not entries:
+        return []
+    message_tokens = normalize_tokens(message_text)
+    if not message_tokens:
+        return []
+    tokens_by_id, exact, prefix, phrases = _build_entry_index(entries)
+
+    found: set[int] = set()
+    for token in message_tokens:
+        for idx in _candidate_ids(token, exact, prefix):
+            if idx in found:
+                continue
+            entry_tokens = tokens_by_id[idx]
+            if len(entry_tokens) != 1:
+                continue
+            if _word_matches(
+                entry_tokens[0], token, strict_question=strict_question
+            ):
+                found.add(idx)
+    for idx in phrases:
+        if idx in found:
+            continue
+        entry_tokens = tokens_by_id[idx]
+        if not entry_tokens:
+            continue
+        if _phrase_matches(
+            entry_tokens, message_tokens, strict_question=strict_question
+        ):
+            found.add(idx)
+    return [entries[i] for i in sorted(found)]
 
 
 def find_stop_words(message_text: str, stop_words) -> list[str]:
     """Xabardagi stop-so'zlar/iboralar ro'yxati (topilmasa bo'sh).
 
     Bitta stop-so'z topilsa ham xabar haydovchiniki hisoblanadi.
+    So'roq shakli qat'iy ajratiladi: "жой бор" yozuvi "жой борми"
+    savolini bloklamaydi.
     """
-    message_tokens = normalize_tokens(message_text)
-    if not message_tokens:
-        return []
-    found = []
-    for entry in stop_words or []:
-        entry_tokens = normalize_tokens(entry)
-        if entry_tokens and _entry_matches(entry_tokens, message_tokens):
-            found.append(entry)
-    return found
+    return _find_entries(message_text, stop_words, strict_question=True)
 
 
 def find_client_words(message_text: str, client_words) -> list[str]:
-    """Xabardagi mijozga xos so'zlar/iboralar (topilmasa bo'sh)."""
-    return find_stop_words(message_text, client_words)
+    """Xabardagi mijozga xos so'zlar/iboralar (topilmasa bo'sh).
+
+    Bu yerda so'roq shakli qat'iy emas: "bormi" yozuvi "бор" so'zi
+    bilan ham mos keladi — mijoz xabarini o'tkazib yubormaslik muhim.
+    """
+    return _find_entries(message_text, client_words, strict_question=False)
 
 
 _EMOJI_RE = re.compile(
@@ -273,6 +490,8 @@ def canonical_entry(text: str | None) -> str:
 
     Katta-kichik harf, ortiqcha bo'shliq, tinish belgilari va
     lotin/kirill farqi hisobga olinmaydi: ``ТОШКЕНТ`` bilan
-    ``toshkent`` bitta yozuv hisoblanadi.
+    ``toshkent`` bitta yozuv hisoblanadi. "Dangasa" yozilgan kirill
+    (``қарши`` / ``карши``) ham bitta yozuv sifatida qaraladi.
     """
-    return " ".join(_canon(token) for token in normalize_tokens(text or ""))
+    tokens = normalize_tokens(text or "")
+    return " ".join(_lazy_latin(_canon(token)) for token in tokens)
