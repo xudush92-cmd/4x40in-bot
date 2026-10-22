@@ -1,0 +1,135 @@
+"""Matcher testlari: kalitlar cheksiz, admin soni bo'yicha.
+python -m unittest test_matcher -v"""
+import unittest
+
+from matcher import (
+    find_client_words,
+    find_match,
+    find_stop_words,
+    match_keywords,
+    normalize_tokens,
+    parse_key_words,
+)
+
+KEYWORDS = ["toshkent", "samarqand", "odam", "mashina", "kerak", "yuk", "bugun"]
+
+
+class TestMatchCount(unittest.TestCase):
+    def test_three_found_of_many(self):
+        r = match_keywords("Toshkentdan odam bor, mashina kerak", KEYWORDS, required_count=3)
+        self.assertTrue(r.is_match)
+        self.assertGreaterEqual(r.matched_count, 3)
+
+    def test_below_admin_count_no_match(self):
+        # 2 ta topildi, admin 3 belgilagan — xabar berilmaydi
+        r = match_keywords("Toshkentdan odam bor", KEYWORDS, required_count=3)
+        self.assertFalse(r.is_match)
+        self.assertIsNone(find_match("Toshkentdan odam bor", KEYWORDS, required_count=3))
+
+    def test_admin_count_two(self):
+        self.assertIsNotNone(find_match("Odam bor, mashina bormi?", KEYWORDS, required_count=2))
+
+    def test_admin_count_one(self):
+        self.assertIsNotNone(find_match("Faqat yuk bor", KEYWORDS, required_count=1))
+
+    def test_many_keywords_unlimited(self):
+        many = [f"kalit{i}" for i in range(50)] + KEYWORDS
+        r = match_keywords("Toshkent odam mashina", many, required_count=3)
+        self.assertTrue(r.is_match)
+        self.assertEqual(r.total_words, 57)
+
+    def test_count_larger_than_found(self):
+        r = match_keywords("Toshkent odam", KEYWORDS, required_count=5)
+        self.assertFalse(r.is_match)
+
+
+class TestParsingAndForms(unittest.TestCase):
+    def test_each_word_separate_key(self):
+        self.assertEqual(
+            parse_key_words("toshkent, odam; mashina"),
+            ["toshkent", "odam", "mashina"],
+        )
+        self.assertEqual(parse_key_words("odam odam"), ["odam"])
+
+    def test_plural_and_case_suffix(self):
+        r = match_keywords("Toshkentga odamlar bor", KEYWORDS, required_count=2)
+        self.assertTrue(r.is_match)
+
+    def test_word_forms_in_message(self):
+        self.assertIsNotNone(
+            find_match("Toshkentdan yuklar ketmoqda, mashina bormi", KEYWORDS, required_count=3)
+        )
+
+    def test_normalize_apostrophe(self):
+        self.assertEqual(normalize_tokens("Bog‘dod ko'chasi"), ["bog'dod", "ko'chasi"])
+
+    def test_no_keywords_no_match(self):
+        self.assertIsNone(find_match("Toshkent odam mashina", [], required_count=1))
+
+
+class TestCyrillic(unittest.TestCase):
+    """Lotin kalit kirill xabarni, kirill kalit lotin xabarni topadi."""
+
+    def test_latin_keys_cyrillic_message(self):
+        r = match_keywords("Тошкентдан одам керак, машина бор", KEYWORDS, required_count=3)
+        self.assertTrue(r.is_match)
+        self.assertGreaterEqual(r.matched_count, 3)
+
+    def test_cyrillic_keys_latin_message(self):
+        cyr_keys = ["тошкент", "одам", "керак", "машина"]
+        r = match_keywords("Toshkentdan odam kerak, mashina bor", cyr_keys, required_count=3)
+        self.assertTrue(r.is_match)
+
+    def test_cyrillic_forms_and_case(self):
+        r = match_keywords("ТОШКЕНТГА одамлар керакми", KEYWORDS, required_count=3)
+        self.assertTrue(r.is_match)
+
+    def test_cyrillic_below_count(self):
+        self.assertIsNone(find_match("Тошкентдан одам бор", KEYWORDS, required_count=3))
+
+    def test_uzbek_specific_letters(self):
+        # ў (o'), ғ (g'), қ (q), ҳ (h)
+        keys = ["o'zbekiston", "g'olib", "qishloq", "hozir"]
+        r = match_keywords("Ўзбекистон ғолиб, қишлоқ ҳозир", keys, required_count=3)
+        self.assertTrue(r.is_match)
+
+
+class TestDriverFilter(unittest.TestCase):
+    """Suratlardagi haydovchi e'lonlari bloklanishi, mijoz o'tishi kerak."""
+
+    STOP = ["olamiz", "olomiz", "chiqamiz", "kelishamiz", "kobalt",
+            "jentra", "lacetti", "losetti", "konditsioner", "kondisaner",
+            "pochta olamiz", "odam garak", "getamiz"]
+    CLIENT = ["bormi", "kerak", "garak", "joy kerak", "ketmoqchiman"]
+    KEYS = ["toshkent", "xorazm", "odam", "mashina", "kerak", "yuk", "pochta"]
+
+    def test_driver_cyrillic_emoji_blocked(self):
+        text = ("👉🏢 ТОШКЕНТДАН 👉🕌 ХОРАЗИМГА 👉🛣 ЙУЛГА ЧИКАМИЗ "
+                "👉👫 2 ОДАМ ОЛАМИЗ 👉📦 ПОЧТА ОЛАМИЗ 👉💵 ПУЛИНИ "
+                "КЕЛИШАМИЗ 🚗 МАШИНА КОБАЛЬТ ☎️ +998")
+        self.assertTrue(find_stop_words(text, self.STOP))
+
+    def test_driver_mixed_typos_blocked(self):
+        text = ("Sróshni getamiz ‼️ Toshkentdan Xorazmga getamiz "
+                "2 Odom kerak PÓSHTO OLOMIZ avto JENTRA")
+        self.assertTrue(find_stop_words(text, self.STOP))
+
+    def test_driver_losetti_blocked(self):
+        text = "СРОЧНИ 2-ОДАМ ГАРАК ПОЧТА ОЛАМИЗ ЛОСЕТТИ (камфорт) НАРХИНИ КЕЛИШАМИЗ"
+        self.assertTrue(find_stop_words(text, self.STOP))
+
+    def test_client_passes(self):
+        text = "ТОШКЕНТДАН ХОРАЗМГА МАШИНА БОРМИ? 🚕 2 ТА ЖОЙ КЕРАК 🙏"
+        self.assertFalse(find_stop_words(text, self.STOP))
+        self.assertTrue(find_client_words(text, self.CLIENT))
+        r = match_keywords(text, self.KEYS, required_count=3)
+        self.assertTrue(r.is_match)
+
+    def test_client_latin(self):
+        text = "Xorazmga ketmoqchiman, mashina kerak"
+        self.assertFalse(find_stop_words(text, self.STOP))
+        self.assertTrue(find_client_words(text, self.CLIENT))
+
+
+if __name__ == "__main__":
+    unittest.main()
