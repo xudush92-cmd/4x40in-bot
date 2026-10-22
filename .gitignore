@@ -64,3 +64,9 @@ venv/
 data/
 media/
 avto_bot.log*
+
+# telegram_scanner — maxfiy/sessiya/baza fayllari
+telegram_scanner/.env
+telegram_scanner/*.db
+telegram_scanner/*.session
+telegram_scanner/*.session-journal
