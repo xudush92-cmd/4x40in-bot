@@ -103,7 +103,9 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   sharti bo'yicha) + admin kiritgan mijoz so'zlaridan kamida bittasi
   bo'lishi shart. Kodda tayyor so'z ro'yxatlari yo'q — barcha
   so'zlarni admin kiritadi, takroriy so'z (katta/kichik harf va
-  lotin/kirill farqi bilan ham) ikkinchi marta qo'shilmaydi.
+  lotin/kirill farqi bilan ham) ikkinchi marta qo'shilmaydi. So'z
+  boshqa ro'yxatda (kalit/stop/mijoz) bo'lsa ham qo'shilmaydi —
+  bot aynan qaysi ro'yxatda ekanini ko'rsatadi.
 
 ## Ish tartibi
 

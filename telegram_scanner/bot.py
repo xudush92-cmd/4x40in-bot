@@ -18,8 +18,8 @@ from aiogram.types import (
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
 from database import (
     MAX_USER_GROUPS,
-    add_filter_word,
-    add_keyword,
+    add_filter_word_checked,
+    add_keyword_checked,
     delete_filter_word,
     get_client_words,
     get_filter_words_with_id,
@@ -1125,19 +1125,24 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
         return  # holatda qolamiz — qayta yozishi mumkin
 
     await state.clear()
-    added, already = [], []
+    added, conflicts = [], []
     for word in words:
-        (added if add_keyword(word) else already).append(word)
+        is_added, where = add_keyword_checked(word)
+        if is_added:
+            added.append(word)
+        else:
+            conflicts.append((word, where))
 
     parts = []
     if added:
         parts.append(
             f"✅ Qo'shildi ({len(added)} ta): <b>{html.escape(', '.join(added))}</b>"
         )
-    if already:
+    for word, where in conflicts:
+        where_text = ", ".join(where) if where else "bazada"
         parts.append(
-            f"⚠️ Bazada bor, qo'shilmadi ({len(already)} ta): "
-            f"{html.escape(', '.join(already))}"
+            f"⚠️ <b>{html.escape(word)}</b> — {html.escape(where_text)} "
+            "ro'yxatida bor, qo'shilmadi."
         )
     parts.append("")
     parts.append(current_status_text())
@@ -1328,15 +1333,17 @@ async def filter_add_save(message: types.Message, state: FSMContext):
     kind = data.get("filter_kind", "stop")
     table, title = _FILTER_KIND[kind]
     await state.clear()
-    if add_filter_word(table, text):
+    is_added, where = add_filter_word_checked(table, text)
+    if is_added:
         await message.answer(
             f"✅ Qo'shildi: <b>{html.escape(text.lower())}</b>",
             parse_mode="HTML", reply_markup=main_menu(admin=True),
         )
-    elif text:
+    elif where:
         await message.answer(
-            f"⚠️ <b>{html.escape(text.lower())}</b> bazada bor — "
-            "ikkinchi marta qo'shilmadi.",
+            f"⚠️ <b>{html.escape(text.lower())}</b> — "
+            f"{html.escape(', '.join(where))} ro'yxatida bor, "
+            "qo'shilmadi.",
             parse_mode="HTML",
             reply_markup=main_menu(admin=True),
         )

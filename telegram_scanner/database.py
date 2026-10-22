@@ -128,6 +128,31 @@ def _migrate_old_sets(conn) -> None:
 # Ularni admin botdagi tegishli bo'limlardan bazaga kiritadi.
 _FILTER_TABLES = {"stop_words", "client_words"}
 
+# Barcha so'z ro'yxatlari: bitta so'z bir nechta ro'yxatda bo'lmasligi kerak.
+_WORD_LISTS = (
+    ("phrases", "kalit so'zlar"),
+    ("stop_words", "stop-so'zlar"),
+    ("client_words", "mijoz so'zlari"),
+)
+
+
+def find_lists_for_entry(entry: str) -> list[str]:
+    """So'z qaysi ro'yxatlarda borligini qaytaradi (nomlari bilan).
+
+    Lotin/kirill, katta-kichik harf va tinish belgilari farqi
+    hisobga olinmaydi.
+    """
+    canonical = canonical_entry(entry)
+    if not canonical:
+        return []
+    found = []
+    with closing(_connect()) as conn:
+        for table, label in _WORD_LISTS:
+            rows = conn.execute(f"SELECT text FROM {table}").fetchall()
+            if any(canonical_entry(row[0]) == canonical for row in rows):
+                found.append(label)
+    return found
+
 
 def get_filter_words(table: str) -> list[str]:
     if table not in _FILTER_TABLES:
@@ -148,29 +173,34 @@ def get_filter_words_with_id(table: str) -> list[tuple[int, str]]:
         ).fetchall()
 
 
-def add_filter_word(table: str, entry: str) -> bool:
-    """Yozuv (so'z yoki ibora) qo'shadi. True — qo'shildi.
+def add_filter_word_checked(table: str, entry: str) -> tuple[bool, list[str]]:
+    """Yozuv qo'shadi: (qo'shildimi, qaysi ro'yxatlarda borligi).
 
-    Takroriy yozuv saqlanmaydi: katta-kichik harf, bo'shliq, tinish
-    belgisi va lotin/kirill farqi bo'lsa ham bitta yozuv hisoblanadi.
+    So'z boshqa ro'yxatda (kalit/stop/mijoz) bo'lsa ham qo'shilmaydi —
+    chaqiruvchi bot aynan qaysi ro'yxatda ekanini ko'rsatadi.
     """
     if table not in _FILTER_TABLES:
         raise ValueError(table)
     cleaned = " ".join((entry or "").split()).lower()
-    canonical = canonical_entry(cleaned)
-    if not canonical:
-        return False
+    if not canonical_entry(cleaned):
+        return False, []
+    conflicts = find_lists_for_entry(cleaned)
+    if conflicts:
+        return False, conflicts
     with closing(_connect()) as conn, conn:
-        existing = conn.execute(f"SELECT text FROM {table}").fetchall()
-        if any(canonical_entry(row[0]) == canonical for row in existing):
-            return False
         try:
             conn.execute(
                 f"INSERT INTO {table} (text) VALUES (?)", (cleaned,)
             )
         except sqlite3.IntegrityError:
-            return False
-    return True
+            return False, find_lists_for_entry(cleaned)
+    return True, []
+
+
+def add_filter_word(table: str, entry: str) -> bool:
+    """Eski interfeys: True — qo'shildi."""
+    added, _conflicts = add_filter_word_checked(table, entry)
+    return added
 
 
 def delete_filter_word(table: str, word_id: int) -> None:
@@ -200,27 +230,33 @@ def get_phrases() -> list[str]:
     return get_keywords()
 
 
-def add_keyword(word: str) -> bool:
-    """True — saqlandi, False — bu so'z allaqachon kalitlarda bor.
+def add_keyword_checked(word: str) -> tuple[bool, list[str]]:
+    """Kalit qo'shadi: (qo'shildimi, qaysi ro'yxatlarda borligi).
 
     Takroriylik lotin/kirill va katta-kichik harf farqini hisobga
     olmasdan tekshiriladi: ``ТОШКЕНТ`` bilan ``toshkent`` bitta kalit.
+    So'z stop/mijoz ro'yxatida bo'lsa ham kalitga qo'shilmaydi.
     """
     cleaned = " ".join((word or "").split()).lower()
-    canonical = canonical_entry(cleaned)
-    if not canonical:
-        return False
+    if not canonical_entry(cleaned):
+        return False, []
+    conflicts = find_lists_for_entry(cleaned)
+    if conflicts:
+        return False, conflicts
     with closing(_connect()) as conn, conn:
-        existing = conn.execute("SELECT text FROM phrases").fetchall()
-        if any(canonical_entry(row[0]) == canonical for row in existing):
-            return False
         try:
             conn.execute(
                 "INSERT INTO phrases (text) VALUES (?)", (cleaned,)
             )
         except sqlite3.IntegrityError:
-            return False
-    return True
+            return False, find_lists_for_entry(cleaned)
+    return True, []
+
+
+def add_keyword(word: str) -> bool:
+    """Eski interfeys: True — saqlandi."""
+    added, _conflicts = add_keyword_checked(word)
+    return added
 
 
 def add_phrase(text: str, required_count: int = 2) -> bool:
