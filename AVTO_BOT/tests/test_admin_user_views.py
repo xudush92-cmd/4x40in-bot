@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 os.environ.setdefault("API_ID", "12345")
@@ -88,6 +89,78 @@ class AdminUserViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("📱 Telefon: +998901112233", card)
         self.assertIn("\n\n📌 Hisob:", card)
         self.assertEqual((await db.get_user(204))["name"], "Login")
+
+    async def test_admin_roster_separates_valid_and_expired_tariff_users(self):
+        future = (datetime.now(timezone.utc) + timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+        past = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.set_tariff_expires(202, future)
+        await db.set_tariff_expires(203, past)
+
+        active_text, active_markup = await avto_bot.format_admin_list(segment="active")
+        expired_text, expired_markup = await avto_bot.format_admin_list(segment="expired")
+
+        self.assertIn("FAOL TARIFI BOR FOYDALANUVCHILAR (1 ta)", active_text)
+        self.assertIn("Abror Saidov", active_text)
+        self.assertNotIn("Zebo Karimova", active_text)
+        self.assertIn("MUDDATI TUGAGAN FOYDALANUVCHILAR (1 ta)", expired_text)
+        self.assertIn("Zebo Karimova", expired_text)
+        self.assertNotIn("Abror Saidov", expired_text)
+        callbacks = {
+            button.callback_data
+            for row in active_markup.inline_keyboard
+            for button in row
+        }
+        self.assertIn("adm:list:filter:active", callbacks)
+        self.assertIn("adm:list:filter:expired", callbacks)
+        self.assertTrue(expired_markup.inline_keyboard)
+
+        active_users, active_users_markup = await avto_bot._build_user_list(segment="active")
+        expired_users, expired_users_markup = await avto_bot._build_user_list(segment="expired")
+        active_user_callbacks = {
+            button.callback_data
+            for row in active_users_markup.inline_keyboard
+            for button in row
+            if (button.callback_data or "").startswith("adm:ucard:")
+        }
+        active_user_labels = [
+            button.text
+            for row in active_users_markup.inline_keyboard
+            for button in row
+            if (button.callback_data or "").startswith("adm:ucard:")
+        ]
+        expired_user_labels = [
+            button.text
+            for row in expired_users_markup.inline_keyboard
+            for button in row
+            if (button.callback_data or "").startswith("adm:ucard:")
+        ]
+        self.assertEqual(active_user_callbacks, {"adm:ucard:202"})
+        self.assertTrue(any("Abror Saidov" in label for label in active_user_labels))
+        self.assertFalse(any("Zebo Karimova" in label for label in active_user_labels))
+        self.assertTrue(any("Zebo Karimova" in label for label in expired_user_labels))
+        self.assertFalse(any("Abror Saidov" in label for label in expired_user_labels))
+
+    async def test_admin_can_view_a_users_referral_list(self):
+        await db.upsert_user(206, name="Dilshod Karimov", is_admin=1)
+        await db.upsert_user(207, name="Madina Usmonova")
+        self.assertTrue(await db.set_referrer(206, 202))
+        self.assertTrue(await db.set_referrer(207, 202))
+        self.assertEqual(await db.try_count_referral(206), 202)
+
+        card, card_markup = await avto_bot._build_user_card(202)
+        self.assertIn("Taklif qilganlari: 2 ta (faol 1, kutilmoqda 1)", card)
+        card_callbacks = {
+            button.callback_data
+            for row in card_markup.inline_keyboard
+            for button in row
+        }
+        self.assertIn("adm:refs:202:page:0", card_callbacks)
+
+        referrals, markup = await avto_bot._build_admin_referrals(202)
+        self.assertIn("Jami: 2 · ✅ Faol: 1 · ⏳ Kutilmoqda: 1", referrals)
+        self.assertIn("Dilshod Karimov", referrals)
+        self.assertIn("Madina Usmonova", referrals)
+        self.assertTrue(markup.inline_keyboard)
 
     async def test_user_delete_requires_a_second_explicit_confirmation(self):
         class FakeQuery:

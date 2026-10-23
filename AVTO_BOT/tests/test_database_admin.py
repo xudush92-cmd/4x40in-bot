@@ -18,6 +18,60 @@ class AdminDatabaseTests(unittest.IsolatedAsyncioTestCase):
         db.DB_PATH = self._old_path
         self._tmp.cleanup()
 
+    async def test_tariff_segments_only_include_approved_users_with_a_term(self):
+        now = datetime.now(timezone.utc)
+        future = (now + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        past = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        await db.upsert_user(301, name="Active", is_admin=1)
+        await db.upsert_user(302, name="Expired", is_admin=1)
+        await db.upsert_user(303, name="Unlimited", is_admin=1)
+        await db.upsert_user(304, name="Pending", is_admin=0)
+        await db.upsert_user(999, name="Super", is_admin=1)
+        await db.set_tariff_expires(301, future)
+        await db.set_tariff_expires(302, past)
+        await db.set_tariff_expires(304, future)
+
+        self.assertEqual(await db.count_users_by_tariff_segment("active", exclude_uid=999), 1)
+        self.assertEqual(await db.count_users_by_tariff_segment("expired", exclude_uid=999), 1)
+        self.assertEqual(
+            [u["uid"] for u in await db.get_users_by_tariff_segment("active", exclude_uid=999)],
+            [301],
+        )
+        self.assertEqual(
+            [u["uid"] for u in await db.get_users_by_tariff_segment("expired", exclude_uid=999)],
+            [302],
+        )
+        with self.assertRaises(ValueError):
+            await db.count_users_by_tariff_segment("unknown")
+
+    async def test_chat_failures_keep_group_in_waiting_until_manual_reactivation(self):
+        self.assertEqual(await db.add_chat(401, "-100123", max_chats=1, title="Sample Group"), (True, "ok"))
+        for expected in (1, 2):
+            count, waiting = await db.record_chat_failure(401, "-100123", "write forbidden")
+            self.assertEqual(count, expected)
+            self.assertFalse(waiting)
+            self.assertEqual(await db.get_active_chats(401), ["-100123"])
+
+        count, waiting = await db.record_chat_failure(401, "-100123", "write forbidden")
+        self.assertEqual(count, 3)
+        self.assertTrue(waiting)
+        self.assertEqual(await db.get_active_chats(401), [])
+        self.assertEqual(await db.get_chats(401), ["-100123"])
+        self.assertEqual(await db.count_chats(401), 1)
+        self.assertEqual(await db.count_waiting_chats(401), 1)
+        self.assertEqual(
+            (await db.get_chat_records(401))[0]["status"],
+            "waiting",
+        )
+        self.assertEqual(await db.add_chat(401, "-100456", max_chats=1, status="waiting"), (False, "limit"))
+
+        self.assertTrue(await db.update_chat_status(401, "-100123", "active", title="Sample Group"))
+        await db.record_chat_success(401, "-100123")
+        record = (await db.get_chat_records(401))[0]
+        self.assertEqual(record["status"], "active")
+        self.assertEqual(record["fail_count"], 0)
+        self.assertIsNone(record["last_error"])
+
     async def test_search_suspend_broadcast_and_audit(self):
         await db.upsert_user(
             101,

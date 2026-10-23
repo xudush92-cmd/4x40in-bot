@@ -149,12 +149,15 @@ LOGIN_TIMEOUT_S = 300
 SEND_DELAY_S = 5
 INTERVAL_JITTER_S = 30
 START_JITTER_MAX_S = 60     # worker birinchi start: 0-60s tasodifiy kechikish (yukni yoyish)
-MAX_CHAT_FAILS = 3          # chat ketma-ket shuncha xato bersa — avto-o'chiriladi
+MAX_CHAT_FAILS = 3          # 3 ketma-ket xatodan so'ng chat navbatga olinadi
 TARIFF_DURATION_DAYS = 30   # default tarif muddati (kun)
 TARIFF_WARN_DAYS = 3        # muddat tugashidan necha kun oldin ogohlantirish
 ADMIN_ACTION_TIMEOUT_S = 600
 ADMIN_USER_PAGE_SIZE = 8
 ADMIN_ROSTER_PAGE_SIZE = 6
+GROUP_SCAN_PAGE_SIZE = 7
+GROUP_SCAN_MAX_DIALOGS = 1000
+GROUP_SCAN_STATE_TTL_S = 15 * 60
 MAX_ADMIN_TERM_DAYS = 3650
 MAX_ADMIN_MESSAGE_LENGTH = 3500
 MAX_CHAT_BATCH_SIZE = 50
@@ -367,6 +370,7 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
         [KeyboardButton("▶️ Start"), KeyboardButton("⛔ Stop")],
         [KeyboardButton(f"📊 Status ({on})"), KeyboardButton("💬 Chatlar")],
         [KeyboardButton("➕ Chat qo'sh"), KeyboardButton("➖ Chat o'chir")],
+        [KeyboardButton("🔍 Guruhlarni skanerlash")],
         [KeyboardButton("📝 Post qo'sh"), KeyboardButton("🗑 Post o'chir")],
         [KeyboardButton(f"⏱ Interval: {interval} daq"), KeyboardButton("👥 Referal")],
     ]
@@ -825,10 +829,8 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
     # chiqadi, hech biri o'tkazib yuborilmaydi. Indeks worker xotirasida.
     post_index = 0
 
-    # ── O'ZGARISH 3: SPAM HIMOYA ───────────────────────────────────────
-    # Har chat uchun ketma-ket xato hisoblagichi. MAX_CHAT_FAILS ga yetsa —
-    # chat avto-o'chiriladi va foydalanuvchi ogohlantiriladi.
-    chat_fails: dict[str, int] = {}
+    # Ketma-ket xatolar bazada saqlanadi; 3 martadan so'ng chat o'chirilmaydi,
+    # balki qo'lda qayta skanerlashni kutuvchi holatga o'tadi.
 
     try:
         while not stop.is_set():
@@ -841,7 +843,7 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                 log(f"❌ Worker:{uid} sessiya yo'q — to'xtaydi", "warning")
                 break
 
-            chats = await db.get_chats(uid)
+            chats = await db.get_active_chats(uid)
             posts = await db.get_posts(uid)
             interval = await db.get_interval(uid)
 
@@ -879,8 +881,7 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                 post_index += 1
 
                 ok, fail = 0, 0
-                # Bu turda muvaffaqiyatsiz/muvaffaqiyatli bo'lgan chatlar
-                removed_chats: list[str] = []
+                waiting_chats: list[tuple[str, int, str]] = []
                 for chat in chats:
                     if stop.is_set():
                         break
@@ -893,11 +894,11 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                             _send_post(client, chat, post), timeout=20
                         )
                         ok += 1
-                        chat_fails[chat] = 0   # muvaffaqiyat — hisoblagich nollanadi
+                        await db.record_chat_success(uid, chat)
                         log(f"✅ {uid} → {chat}")
                     except FloodWaitError as e:
-                        # FloodWait — Telegram "sekin" deydi. Bu chat AYBI emas,
-                        # shuning uchun fail hisoblanmaydi (chat o'chirilmaydi).
+                        # FloodWait — umumiy Telegram tezlik limiti; chatning
+                        # ruxsati yo'qligini bildirmaydi va xato sanagichga kirmaydi.
                         wait_s = int(getattr(e, "seconds", 30)) + 5
                         log(f"⏳ {uid} → {chat} FloodWait {wait_s}s", "warning")
                         if await _sleep_or_stop(stop, wait_s):
@@ -911,27 +912,28 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                         ValueError,
                     ) as e:
                         fail += 1
-                        # O'ZGARISH 3: chat xatosi — ketma-ket hisoblaymiz
-                        chat_fails[chat] = chat_fails.get(chat, 0) + 1
+                        count, moved = await db.record_chat_failure(
+                            uid, chat, f"{type(e).__name__}: {e}", threshold=MAX_CHAT_FAILS
+                        )
                         log(
                             f"❌ {uid} → {chat}: {type(e).__name__} "
-                            f"({chat_fails[chat]}/{MAX_CHAT_FAILS})",
+                            f"({count}/{MAX_CHAT_FAILS})",
                             "warning",
                         )
-                        if chat_fails[chat] >= MAX_CHAT_FAILS:
-                            removed_chats.append(chat)
+                        if moved:
+                            waiting_chats.append((chat, count, type(e).__name__))
                     except asyncio.TimeoutError:
                         fail += 1
-                        # Timeout — vaqtinchalik bo'lishi mumkin, lekin baribir
-                        # ketma-ket hisoblaymiz (cheksiz osilib qolmasin)
-                        chat_fails[chat] = chat_fails.get(chat, 0) + 1
+                        count, moved = await db.record_chat_failure(
+                            uid, chat, "Yuborish vaqti tugadi", threshold=MAX_CHAT_FAILS
+                        )
                         log(
                             f"⏱ {uid} → {chat} timeout "
-                            f"({chat_fails[chat]}/{MAX_CHAT_FAILS})",
+                            f"({count}/{MAX_CHAT_FAILS})",
                             "warning",
                         )
-                        if chat_fails[chat] >= MAX_CHAT_FAILS:
-                            removed_chats.append(chat)
+                        if moved:
+                            waiting_chats.append((chat, count, "Timeout"))
                     except (AuthKeyUnregisteredError, UserDeactivatedBanError) as e:
                         log(f"🚫 {uid} sessiya yaroqsiz: {type(e).__name__}", "error")
                         await db.del_session(uid)
@@ -945,26 +947,31 @@ async def posting_loop(uid: int, stop: asyncio.Event) -> None:
                         return
                     except Exception as e:
                         fail += 1
-                        log(f"❌ {uid} → {chat}: {type(e).__name__}: {e}", "error")
+                        count, moved = await db.record_chat_failure(
+                            uid, chat, f"{type(e).__name__}: {e}", threshold=MAX_CHAT_FAILS
+                        )
+                        log(
+                            f"❌ {uid} → {chat}: {type(e).__name__}: {e} "
+                            f"({count}/{MAX_CHAT_FAILS})",
+                            "error",
+                        )
+                        if moved:
+                            waiting_chats.append((chat, count, type(e).__name__))
                     if not stop.is_set():
                         await _sleep_or_stop(stop, SEND_DELAY_S)
 
-                # O'ZGARISH 3: ko'p marta xato bergan chatlarni o'chirib,
-                # foydalanuvchini ogohlantiramiz (spam-bandan himoya)
-                for bad in removed_chats:
-                    await db.remove_chat_by_value(uid, bad)
-                    chat_fails.pop(bad, None)
-                    log(f"🗑 {uid} chat avto-o'chirildi (spam himoya): {bad}")
+                # Uch ketma-ket xatoda chat saqlanadi, lekin worker yuborishni
+                # to'xtatib, faqat foydalanuvchining qo'lda skanerlashini kutadi.
+                for waiting_chat, count, reason in waiting_chats:
+                    log(f"⏳ {uid} chat kutish holatiga o'tdi: {waiting_chat}")
                     with contextlib.suppress(Exception):
                         await application.bot.send_message(
                             uid,
-                            f"⚠️ Diqqat! Quyidagi chatga {MAX_CHAT_FAILS} marta "
-                            f"xabar yuborib bo'lmadi:\n\n"
-                            f"📛 {bad}\n\n"
-                            "Sabab: bot o'sha chatdan chiqarilgan, yozish taqiqlangan "
-                            "yoki chat mavjud emas.\n"
-                            "Behuda urinishlarni to'xtatish uchun u ro'yxatdan "
-                            "AVTOMATIK o'chirildi. Tekshirib, qayta qo'shing.",
+                            f"⚠️ {waiting_chat} guruhiga {MAX_CHAT_FAILS} marta ketma-ket "
+                            "xabar yuborilmadi. Guruh o'chirilmadi — kutish holatiga o'tkazildi.\n\n"
+                            "Qayta tekshirish uchun 🔍 Guruhlarni skanerlash tugmasini bosing; "
+                            "yozish huquqi tiklangan bo'lsa, natijani tasdiqlang.\n"
+                            f"Oxirgi xato: {reason} ({count} ta urinish).",
                         )
 
                 log(f"📊 {uid} ✅{ok} ❌{fail} / {len(chats)}")
@@ -1034,6 +1041,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         expires = user.get("tariff_expires_at") if user else None
         exp_line = f"📅 Muddat: {expires[:10]}" if expires else "📅 Muddat: cheksiz"
         chats_n = await db.count_chats(uid)
+        active_chats_n = len(await db.get_active_chats(uid))
+        waiting_chats_n = await db.count_waiting_chats(uid)
         posts_n = await db.count_posts(uid)
         interval = await db.get_interval(uid)
         active = worker_manager.is_running(uid) if worker_manager else False
@@ -1048,7 +1057,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"🎫 {tariff_label(tariff)}\n"
             f"{exp_line}\n\n"
             f"📊 Holat: {status}\n"
-            f"💬 Chatlar: {chats_n}/{max_chats}\n"
+            f"💬 Guruhlar: {chats_n}/{max_chats} (faol {active_chats_n}, kutishda {waiting_chats_n})\n"
             f"📝 Postlar: {posts_n}/{max_posts}\n"
             f"⏱ Interval: {interval} daqiqa",
             reply_markup=await menu_for(uid),
@@ -1123,6 +1132,61 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         detail = f"\nQayta faollashish: {until} UTC" if until else "\nAdmin qayta faollashtirguncha."
         with contextlib.suppress(Exception):
             await q.edit_message_text("⏸ Hisobingiz vaqtincha to'xtatilgan." + detail)
+        return
+
+    if data.startswith("gscan:"):
+        state = user_states.get(uid, {})
+        if state.get("step") != "group_scan_review":
+            with contextlib.suppress(Exception):
+                await q.edit_message_text("⚠️ Skanerlash holati topilmadi. Qaytadan qo'lda skanerlang.")
+            return
+        if time.time() - state.get("ts", 0) > GROUP_SCAN_STATE_TTL_S:
+            user_states.pop(uid, None)
+            with contextlib.suppress(Exception):
+                await q.edit_message_text("⏰ Skanerlash natijasi eskirdi. Qayta tekshirish uchun tugmani bosing.")
+            return
+
+        action = data.split(":", 1)[1]
+        if action == "cancel":
+            user_states.pop(uid, None)
+            await q.edit_message_text("❌ Skanerlash natijasi bekor qilindi. Hech bir guruh o'zgartirilmadi.")
+            with contextlib.suppress(Exception):
+                await application.bot.send_message(
+                    uid, "Holat yangilandi.", reply_markup=await menu_for(uid)
+                )
+            return
+        if action == "confirm":
+            await _confirm_group_scan(uid, q)
+            return
+        if action == "select:writable":
+            state["selected"] = {
+                index for index, group in enumerate(state.get("groups", []))
+                if group.get("writable") is True and group.get("existing_status") != "active"
+            }
+        elif action.startswith("toggle:"):
+            try:
+                index = int(action.split(":", 1)[1])
+            except ValueError:
+                return
+            groups = state.get("groups", [])
+            if not (0 <= index < len(groups)) or groups[index].get("existing_status") == "active":
+                return
+            selected = set(state.get("selected", set()))
+            if index in selected:
+                selected.remove(index)
+            else:
+                selected.add(index)
+            state["selected"] = selected
+        elif action.startswith("page:"):
+            try:
+                state["page"] = max(0, int(action.split(":", 1)[1]))
+            except ValueError:
+                return
+        else:
+            return
+        user_states[uid] = state
+        text, markup = await _build_group_scan_message(uid)
+        await q.edit_message_text(text, reply_markup=markup)
         return
 
     # NUMPAD
@@ -1381,10 +1445,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if await db.is_tariff_expired(uid):
                 await q.edit_message_text(_waiting_mode_text())
                 return
-            chats = await db.get_chats(uid)
+            chats = await db.get_active_chats(uid)
             posts = await db.get_posts(uid)
             if not chats or not posts:
-                await q.edit_message_text("❌ Chat yoki post yo'q. Avval qo'shing.")
+                waiting = await db.count_waiting_chats(uid)
+                if waiting:
+                    await q.edit_message_text(
+                        "⏳ Hozir yuborish mumkin bo'lgan faol guruh yo'q. "
+                        "Guruh huquqlarini qayta tekshirish uchun 🔍 Guruhlarni skanerlashni bosing."
+                    )
+                else:
+                    await q.edit_message_text("❌ Faol guruh yoki post yo'q. Avval qo'shing.")
                 return
             started = await worker_manager.start_worker(uid) if worker_manager else False
             if not started:
@@ -1514,16 +1585,28 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await q.edit_message_text("❌ Chat topilmadi.")
         return
 
-    if data == "adm:list" or data.startswith("adm:list:page:"):
+    if data == "adm:list" or data.startswith("adm:list:page:") or data.startswith("adm:list:filter:"):
         if not is_super(uid):
             return
+        segment = "all"
         offset = 0
-        if data.startswith("adm:list:page:"):
-            try:
-                offset = max(0, int(data.rsplit(":", 1)[1]))
-            except ValueError:
+        if data.startswith("adm:list:filter:"):
+            segment = data.rsplit(":", 1)[1]
+            if segment not in {"all", "active", "expired"}:
                 return
-        text, markup = await format_admin_list(offset)
+        elif data.startswith("adm:list:page:"):
+            parts = data.split(":")
+            try:
+                if len(parts) == 5:
+                    segment = parts[3]
+                    offset = max(0, int(parts[4]))
+                    if segment not in {"all", "active", "expired"}:
+                        return
+                else:  # old callback format: adm:list:page:<offset>
+                    offset = max(0, int(parts[3]))
+            except (ValueError, IndexError):
+                return
+        text, markup = await format_admin_list(offset, segment)
         await q.edit_message_text(text, reply_markup=markup)
         return
 
@@ -1624,14 +1707,32 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text(text, reply_markup=markup)
         return
 
+    if data.startswith("adm:users:filter:"):
+        if not is_super(uid):
+            return
+        segment = data.rsplit(":", 1)[1]
+        if segment not in {"all", "active", "expired"}:
+            return
+        text, markup = await _build_user_list(0, segment)
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
     if data.startswith("adm:users:page:"):
         if not is_super(uid):
             return
+        parts = data.split(":")
         try:
-            offset = max(0, int(data.rsplit(":", 1)[1]))
-        except ValueError:
+            if len(parts) == 5:
+                segment = parts[3]
+                offset = max(0, int(parts[4]))
+                if segment not in {"all", "active", "expired"}:
+                    return
+            else:  # old callback format: adm:users:page:<offset>
+                segment = "all"
+                offset = max(0, int(parts[3]))
+        except (ValueError, IndexError):
             return
-        text, markup = await _build_user_list(offset)
+        text, markup = await _build_user_list(offset, segment)
         await q.edit_message_text(text, reply_markup=markup)
         return
 
@@ -1639,6 +1740,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not is_super(uid):
             return
         text, markup = await _build_user_list(0)
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith("adm:refs:"):
+        if not is_super(uid):
+            return
+        parts = data.split(":")
+        try:
+            if len(parts) != 5 or parts[3] != "page":
+                return
+            target = int(parts[2])
+            offset = max(0, int(parts[4]))
+        except ValueError:
+            return
+        text, markup = await _build_admin_referrals(target, offset)
         await q.edit_message_text(text, reply_markup=markup)
         return
 
@@ -2019,8 +2135,25 @@ def _admin_phone(phone: str | None) -> str:
     return " ".join((phone or "").split()) or "telefon yo'q"
 
 
-def admin_panel_kb(offset: int = 0, total: int = 0) -> InlineKeyboardMarkup:
+def admin_panel_kb(
+    offset: int = 0, total: int = 0, segment: str = "all"
+) -> InlineKeyboardMarkup:
+    filter_buttons = [
+        InlineKeyboardButton(
+            ("✅ " if segment == "all" else "") + "Barchasi",
+            callback_data="adm:list:filter:all",
+        ),
+        InlineKeyboardButton(
+            ("🟢 " if segment == "active" else "") + "Muddat bor",
+            callback_data="adm:list:filter:active",
+        ),
+        InlineKeyboardButton(
+            ("⌛ " if segment == "expired" else "") + "Muddati tugagan",
+            callback_data="adm:list:filter:expired",
+        ),
+    ]
     rows = [
+        filter_buttons,
         [
             InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="adm:users"),
             InlineKeyboardButton("📅 Kunlik xabarlar", callback_data="adm:daily"),
@@ -2033,15 +2166,19 @@ def admin_panel_kb(offset: int = 0, total: int = 0) -> InlineKeyboardMarkup:
     nav = []
     if offset > 0:
         nav.append(InlineKeyboardButton(
-            "⬅️ Oldingi", callback_data=f"adm:list:page:{max(0, offset - ADMIN_ROSTER_PAGE_SIZE)}"
+            "⬅️ Oldingi",
+            callback_data=f"adm:list:page:{segment}:{max(0, offset - ADMIN_ROSTER_PAGE_SIZE)}",
         ))
     if offset + ADMIN_ROSTER_PAGE_SIZE < total:
         nav.append(InlineKeyboardButton(
-            "Keyingi ➡️", callback_data=f"adm:list:page:{offset + ADMIN_ROSTER_PAGE_SIZE}"
+            "Keyingi ➡️",
+            callback_data=f"adm:list:page:{segment}:{offset + ADMIN_ROSTER_PAGE_SIZE}",
         ))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("🔄 Yangilash", callback_data=f"adm:list:page:{offset}")])
+    rows.append([
+        InlineKeyboardButton("🔄 Yangilash", callback_data=f"adm:list:page:{segment}:{offset}")
+    ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2084,14 +2221,38 @@ async def _build_daily_message_settings():
     return text, keyboard
 
 
-async def _build_user_list(offset: int = 0):
-    total = await db.count_search_users("*", exclude_uid=SUPER_ADMIN)
+async def _build_user_list(offset: int = 0, segment: str = "all"):
+    if segment not in {"all", "active", "expired"}:
+        segment = "all"
+    if segment == "all":
+        total = await db.count_search_users("*", exclude_uid=SUPER_ADMIN)
+    else:
+        total = await db.count_users_by_tariff_segment(segment, exclude_uid=SUPER_ADMIN)
+
     max_offset = ((total - 1) // ADMIN_USER_PAGE_SIZE) * ADMIN_USER_PAGE_SIZE if total else 0
     offset = min(max_offset, max(0, (int(offset) // ADMIN_USER_PAGE_SIZE) * ADMIN_USER_PAGE_SIZE))
-    users = await db.search_users(
-        "*", limit=ADMIN_USER_PAGE_SIZE, offset=offset, exclude_uid=SUPER_ADMIN
-    )
-    rows = []
+    if segment == "all":
+        users = await db.search_users(
+            "*", limit=ADMIN_USER_PAGE_SIZE, offset=offset, exclude_uid=SUPER_ADMIN
+        )
+    else:
+        users = await db.get_users_by_tariff_segment(
+            segment, limit=ADMIN_USER_PAGE_SIZE, offset=offset, exclude_uid=SUPER_ADMIN
+        )
+    rows = [[
+        InlineKeyboardButton(
+            ("✅ " if segment == "all" else "") + "Barchasi",
+            callback_data="adm:users:filter:all",
+        ),
+        InlineKeyboardButton(
+            ("🟢 " if segment == "active" else "") + "Muddat bor",
+            callback_data="adm:users:filter:active",
+        ),
+        InlineKeyboardButton(
+            ("⌛ " if segment == "expired" else "") + "Muddati tugagan",
+            callback_data="adm:users:filter:expired",
+        ),
+    ]]
     for user in users:
         target = int(user["uid"])
         name = _admin_display_name(user.get("name"))
@@ -2104,46 +2265,89 @@ async def _build_user_list(offset: int = 0):
     nav = []
     if offset > 0:
         nav.append(InlineKeyboardButton(
-            "⬅️ Oldingi", callback_data=f"adm:users:page:{max(0, offset - ADMIN_USER_PAGE_SIZE)}"
+            "⬅️ Oldingi",
+            callback_data=f"adm:users:page:{segment}:{max(0, offset - ADMIN_USER_PAGE_SIZE)}",
         ))
     if offset + ADMIN_USER_PAGE_SIZE < total:
         nav.append(InlineKeyboardButton(
-            "Keyingi ➡️", callback_data=f"adm:users:page:{offset + ADMIN_USER_PAGE_SIZE}"
+            "Keyingi ➡️",
+            callback_data=f"adm:users:page:{segment}:{offset + ADMIN_USER_PAGE_SIZE}",
         ))
     if nav:
         rows.append(nav)
     rows.append([
-        InlineKeyboardButton("🔄 Yangilash", callback_data="adm:users:page:0"),
+        InlineKeyboardButton("🔄 Yangilash", callback_data=f"adm:users:page:{segment}:0"),
         InlineKeyboardButton("⬅️ Adminlar", callback_data="adm:list"),
     ])
 
     first = offset + 1 if users else 0
     last = min(offset + len(users), total)
+    if segment == "active":
+        heading = "🟢 FAOL TARIFI BOR FOYDALANUVCHILAR"
+    elif segment == "expired":
+        heading = "⌛ MUDDATI TUGAGAN FOYDALANUVCHILAR"
+    else:
+        heading = "👥 FOYDALANUVCHILAR RO'YXATI"
     text = (
-        "👥 FOYDALANUVCHILAR RO'YXATI\n"
+        f"{heading}\n"
         "Ism bo'yicha A–Z · kartani ochish uchun foydalanuvchi ismini bosing.\n"
         f"Natija: {first}–{last} / {total}"
     )
+    if segment == "all":
+        active_count = await db.count_users_by_tariff_segment("active", exclude_uid=SUPER_ADMIN)
+        expired_count = await db.count_users_by_tariff_segment("expired", exclude_uid=SUPER_ADMIN)
+        text += f"\nMuddati bor: {active_count} · Muddati tugagan: {expired_count}"
     if not users:
-        text += "\n\n❌ Foydalanuvchilar topilmadi."
+        if segment == "expired":
+            empty = "Muddati tugagan foydalanuvchilar topilmadi."
+        elif segment == "active":
+            empty = "Muddati hali bor foydalanuvchilar topilmadi."
+        else:
+            empty = "Foydalanuvchilar topilmadi."
+        text += "\n\n❌ " + empty
     return text, InlineKeyboardMarkup(rows)
 
 
-async def format_admin_list(offset: int = 0):
-    """Confirmed-user overview in readable, separated blocks with pagination."""
+async def format_admin_list(offset: int = 0, segment: str = "all"):
+    """Confirmed-user roster with separate valid-term and expired-term views."""
+    if segment not in {"all", "active", "expired"}:
+        segment = "all"
     admins = await db.get_admins()
     non_super = [target for target in admins if target != SUPER_ADMIN]
-    total = len(non_super)
+    total_all = len(non_super)
+    active_total = await db.count_users_by_tariff_segment("active", exclude_uid=SUPER_ADMIN)
+    expired_total = await db.count_users_by_tariff_segment("expired", exclude_uid=SUPER_ADMIN)
+
+    if segment == "all":
+        total = total_all
+        targets = non_super
+    else:
+        total = await db.count_users_by_tariff_segment(segment, exclude_uid=SUPER_ADMIN)
+        targets = []
+
     max_offset = ((total - 1) // ADMIN_ROSTER_PAGE_SIZE) * ADMIN_ROSTER_PAGE_SIZE if total else 0
     offset = min(max_offset, max(0, (int(offset) // ADMIN_ROSTER_PAGE_SIZE) * ADMIN_ROSTER_PAGE_SIZE))
-    page = non_super[offset:offset + ADMIN_ROSTER_PAGE_SIZE]
+    if segment == "all":
+        page = targets[offset:offset + ADMIN_ROSTER_PAGE_SIZE]
+    else:
+        page_rows = await db.get_users_by_tariff_segment(
+            segment, limit=ADMIN_ROSTER_PAGE_SIZE, offset=offset, exclude_uid=SUPER_ADMIN
+        )
+        page = [int(user["uid"]) for user in page_rows]
     page_count = max(1, (total + ADMIN_ROSTER_PAGE_SIZE - 1) // ADMIN_ROSTER_PAGE_SIZE)
     page_number = offset // ADMIN_ROSTER_PAGE_SIZE + 1
 
+    if segment == "active":
+        heading = f"🟢 FAOL TARIFI BOR FOYDALANUVCHILAR ({total} ta)"
+    elif segment == "expired":
+        heading = f"⌛ MUDDATI TUGAGAN FOYDALANUVCHILAR ({total} ta)"
+    else:
+        heading = f"👥 ADMINLAR ({len(admins)} ta — 1 super + {total} oddiy)"
     lines = [
-        f"👥 ADMINLAR ({len(admins)} ta — 1 super + {total} oddiy)",
+        heading,
         f"👑 Super admin: {SUPER_ADMIN}",
-        f"📄 Sahifa: {page_number}/{page_count} · tasdiqlanganlar ism bo'yicha A–Z",
+        f"📊 Muddati bor: {active_total} · Muddati tugagan: {expired_total}",
+        f"📄 Sahifa: {page_number}/{page_count} · ism bo'yicha A–Z",
     ]
     for target in page:
         info = await db.get_user_info(target)
@@ -2170,9 +2374,60 @@ async def format_admin_list(offset: int = 0):
             f"   💬 {chats} | 📝 {posts} | ⏱ {interval} daq",
         ])
     if not page:
-        lines.extend(["", "Hozircha tasdiqlangan foydalanuvchi yo'q."])
-    lines.extend(["", "ℹ️ Har bir foydalanuvchi alohida ko'rsatiladi; batafsil boshqarish uchun tugmalardan foydalaning."])
-    return "\n".join(lines), admin_panel_kb(offset, total)
+        if segment == "expired":
+            empty = "Muddati tugagan foydalanuvchi yo'q."
+        elif segment == "active":
+            empty = "Muddati hali bor foydalanuvchi yo'q."
+        else:
+            empty = "Hozircha tasdiqlangan foydalanuvchi yo'q."
+        lines.extend(["", empty])
+    lines.extend(["", "ℹ️ Muddatli foydalanuvchilar yuqoridagi alohida bo'limlardan ko'riladi."])
+    return "\n".join(lines), admin_panel_kb(offset, total, segment)
+
+
+async def _build_admin_referrals(target: int, offset: int = 0):
+    user = await db.get_user(target)
+    if not user:
+        return "❌ Foydalanuvchi topilmadi.", InlineKeyboardMarkup([])
+    referrals = await db.get_referrals(target)
+    total = len(referrals)
+    active = sum(bool(row.get("counted")) for row in referrals)
+    pending = total - active
+    max_offset = ((total - 1) // ADMIN_USER_PAGE_SIZE) * ADMIN_USER_PAGE_SIZE if total else 0
+    offset = min(max_offset, max(0, (int(offset) // ADMIN_USER_PAGE_SIZE) * ADMIN_USER_PAGE_SIZE))
+    page = referrals[offset:offset + ADMIN_USER_PAGE_SIZE]
+    name = _admin_display_name(user.get("name"))
+    lines = [
+        f"👥 {name} taklif qilgan referallar",
+        f"Jami: {total} · ✅ Faol: {active} · ⏳ Kutilmoqda: {pending}",
+        "",
+    ]
+    rows = []
+    for referral in page:
+        status = "✅ Faol" if referral.get("counted") else "⏳ Kutilmoqda"
+        referral_name = _admin_display_name(referral.get("name"))
+        lines.append(f"• {referral_name} · ID: {referral['uid']} · {status}")
+        rows.append([
+            InlineKeyboardButton(
+                f"👤 {referral_name[:38]} · {status}",
+                callback_data=f"adm:ucard:{int(referral['uid'])}",
+            )
+        ])
+    if not referrals:
+        lines.append("Hozircha ushbu foydalanuvchining referallari yo'q.")
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(
+            "⬅️ Oldingi", callback_data=f"adm:refs:{target}:page:{offset - ADMIN_USER_PAGE_SIZE}"
+        ))
+    if offset + ADMIN_USER_PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton(
+            "Keyingi ➡️", callback_data=f"adm:refs:{target}:page:{offset + ADMIN_USER_PAGE_SIZE}"
+        ))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Foydalanuvchi kartasi", callback_data=f"adm:ucard:{target}")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 async def _build_user_card(target: int):
@@ -2207,6 +2462,9 @@ async def _build_user_card(target: int):
     worker = worker_manager.is_running(target) if worker_manager else False
     session_status = "ha" if user.get("session") else "yo'q"
     worker_status = "🟢 ishlayapti" if worker else "🔴 to'xtagan"
+    chat_records = await db.get_chat_records(target)
+    active_chats = sum(record.get("status") == "active" for record in chat_records)
+    waiting_chats = len(chat_records) - active_chats
     lines = [
         "🪪 FOYDALANUVCHI KARTASI",
         "",
@@ -2220,7 +2478,7 @@ async def _build_user_card(target: int):
         "",
         f"🎫 Tarif: {tariff_label(tariff)}",
         f"📅 Tugash: {expiry_line}",
-        f"💬 Chatlar: {await db.count_chats(target)}/{max_chats}",
+        f"💬 Guruhlar: {len(chat_records)}/{max_chats} (faol {active_chats}, kutishda {waiting_chats})",
         f"📝 Postlar: {await db.count_posts(target)}/{max_posts}",
     ]
     suspended_until = user.get("suspended_until")
@@ -2228,6 +2486,22 @@ async def _build_user_card(target: int):
         lines.append(f"⏰ To'xtatish tugaydi: {suspended_until} UTC")
     if user.get("suspend_reason"):
         lines.append(f"📝 Sabab: {user['suspend_reason'][:200]}")
+
+    referrals = await db.get_referrals(target)
+    active_referrals = sum(bool(referral.get("counted")) for referral in referrals)
+    pending_referrals = len(referrals) - active_referrals
+    lines.extend([
+        "",
+        f"👥 Taklif qilganlari: {len(referrals)} ta "
+        f"(faol {active_referrals}, kutilmoqda {pending_referrals})",
+    ])
+    referrer_uid = await db.get_referrer(target)
+    if referrer_uid:
+        referrer_info = await db.get_user_info(referrer_uid)
+        lines.append(
+            f"🔗 O'zi { _admin_display_name(referrer_info.get('name')) } "
+            f"(ID: {referrer_uid}) tomonidan taklif qilingan."
+        )
 
     actions = await db.get_admin_actions(target, limit=3)
     if actions:
@@ -2248,6 +2522,12 @@ async def _build_user_card(target: int):
             InlineKeyboardButton("🎫 Tarif / muddat", callback_data=f"adm:plan:{target}"),
             InlineKeyboardButton("✉️ Xabar", callback_data=f"adm:dm:{target}"),
         ])
+    rows.append([
+        InlineKeyboardButton(
+            f"👥 Referallarni ko'rish ({len(referrals)})",
+            callback_data=f"adm:refs:{target}:page:0",
+        )
+    ])
     rows.append([InlineKeyboardButton("⬅️ Foydalanuvchilar", callback_data="adm:users:back")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -2482,8 +2762,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # FSM — menyu tugmasi bosilsa holatni bekor qilib, tugma buyrug'iga o'tkazamiz
     _MENU_BUTTONS = (
         "🔑 Login", "▶️ Start", "⛔ Stop", "💬 Chatlar",
-        "➕ Chat qo'sh", "➖ Chat o'chir", "📝 Post qo'sh",
-        "🗑 Post o'chir", "👥 Referal",
+        "➕ Chat qo'sh", "➖ Chat o'chir", "🔍 Guruhlarni skanerlash",
+        "📝 Post qo'sh", "🗑 Post o'chir", "👥 Referal",
         "👥 Adminlar", "🖥 Tizim",
     )
     _is_menu = text in _MENU_BUTTONS or text.startswith("⏱ Interval") or text.startswith("📊 Status")
@@ -2561,10 +2841,18 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if await db.is_tariff_expired(uid):
             await msg.reply_text(_waiting_mode_text(), reply_markup=await menu_for(uid))
             return
-        chats = await db.get_chats(uid)
+        chats = await db.get_active_chats(uid)
         posts = await db.get_posts(uid)
         if not chats:
-            await msg.reply_text("❌ Avval ➕ Chat qo'shing.", reply_markup=await menu_for(uid))
+            waiting = await db.count_waiting_chats(uid)
+            if waiting:
+                message = (
+                    "⏳ Hozir yuborish mumkin bo'lgan faol guruh yo'q. "
+                    "Qayta tekshirish uchun 🔍 Guruhlarni skanerlashni bosing."
+                )
+            else:
+                message = "❌ Avval guruh qo'shing yoki 🔍 Guruhlarni skanerlashni bosing."
+            await msg.reply_text(message, reply_markup=await menu_for(uid))
             return
         if not posts:
             await msg.reply_text("❌ Avval 📝 Post qo'shing.", reply_markup=await menu_for(uid))
@@ -2604,6 +2892,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if text.startswith("📊 Status"):
         chats = await db.get_chats(uid)
+        active_chats = await db.get_active_chats(uid)
+        waiting_chats = await db.count_waiting_chats(uid)
         posts = await db.get_posts(uid)
         interval = await db.get_interval(uid)
         tariff = await db.get_tariff(uid)
@@ -2622,7 +2912,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"Sessiya: ✅\n"
             f"Tarif: {tariff_label(tariff)}\n"
             f"{exp_line}\n"
-            f"Chatlar: {len(chats)}/{max_chats}\n"
+            f"Guruhlar: {len(chats)}/{max_chats} (faol {len(active_chats)}, kutishda {waiting_chats})\n"
             f"Postlar: {len(posts)}/{max_posts}\n"
             f"Interval: {interval} daqiqa",
             reply_markup=await menu_for(uid),
@@ -2630,14 +2920,41 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "💬 Chatlar":
-        chats = await db.get_chats(uid)
-        if not chats:
+        records = await db.get_chat_records(uid)
+        if not records:
             await msg.reply_text("❌ Chatlar yo'q.", reply_markup=await menu_for(uid))
             return
         max_chats, _ = await user_limits(uid)
-        lines = [f"💬 CHATLAR ({len(chats)}/{max_chats}):", ""]
-        lines += [f"{i}. {c}" for i, c in enumerate(chats, 1)]
-        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
+        active_count = sum(row.get("status") == "active" for row in records)
+        waiting_count = len(records) - active_count
+        header = [
+            f"💬 GURUHLAR ({len(records)}/{max_chats})",
+            f"🟢 Faol: {active_count} · ⏳ Kutishda: {waiting_count}",
+            "",
+        ]
+        items = []
+        for i, record in enumerate(records, 1):
+            title = (record.get("title") or record["chat_id"]).replace("\n", " ")[:60]
+            status = "🟢 Faol" if record.get("status") == "active" else "⏳ Kutishda"
+            suffix = (
+                f" · xatolar: {record.get('fail_count', 0)}"
+                if record.get("status") == "waiting" and record.get("fail_count")
+                else ""
+            )
+            items.append(f"{i}. {title}\n   {status}{suffix}\n   {record['chat_id']}")
+        menu = await menu_for(uid)
+        chunk_size = 15
+        for start in range(0, len(items), chunk_size):
+            lines = header + items[start:start + chunk_size] if start == 0 else items[start:start + chunk_size]
+            final_chunk = start + chunk_size >= len(items)
+            await msg.reply_text(
+                "\n".join(lines),
+                reply_markup=menu if final_chunk else None,
+            )
+        return
+
+    if text == "🔍 Guruhlarni skanerlash":
+        await _handle_group_scan_button(update)
         return
 
     if text == "➕ Chat qo'sh":
@@ -2663,17 +2980,22 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if text == "➖ Chat o'chir":
-        chats = await db.get_chats(uid)
-        if not chats:
+        records = await db.get_chat_records(uid)
+        if not records:
             await msg.reply_text("❌ Chatlar yo'q.", reply_markup=await menu_for(uid))
             return
-        rows = [
-            [InlineKeyboardButton(f"🗑 {i+1}. {c[:40]}", callback_data=f"delc:{i}")]
-            for i, c in enumerate(chats)
-        ]
+        rows = []
+        for i, record in enumerate(records):
+            title = record.get("title") or record["chat_id"]
+            status = "🟢" if record.get("status") == "active" else "⏳"
+            rows.append([
+                InlineKeyboardButton(
+                    f"🗑 {i + 1}. {status} {title[:35]}", callback_data=f"delc:{i}"
+                )
+            ])
         rows.append([InlineKeyboardButton("❌ Bekor", callback_data="delc:cancel")])
         await msg.reply_text(
-            f"➖ O'chirish uchun chatni tanlang ({len(chats)} ta):",
+            f"➖ O'chirish uchun guruhni tanlang ({len(records)} ta):",
             reply_markup=InlineKeyboardMarkup(rows),
         )
         return
@@ -3011,12 +3333,390 @@ def _canonical_chat_storage(entity, fallback: str) -> str:
         return fallback
 
 
+def _is_group_entity(entity) -> bool:
+    """Only basic groups and Telegram supergroups qualify; broadcast channels do not."""
+    if isinstance(entity, Chat):
+        return not bool(getattr(entity, "left", False)) and not bool(
+            getattr(entity, "migrated_to", None)
+        )
+    if isinstance(entity, Channel):
+        return bool(getattr(entity, "megagroup", False)) and not bool(
+            getattr(entity, "broadcast", False)
+        ) and not bool(getattr(entity, "left", False))
+    return False
+
+
+async def _group_can_send(client, entity, me) -> bool | None:
+    """Check the logged-in account's text-send permission in a group.
+
+    ``None`` means Telegram did not provide enough information to classify it;
+    callers can still include it as a waiting group after explicit confirmation.
+    """
+    permissions = await client.get_permissions(entity, me)
+    if permissions is None:
+        return None
+    if permissions.is_admin or permissions.is_creator:
+        return True
+    if permissions.has_left:
+        return False
+
+    participant = getattr(permissions, "participant", None)
+    member_rights = getattr(participant, "banned_rights", None)
+    if permissions.is_banned:
+        if bool(getattr(participant, "left", False)):
+            return False
+        if member_rights is not None and bool(getattr(member_rights, "send_messages", False)):
+            return False
+
+    if not (permissions.has_default_permissions or permissions.is_banned):
+        return None
+
+    default_rights = getattr(entity, "default_banned_rights", None)
+    if default_rights is None:
+        default_rights = await client.get_permissions(entity)
+    if default_rights is not None and bool(getattr(default_rights, "send_messages", False)):
+        return False
+    if permissions.is_banned and member_rights is None:
+        return None
+    if permissions.is_banned and bool(getattr(member_rights, "send_messages", False)):
+        return False
+    return True
+
+
+async def _scan_user_groups(client, uid: int):
+    """Scan the user's joined groups only; never adds or changes chats."""
+    existing_records = await db.get_chat_records(uid)
+    known = {
+        _normalized_chat_key(row["chat_id"]): row
+        for row in existing_records
+    }
+    groups: list[dict] = []
+    seen: set[str] = set()
+    note = ""
+    dialog_count = 0
+    truncated = False
+    try:
+        me = await client.get_me(input_peer=True)
+        async for dialog in client.iter_dialogs(
+            limit=GROUP_SCAN_MAX_DIALOGS, ignore_migrated=True
+        ):
+            dialog_count += 1
+            entity = getattr(dialog, "entity", None)
+            if not _is_group_entity(entity):
+                continue
+            try:
+                peer_id = str(get_peer_id(entity))
+            except Exception:
+                peer_id = str(getattr(entity, "id", ""))
+            chat_id = _canonical_chat_storage(entity, peer_id)
+            key = _normalized_chat_key(chat_id)
+            peer_key = _normalized_chat_key(peer_id)
+            if not chat_id or key in seen or peer_key in seen:
+                continue
+            seen.add(key)
+            seen.add(peer_key)
+            saved = known.get(key) or known.get(peer_key)
+            if saved:
+                # Keep the existing storage key so a rescan updates, not duplicates, it.
+                chat_id = saved["chat_id"]
+            title = " ".join(
+                str(getattr(dialog, "name", None) or getattr(entity, "title", None) or chat_id).split()
+            )[:200]
+            try:
+                writable = await _group_can_send(client, entity, me)
+                error = ""
+            except FloodWaitError as exc:
+                writable = None
+                error = f"Telegram kutish cheklovi ({int(getattr(exc, 'seconds', 0))} soniya)"
+                note = error + "; skanerlash qisman bajarildi."
+                groups.append({
+                    "chat_id": chat_id,
+                    "peer_id": peer_id,
+                    "title": title,
+                    "writable": writable,
+                    "error": error,
+                    "existing_status": saved.get("status") if saved else None,
+                })
+                break
+            except Exception as exc:
+                writable = None
+                error = type(exc).__name__
+                log(
+                    f"⚠️ Guruh huquqini tekshirib bo'lmadi {uid} → {chat_id}: {error}",
+                    "warning",
+                )
+            groups.append({
+                "chat_id": chat_id,
+                "peer_id": peer_id,
+                "title": title,
+                "writable": writable,
+                "error": error,
+                "existing_status": saved.get("status") if saved else None,
+            })
+        if dialog_count >= GROUP_SCAN_MAX_DIALOGS:
+            truncated = True
+            note = (note + " " if note else "") + (
+                f"Telegramdagi dastlabki {GROUP_SCAN_MAX_DIALOGS} ta dialog tekshirildi."
+            )
+    except FloodWaitError as exc:
+        note = f"Telegram kutish cheklovi ({int(getattr(exc, 'seconds', 0))} soniya); skanerlash qisman bajarildi."
+    except Exception as exc:
+        note = f"Skanerlashda xatolik: {type(exc).__name__}."
+        log(f"⚠️ Guruh skaneri xatosi {uid}: {type(exc).__name__}: {exc}", "warning")
+    return groups, note, truncated, dialog_count
+
+
+def _group_status_label(group: dict) -> str:
+    if group.get("writable") is True:
+        return "✅ yozish mumkin"
+    if group.get("writable") is False:
+        return "⛔ yozish huquqi yo'q"
+    return "❔ huquq aniqlanmadi"
+
+
+async def _build_group_scan_message(uid: int):
+    state = user_states.get(uid, {})
+    groups = state.get("groups", [])
+    selected = state.get("selected", set())
+    page = max(0, int(state.get("page", 0)))
+    total_pages = max(1, (len(groups) + GROUP_SCAN_PAGE_SIZE - 1) // GROUP_SCAN_PAGE_SIZE)
+    page = min(page, total_pages - 1)
+    state["page"] = page
+
+    writable_count = sum(group.get("writable") is True for group in groups)
+    blocked_count = sum(group.get("writable") is False for group in groups)
+    unknown_count = sum(group.get("writable") is None for group in groups)
+    active_count = sum(group.get("existing_status") == "active" for group in groups)
+    waiting_count = sum(group.get("existing_status") == "waiting" for group in groups)
+    new_count = sum(group.get("existing_status") is None for group in groups)
+    selected_new = sum(
+        i in selected and groups[i].get("existing_status") is None
+        for i in range(len(groups))
+    )
+    selected_waiting = sum(
+        i in selected and groups[i].get("existing_status") == "waiting"
+        for i in range(len(groups))
+    )
+    max_chats, _ = await user_limits(uid)
+    registered = await db.count_chats(uid)
+    available = max(0, max_chats - registered)
+
+    lines = [
+        "🔍 GURUHLARNI SKANERLASH NATIJASI",
+        "",
+        f"Topildi: {len(groups)} ta guruh (kanallar skanerlanmadi)",
+        f"✅ Yozish mumkin: {writable_count} · ⛔ Huquq yo'q: {blocked_count} · ❔ Aniqlanmadi: {unknown_count}",
+        f"Ro'yxatda: 🟢 faol {active_count} · ⏳ kutishda {waiting_count} · 🆕 yangi {new_count}",
+        f"Tanlangan: {len(selected)} (yangi {selected_new}, kutishdagi qayta tekshiruv {selected_waiting})",
+        f"Tarif bo'yicha yangi guruhlar uchun joy: {available}/{max_chats}",
+    ]
+    if state.get("note"):
+        lines.extend(["", "ℹ️ " + state["note"]])
+    if groups:
+        start = page * GROUP_SCAN_PAGE_SIZE
+        end = min(start + GROUP_SCAN_PAGE_SIZE, len(groups))
+        lines.extend(["", f"Guruhlar ({start + 1}–{end}/{len(groups)}):"])
+        for index in range(start, end):
+            group = groups[index]
+            marker = "☑️" if index in selected else "◻️"
+            title = group.get("title") or group.get("chat_id")
+            lines.append(f"{index + 1}. {marker} {title[:90]}")
+            status = _group_status_label(group)
+            existing = group.get("existing_status")
+            if existing == "active":
+                status += " · allaqachon faol ro'yxatda"
+            elif existing == "waiting":
+                status += " · hozir kutish holatida"
+            elif group.get("writable") is None and group.get("error"):
+                status += f" · {group['error'][:50]}"
+            lines.append(f"   {status}")
+    else:
+        lines.extend(["", "Telegram dialoglaridan guruh topilmadi."])
+
+    rows = []
+    if groups:
+        start = page * GROUP_SCAN_PAGE_SIZE
+        end = min(start + GROUP_SCAN_PAGE_SIZE, len(groups))
+        for index in range(start, end):
+            group = groups[index]
+            if group.get("existing_status") == "active":
+                continue
+            checked = "☑️" if index in selected else "◻️"
+            title = (group.get("title") or group.get("chat_id") or "Guruh").strip()
+            label = f"{checked} {index + 1}. {title[:35]}"
+            rows.append([InlineKeyboardButton(label, callback_data=f"gscan:toggle:{index}")])
+        rows.append([InlineKeyboardButton("✅ Yozish mumkin bo'lganlarni tanlash", callback_data="gscan:select:writable")])
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ Oldingi", callback_data=f"gscan:page:{page - 1}"))
+        if page + 1 < total_pages:
+            nav.append(InlineKeyboardButton("Keyingi ➡️", callback_data=f"gscan:page:{page + 1}"))
+        if nav:
+            rows.append(nav)
+        rows.append([
+            InlineKeyboardButton("✅ Tanlanganlarni tasdiqlash", callback_data="gscan:confirm"),
+            InlineKeyboardButton("❌ Bekor", callback_data="gscan:cancel"),
+        ])
+    else:
+        rows.append([InlineKeyboardButton("❌ Yopish", callback_data="gscan:cancel")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def _confirm_group_scan(uid: int, query) -> None:
+    state = user_states.get(uid, {})
+    selected = state.get("selected", set())
+    groups = state.get("groups", [])
+    if not await is_approved(uid):
+        user_states.pop(uid, None)
+        await query.edit_message_text("❌ Hisob tasdiqlanmagan. Skanerlash yakunlandi.")
+        return
+    if not selected:
+        user_states.pop(uid, None)
+        await query.edit_message_text("ℹ️ Hech bir guruh tanlanmadi — o'zgarish kiritilmadi.")
+        return
+
+    max_chats, _ = await user_limits(uid)
+    latest_records = await db.get_chat_records(uid)
+    existing = {
+        _normalized_chat_key(row["chat_id"]): row
+        for row in latest_records
+    }
+    added_active = 0
+    added_waiting = 0
+    reactivated = 0
+    still_waiting = 0
+    duplicates = 0
+    limit_reached = 0
+
+    for index, group in enumerate(groups):
+        if index not in selected:
+            continue
+        chat_id = group["chat_id"]
+        key = _normalized_chat_key(chat_id)
+        peer_key = _normalized_chat_key(group.get("peer_id", chat_id))
+        current = existing.get(key) or existing.get(peer_key)
+        title = group.get("title", "")
+        if current and current.get("status") == "active":
+            duplicates += 1
+            continue
+        if current and current.get("status") == "waiting":
+            if group.get("writable") is True:
+                if await db.update_chat_status(uid, current["chat_id"], "active", title=title):
+                    reactivated += 1
+                    current["status"] = "active"
+            else:
+                still_waiting += 1
+            continue
+
+        status = "active" if group.get("writable") is True else "waiting"
+        ok, reason = await db.add_chat(
+            uid, chat_id, max_chats=max_chats, status=status, title=title
+        )
+        if ok:
+            saved_record = {"chat_id": chat_id, "status": status, "title": title}
+            existing[key] = saved_record
+            existing[peer_key] = saved_record
+            if status == "active":
+                added_active += 1
+            else:
+                added_waiting += 1
+        elif reason == "limit":
+            limit_reached += 1
+        elif reason == "duplicate":
+            duplicates += 1
+
+    user_states.pop(uid, None)
+    lines = [
+        "✅ Guruh skaneri bo'yicha tanlov saqlandi.",
+        f"🟢 Faol qo'shildi: {added_active}",
+        f"⏳ Kutish holatida qo'shildi (yozish huquqi yo'q/aniqlanmadi): {added_waiting}",
+        f"🔄 Kutishdan faol holatga qaytdi: {reactivated}",
+    ]
+    if still_waiting:
+        lines.append(f"⏳ Huquq tiklanmagani uchun kutishda qoldi: {still_waiting}")
+    if duplicates:
+        lines.append(f"ℹ️ Avvaldan faol: {duplicates}")
+    if limit_reached:
+        lines.append(f"⛔ Tarif limiti sabab qo'shilmadi: {limit_reached}")
+    lines.append("\nYozish huquqi tiklangan kutishdagi guruh faqat qo'lda skanerlash va tasdiqlashdan keyin faollashadi.")
+    await query.edit_message_text("\n".join(lines))
+    with contextlib.suppress(Exception):
+        await application.bot.send_message(
+            uid, "Holat yangilandi.", reply_markup=await menu_for(uid)
+        )
+
+
 def _append_samples(lines: list[str], label: str, values: list[str], limit: int = 6) -> None:
     if not values:
         return
     preview = values[:limit]
     suffix = f" va yana {len(values) - limit} ta" if len(values) > limit else ""
     lines.append(f"{label}: {len(values)}" + (f" ({', '.join(preview)}{suffix})" if preview else ""))
+
+
+async def _handle_group_scan_button(update: Update) -> None:
+    """Run the user's explicit manual group scan and present a confirmation draft."""
+    uid = update.effective_user.id
+    msg = update.message
+    user_states.pop(uid, None)
+    if not rate_limiter.is_allowed(uid, "modify"):
+        wait = rate_limiter.get_wait_time(uid, "modify")
+        await msg.reply_text(f"⏳ {wait} soniya kuting.")
+        return
+    if not await is_approved(uid):
+        await msg.reply_text("❌ Avval admin tasdig'idan o'ting.", reply_markup=await menu_for(uid))
+        return
+    session = await db.get_session(uid)
+    if not session or client_pool is None:
+        await msg.reply_text(
+            "❌ Telegram sessiyasi topilmadi. Qaytadan 🔑 Login qiling.",
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    progress = await msg.reply_text("🔍 Telegram guruhlari qo'lda skanerlanmoqda. Bu biroz vaqt olishi mumkin…")
+    try:
+        client = await client_pool.acquire(uid, session)
+    except SessionInvalidError:
+        await db.del_session(uid)
+        await db.set_running(uid, False)
+        await client_pool.remove(uid)
+        await progress.edit_text("🚫 Telegram sessiyasi yaroqsiz. Qaytadan 🔑 Login qiling.")
+        return
+    except PoolBusyError:
+        await progress.edit_text("⏳ Telegram ulanishi hozir band. Birozdan keyin qayta urinib ko'ring.")
+        return
+    except Exception as exc:
+        log(f"⚠️ Guruh skaneri uchun ulanib bo'lmadi {uid}: {type(exc).__name__}", "warning")
+        await progress.edit_text("❌ Telegram akkauntiga ulanib bo'lmadi. Keyinroq qayta urinib ko'ring.")
+        return
+
+    try:
+        groups, note, truncated, dialog_count = await _scan_user_groups(client, uid)
+    except Exception as exc:
+        log(f"⚠️ Guruh skaneri xatosi {uid}: {type(exc).__name__}: {exc}", "warning")
+        await progress.edit_text("❌ Guruhlarni skanerlashda kutilmagan xatolik yuz berdi. Keyinroq qayta urinib ko'ring.")
+        return
+    finally:
+        await client_pool.release(uid)
+
+    selected = {
+        index for index, group in enumerate(groups)
+        if group.get("existing_status") == "waiting"
+        or (group.get("writable") is True and group.get("existing_status") is None)
+    }
+    user_states[uid] = {
+        "step": "group_scan_review",
+        "ts": time.time(),
+        "groups": groups,
+        "selected": selected,
+        "page": 0,
+        "note": note,
+        "truncated": truncated,
+        "dialogs_scanned": dialog_count,
+    }
+    text, markup = await _build_group_scan_message(uid)
+    await progress.edit_text(text, reply_markup=markup)
 
 
 async def _handle_add_chat(update: Update, text: str) -> None:
@@ -3138,7 +3838,10 @@ async def _handle_add_chat(update: Update, text: str) -> None:
                     duplicates.append(target)
                     continue
                 ok, reason = await db.add_chat(
-                    uid, canonical, max_chats=max_chats
+                    uid,
+                    canonical,
+                    max_chats=max_chats,
+                    title=getattr(entity, "title", "") or target,
                 )
                 if ok:
                     added.append(canonical)

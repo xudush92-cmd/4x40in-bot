@@ -136,10 +136,18 @@ async def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 uid INTEGER NOT NULL,
                 chat_id TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
                 added_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(uid, chat_id)
             )
         """)
+        await _ensure_column(db, "chats", "title", "TEXT DEFAULT ''")
+        await _ensure_column(db, "chats", "status", "TEXT NOT NULL DEFAULT 'active'")
+        await _ensure_column(db, "chats", "fail_count", "INTEGER NOT NULL DEFAULT 0")
+        await _ensure_column(db, "chats", "last_error", "TEXT")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS posts (
@@ -194,6 +202,7 @@ async def init_db() -> None:
 
         # Indekslar — tezroq query
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chats_uid ON chats(uid)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_chats_uid_status ON chats(uid, status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_posts_uid ON posts(uid)")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_admin_audit_target_created "
@@ -420,6 +429,65 @@ async def count_search_users(query: str = "", exclude_uid: int | None = None) ->
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     async with _op_lock:
         async with db.execute("SELECT COUNT(*) FROM users" + where, params) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+_TARIFF_SEGMENT_WHERE = {
+    "active": (
+        "is_admin=1 AND tariff_expires_at IS NOT NULL "
+        "AND datetime(tariff_expires_at) >= datetime('now')"
+    ),
+    "expired": (
+        "is_admin=1 AND tariff_expires_at IS NOT NULL "
+        "AND datetime(tariff_expires_at) < datetime('now')"
+    ),
+}
+
+
+async def get_users_by_tariff_segment(
+    segment: str,
+    limit: int = 8,
+    offset: int = 0,
+    exclude_uid: int | None = None,
+) -> list[dict]:
+    """Tarifi amalda yoki muddati tugagan tasdiqlangan foydalanuvchilarni oladi."""
+    if segment not in _TARIFF_SEGMENT_WHERE:
+        raise ValueError("Noma'lum tarif segmenti")
+    db = await _get_conn()
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
+    where = _TARIFF_SEGMENT_WHERE[segment]
+    params: list = []
+    if exclude_uid is not None:
+        where += " AND uid != ?"
+        params.append(int(exclude_uid))
+    async with _op_lock:
+        async with db.execute(
+            "SELECT * FROM users WHERE " + where +
+            " ORDER BY CASE WHEN trim(COALESCE(name, '')) = '' THEN 1 ELSE 0 END, "
+            "lower(trim(COALESCE(name, ''))), uid LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def count_users_by_tariff_segment(
+    segment: str, exclude_uid: int | None = None
+) -> int:
+    """Tarif segmentidagi foydalanuvchilar soni."""
+    if segment not in _TARIFF_SEGMENT_WHERE:
+        raise ValueError("Noma'lum tarif segmenti")
+    db = await _get_conn()
+    where = _TARIFF_SEGMENT_WHERE[segment]
+    params: list = []
+    if exclude_uid is not None:
+        where += " AND uid != ?"
+        params.append(int(exclude_uid))
+    async with _op_lock:
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE " + where, params
+        ) as cur:
             row = await cur.fetchone()
             return int(row[0]) if row else 0
 
@@ -869,6 +937,29 @@ async def get_chats(uid: int) -> list[str]:
             return [r[0] for r in rows]
 
 
+async def get_active_chats(uid: int) -> list[str]:
+    """Yuborish huquqi tasdiqlangan va faol holatdagi chatlar."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT chat_id FROM chats WHERE uid=? AND status='active' ORDER BY id",
+            (uid,),
+        ) as cur:
+            return [row[0] for row in await cur.fetchall()]
+
+
+async def get_chat_records(uid: int) -> list[dict]:
+    """Foydalanuvchining chatlari, nomi va navbat holati bilan."""
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT chat_id, title, status, fail_count, last_error "
+            "FROM chats WHERE uid=? ORDER BY id",
+            (uid,),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
 async def count_chats(uid: int) -> int:
     db = await _get_conn()
     async with _op_lock:
@@ -879,15 +970,34 @@ async def count_chats(uid: int) -> int:
             return int(row[0]) if row else 0
 
 
-async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tuple[bool, str]:
+async def count_waiting_chats(uid: int) -> int:
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT COUNT(*) FROM chats WHERE uid=? AND status='waiting'", (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def add_chat(
+    uid: int,
+    chat_id: str,
+    max_chats: int | None = None,
+    *,
+    status: str = "active",
+    title: str = "",
+) -> tuple[bool, str]:
     """
-    Chat qo'shadi (atomic).
+    Chat qo'shadi (atomic). Kutishdagi chatlar ham tarif limitiga kiradi.
 
     Returns:
         (True, "ok") — qo'shildi
         (False, "duplicate") — allaqachon mavjud
         (False, "limit") — max_chats limitidan oshib ketdi
     """
+    if status not in {"active", "waiting"}:
+        raise ValueError("chat status 'active' yoki 'waiting' bo'lishi kerak")
     db = await _get_conn()
     async with _op_lock:
         # Transaction ichida count + insert — atomic
@@ -905,8 +1015,8 @@ async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tupl
 
             try:
                 await db.execute(
-                    "INSERT INTO chats (uid, chat_id) VALUES (?, ?)",
-                    (uid, chat_id),
+                    "INSERT INTO chats (uid, chat_id, title, status) VALUES (?, ?, ?, ?)",
+                    (uid, chat_id, (title or "")[:200], status),
                 )
                 await db.commit()
                 return True, "ok"
@@ -917,6 +1027,80 @@ async def add_chat(uid: int, chat_id: str, max_chats: int | None = None) -> tupl
             with contextlib.suppress(Exception):
                 await db.rollback()
             raise
+
+
+async def update_chat_status(
+    uid: int, chat_id: str, status: str, *, title: str | None = None
+) -> bool:
+    """Chatni active/waiting holatiga o'tkazib, xatolar sonini yangilaydi."""
+    if status not in {"active", "waiting"}:
+        raise ValueError("chat status 'active' yoki 'waiting' bo'lishi kerak")
+    db = await _get_conn()
+    async with _op_lock:
+        if title is None:
+            cur = await db.execute(
+                "UPDATE chats SET status=?, fail_count=0, last_error=NULL "
+                "WHERE uid=? AND chat_id=?",
+                (status, uid, chat_id),
+            )
+        else:
+            cur = await db.execute(
+                "UPDATE chats SET status=?, title=?, fail_count=0, last_error=NULL "
+                "WHERE uid=? AND chat_id=?",
+                (status, (title or "")[:200], uid, chat_id),
+            )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def record_chat_failure(
+    uid: int, chat_id: str, error: str, *, threshold: int = 3
+) -> tuple[int, bool]:
+    """Ketma-ket yuborish xatolarini sanaydi; chegaraga yetganda chatni kutishga oladi."""
+    db = await _get_conn()
+    error = (error or "Noma'lum xato")[:300]
+    async with _op_lock:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT fail_count, status FROM chats WHERE uid=? AND chat_id=?",
+                (uid, chat_id),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await db.rollback()
+                return 0, False
+            count = int(row[0] or 0) + 1
+            moved_to_waiting = row[1] == "active" and count >= max(1, int(threshold))
+            await db.execute(
+                "UPDATE chats SET fail_count=?, last_error=?, status=? "
+                "WHERE uid=? AND chat_id=?",
+                (
+                    count,
+                    error,
+                    "waiting" if moved_to_waiting else row[1],
+                    uid,
+                    chat_id,
+                ),
+            )
+            await db.commit()
+            return count, moved_to_waiting
+        except Exception:
+            with contextlib.suppress(Exception):
+                await db.rollback()
+            raise
+
+
+async def record_chat_success(uid: int, chat_id: str) -> None:
+    """Muvaffaqiyatli yuborish ketma-ket xato sanog'ini nolga tushiradi."""
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute(
+            "UPDATE chats SET fail_count=0, last_error=NULL "
+            "WHERE uid=? AND chat_id=?",
+            (uid, chat_id),
+        )
+        await db.commit()
 
 
 async def remove_chat(uid: int, index: int) -> str | None:
