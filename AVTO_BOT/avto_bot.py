@@ -105,7 +105,7 @@ from client_pool import ClientPool, PoolBusyError, SessionInvalidError
 from worker_manager import WorkerManager, MAX_CONCURRENT_WORKERS
 from health import HealthServer, format_status_message, START_TIME, _get_memory_info
 from rate_limiter import RateLimiter
-from chat_parser import extract_chat_targets, extract_invalid_telegram_links
+from chat_parser import extract_chat_targets
 
 # ─────────────────────────────────────────────────────────────────────────
 # ENV
@@ -160,7 +160,6 @@ GROUP_SCAN_MAX_DIALOGS = 1000
 GROUP_SCAN_STATE_TTL_S = 15 * 60
 MAX_ADMIN_TERM_DAYS = 3650
 MAX_ADMIN_MESSAGE_LENGTH = 3500
-MAX_CHAT_BATCH_SIZE = 50
 SUSPENSION_CHECK_INTERVAL_S = 60
 DAILY_MESSAGE_CHECK_INTERVAL_S = 60
 DAILY_MESSAGE_TIMEZONE = ZoneInfo("Asia/Tashkent")
@@ -369,8 +368,7 @@ def kb_main(interval: int, running: bool, super_admin: bool) -> ReplyKeyboardMar
     rows = [
         [KeyboardButton("▶️ Start"), KeyboardButton("⛔ Stop")],
         [KeyboardButton(f"📊 Status ({on})"), KeyboardButton("💬 Chatlar")],
-        [KeyboardButton("➕ Chat qo'sh"), KeyboardButton("➖ Chat o'chir")],
-        [KeyboardButton("🔍 Guruhlarni skanerlash")],
+        [KeyboardButton("🔍 Guruhlarni skanerlash"), KeyboardButton("➖ Chat o'chir")],
         [KeyboardButton("📝 Post qo'sh"), KeyboardButton("🗑 Post o'chir")],
         [KeyboardButton(f"⏱ Interval: {interval} daq"), KeyboardButton("👥 Referal")],
     ]
@@ -1300,7 +1298,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         f"🎫 Sizning tarifingiz: {tariff_label(tariff)}\n"
                         f"📅 Muddat: {TARIFF_DURATION_DAYS} kun\n\n"
                         "Endi:\n"
-                        f"1️⃣ ➕ Chat qo'shing (max {tmc})\n"
+                        f"1️⃣ 🔍 Guruhlarni skanerlang va keraklilarini tasdiqlang (max {tmc})\n"
                         f"2️⃣ 📝 Post qo'shing (max {tmp})\n"
                         "3️⃣ ⏱ Interval sozlang\n"
                         "4️⃣ ▶️ Start bosing",
@@ -1447,15 +1445,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 return
             chats = await db.get_active_chats(uid)
             posts = await db.get_posts(uid)
-            if not chats or not posts:
+            if not posts:
+                await q.edit_message_text("❌ Avval 📝 Post qo'shing.")
+                return
+            if not chats:
                 waiting = await db.count_waiting_chats(uid)
                 if waiting:
                     await q.edit_message_text(
                         "⏳ Hozir yuborish mumkin bo'lgan faol guruh yo'q. "
-                        "Guruh huquqlarini qayta tekshirish uchun 🔍 Guruhlarni skanerlashni bosing."
+                        "Huquqlarni qayta tekshirish uchun 🔍 Guruhlarni skanerlashni bosing."
                     )
                 else:
-                    await q.edit_message_text("❌ Faol guruh yoki post yo'q. Avval qo'shing.")
+                    await q.edit_message_text(
+                        "❌ Avval 🔍 Guruhlarni skanerlang va kerakli guruhlarni tasdiqlang."
+                    )
                 return
             started = await worker_manager.start_worker(uid) if worker_manager else False
             if not started:
@@ -2762,7 +2765,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # FSM — menyu tugmasi bosilsa holatni bekor qilib, tugma buyrug'iga o'tkazamiz
     _MENU_BUTTONS = (
         "🔑 Login", "▶️ Start", "⛔ Stop", "💬 Chatlar",
-        "➕ Chat qo'sh", "➖ Chat o'chir", "🔍 Guruhlarni skanerlash",
+        "➖ Chat o'chir", "🔍 Guruhlarni skanerlash",
         "📝 Post qo'sh", "🗑 Post o'chir", "👥 Referal",
         "👥 Adminlar", "🖥 Tizim",
     )
@@ -2776,15 +2779,12 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await _handle_admin_input(update, state)
             return
 
-    if step in ("add_chat", "add_post", "set_interval"):
+    if step in ("add_post", "set_interval"):
         if _is_menu:
             # Menyu tugmasi bosildi — holatni bekor qilib, pastdagi handlerga o'tkazamiz
             user_states.pop(uid, None)
         else:
             # Oddiy matn — avvalgidek FSM davom etadi
-            if step == "add_chat":
-                await _handle_add_chat(update, text)
-                return
             if step == "add_post":
                 await _handle_add_post(update)
                 return
@@ -2851,7 +2851,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                     "Qayta tekshirish uchun 🔍 Guruhlarni skanerlashni bosing."
                 )
             else:
-                message = "❌ Avval guruh qo'shing yoki 🔍 Guruhlarni skanerlashni bosing."
+                message = "❌ Avval 🔍 Guruhlarni skanerlang va kerakli guruhlarni tasdiqlang."
             await msg.reply_text(message, reply_markup=await menu_for(uid))
             return
         if not posts:
@@ -2955,28 +2955,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     if text == "🔍 Guruhlarni skanerlash":
         await _handle_group_scan_button(update)
-        return
-
-    if text == "➕ Chat qo'sh":
-        if not rate_limiter.is_allowed(uid, "modify"):
-            wait = rate_limiter.get_wait_time(uid, "modify")
-            await msg.reply_text(f"⏳ {wait} soniya kuting.")
-            return
-        chats = await db.get_chats(uid)
-        max_chats, _ = await user_limits(uid)
-        if len(chats) >= max_chats:
-            await msg.reply_text(
-                f"❌ Maksimal {max_chats} ta chat (sizning tarifingiz). Avval birini o'chiring.",
-                reply_markup=await menu_for(uid),
-            )
-            return
-        user_states[uid] = {"step": "add_chat", "ts": time.time()}
-        await msg.reply_text(
-            "➕ Bir xabarda bir nechta guruh havolasini yuboring.\n"
-            "Qabul qilinadi: @username, t.me/username, Telegram invite havolasi yoki -100... ID.\n"
-            "Izoh, tartib raqami va tinish belgilarini bot ajratib tashlaydi.\n\n"
-            f"Hozir: {len(chats)}/{max_chats}"
-        )
         return
 
     if text == "➖ Chat o'chir":
@@ -3646,14 +3624,6 @@ async def _confirm_group_scan(uid: int, query) -> None:
         )
 
 
-def _append_samples(lines: list[str], label: str, values: list[str], limit: int = 6) -> None:
-    if not values:
-        return
-    preview = values[:limit]
-    suffix = f" va yana {len(values) - limit} ta" if len(values) > limit else ""
-    lines.append(f"{label}: {len(values)}" + (f" ({', '.join(preview)}{suffix})" if preview else ""))
-
-
 async def _handle_group_scan_button(update: Update) -> None:
     """Run the user's explicit manual group scan and present a confirmation draft."""
     uid = update.effective_user.id
@@ -3717,168 +3687,6 @@ async def _handle_group_scan_button(update: Update) -> None:
     }
     text, markup = await _build_group_scan_message(uid)
     await progress.edit_text(text, reply_markup=markup)
-
-
-async def _handle_add_chat(update: Update, text: str) -> None:
-    uid = update.effective_user.id
-    user_states.pop(uid, None)
-    msg = update.message
-    targets = extract_chat_targets(text)
-    malformed_links = extract_invalid_telegram_links(text)
-    if not targets:
-        if malformed_links:
-            shown = ", ".join(malformed_links[:5])
-            await msg.reply_text(
-                "❌ Yaroqli chat havolasi topilmadi. Noto'g'ri yoki qo'llanmaydigan "
-                f"t.me havolalari: {shown}",
-                reply_markup=await menu_for(uid),
-            )
-        else:
-            await msg.reply_text(
-                "❌ Matndan chat havolasi topilmadi. @username, t.me/username, "
-                "Telegram invite havolasi yoki -100... chat ID yuboring. Izoh matni e'tiborga olinmaydi.",
-                reply_markup=await menu_for(uid),
-            )
-        return
-
-    max_chats, _ = await user_limits(uid)
-    existing = await db.get_chats(uid)
-
-    # Pasted legacy links are compared in canonical form to avoid duplicates
-    # such as @group and https://t.me/group.
-    known_keys = {_normalized_chat_key(value) for value in existing}
-    added: list[str] = []
-    duplicates: list[str] = []
-    invalid: list[str] = list(malformed_links)
-    over_limit: list[str] = []
-    not_checked: list[str] = []
-    rate_limited: str | None = None
-    extra_count = max(0, len(targets) - MAX_CHAT_BATCH_SIZE)
-    targets = targets[:MAX_CHAT_BATCH_SIZE]
-
-    # Avoid API calls when the pasted list only contains existing usernames.
-    candidates: list[str] = []
-    for target in targets:
-        key = _normalized_chat_key(target)
-        if key in known_keys:
-            duplicates.append(target)
-        else:
-            candidates.append(target)
-
-    if not candidates:
-        lines = ["📥 Guruh qo'shish natijasi:", "✅ Qo'shildi: 0 ta"]
-        _append_samples(lines, "⚠️ Avvaldan mavjud", duplicates)
-        _append_samples(lines, "❌ Noto'g'ri t.me havolalari", invalid)
-        if extra_count:
-            lines.append(f"⚠️ Tekshirilmagan qo'shimcha manzillar: {extra_count} ta")
-        lines.append(f"📊 Jami: {len(existing)}/{max_chats}")
-        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
-        return
-
-    if len(existing) >= max_chats:
-        over_limit.extend(candidates)
-        lines = ["📥 Guruh qo'shish natijasi:", "✅ Qo'shildi: 0 ta"]
-        _append_samples(lines, "⚠️ Avvaldan mavjud", duplicates)
-        _append_samples(lines, "❌ Noto'g'ri t.me havolalari", invalid)
-        _append_samples(lines, "⛔ Tarif limiti sabab qo'shilmagan", over_limit)
-        if extra_count:
-            lines.append(f"⚠️ Tekshirilmagan qo'shimcha manzillar: {extra_count} ta")
-        lines.append(f"📊 Jami: {len(existing)}/{max_chats}")
-        await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
-        return
-
-    session = await db.get_session(uid)
-    if not session or client_pool is None:
-        await msg.reply_text(
-            "❌ Telegram sessiyasi topilmadi. Qaytadan Login qiling.",
-            reply_markup=await menu_for(uid),
-        )
-        return
-
-    client = None
-    try:
-        client = await client_pool.acquire(uid, session)
-    except SessionInvalidError:
-        await db.del_session(uid)
-        await db.set_running(uid, False)
-        await client_pool.remove(uid)
-        await msg.reply_text(
-            "🚫 Telegram sessiyasi yaroqsiz. Qaytadan 🔑 Login qiling.",
-            reply_markup=await menu_for(uid),
-        )
-        return
-    except PoolBusyError:
-        await msg.reply_text(
-            "⏳ Telegram ulanishi hozir band. Birozdan keyin qayta urinib ko'ring.",
-            reply_markup=await menu_for(uid),
-        )
-        return
-    except Exception as e:
-        log(f"⚠️ Chatlarni tekshirishda ulanish xatosi {uid}: {type(e).__name__}", "warning")
-        await msg.reply_text(
-            "❌ Telegram akkauntiga ulanib bo'lmadi. Birozdan keyin qayta urinib ko'ring.",
-            reply_markup=await menu_for(uid),
-        )
-        return
-
-    try:
-        for index, target in enumerate(candidates):
-            if len(existing) + len(added) >= max_chats:
-                over_limit.extend(candidates[index:])
-                break
-            try:
-                entity = await _resolve_chat(client, target)
-                # Personal accounts are not destination groups/channels.
-                if not isinstance(entity, (Chat, Channel)):
-                    invalid.append(target)
-                    continue
-                canonical = _canonical_chat_storage(entity, target)
-                key = _normalized_chat_key(canonical)
-                if key in known_keys:
-                    duplicates.append(target)
-                    continue
-                ok, reason = await db.add_chat(
-                    uid,
-                    canonical,
-                    max_chats=max_chats,
-                    title=getattr(entity, "title", "") or target,
-                )
-                if ok:
-                    added.append(canonical)
-                    known_keys.add(key)
-                elif reason == "duplicate":
-                    duplicates.append(target)
-                    known_keys.add(key)
-                elif reason == "limit":
-                    over_limit.extend(candidates[index:])
-                    break
-                else:
-                    invalid.append(target)
-            except FloodWaitError as e:
-                rate_limited = str(int(getattr(e, "seconds", 0)))
-                not_checked.extend(candidates[index + 1:])
-                break
-            except Exception as e:
-                invalid.append(target)
-                log(
-                    f"⚠️ Chat manzili tekshirilmadi {uid} → {target}: {type(e).__name__}",
-                    "warning",
-                )
-    finally:
-        await client_pool.release(uid)
-
-    new_count = await db.count_chats(uid)
-    lines = ["📥 Guruh qo'shish natijasi:", f"✅ Qo'shildi: {len(added)} ta"]
-    _append_samples(lines, "⚠️ Avvaldan mavjud", duplicates)
-    _append_samples(lines, "❌ Noto'g'ri yoki akkaunt kira olmaydigan", invalid)
-    _append_samples(lines, "⛔ Tarif limiti sabab qo'shilmagan", over_limit)
-    _append_samples(lines, "⏳ Tekshirilmagan", not_checked)
-    if extra_count:
-        lines.append(f"⚠️ Bir xabarda ko'pi bilan {MAX_CHAT_BATCH_SIZE} ta manzil tekshiriladi; ortiqcha: {extra_count} ta")
-    if rate_limited:
-        lines.append(f"⏳ Telegram vaqtinchalik limit qo'ydi ({rate_limited} soniya). Keyin qolganlarini qayta yuboring.")
-    lines.append(f"📊 Jami: {new_count}/{max_chats}")
-    await msg.reply_text("\n".join(lines), reply_markup=await menu_for(uid))
 
 
 async def _handle_add_post(update: Update) -> None:

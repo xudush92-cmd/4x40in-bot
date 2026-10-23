@@ -107,6 +107,12 @@ class FakeQuery:
 
 
 class GroupScannerTests(unittest.IsolatedAsyncioTestCase):
+    def test_main_menu_uses_scanner_instead_of_manual_chat_entry(self):
+        markup = avto_bot.kb_main(interval=5, running=False, super_admin=False)
+        labels = [button.text for row in markup.keyboard for button in row]
+        self.assertIn("🔍 Guruhlarni skanerlash", labels)
+        self.assertNotIn("➕ Chat qo'sh", labels)
+
     async def asyncSetUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._old_path = db.DB_PATH
