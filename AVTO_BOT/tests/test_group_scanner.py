@@ -98,9 +98,10 @@ class FakeQuery:
         self.data = data
         self.from_user = SimpleNamespace(id=uid)
         self.edits = []
+        self.answers = []
 
     async def answer(self, *args, **kwargs):
-        pass
+        self.answers.append((args, kwargs))
 
     async def edit_message_text(self, text, **kwargs):
         self.edits.append((text, kwargs))
@@ -112,6 +113,68 @@ class GroupScannerTests(unittest.IsolatedAsyncioTestCase):
         labels = [button.text for row in markup.keyboard for button in row]
         self.assertIn("🔍 Guruhlarni skanerlash", labels)
         self.assertNotIn("➕ Chat qo'sh", labels)
+
+    async def test_scan_rows_include_group_details_and_confirm_button_is_green(self):
+        groups = [
+            {
+                "chat_id": "-1001",
+                "title": "Group Alpha",
+                "writable": True,
+                "existing_status": None,
+            },
+            {
+                "chat_id": "-1002",
+                "title": "Read Only Beta",
+                "writable": False,
+                "existing_status": "waiting",
+            },
+            {
+                "chat_id": "-1003",
+                "title": "Already Active Gamma",
+                "writable": True,
+                "existing_status": "active",
+            },
+        ]
+        avto_bot.user_states[404] = {
+            "step": "group_scan_review",
+            "ts": avto_bot.time.time(),
+            "groups": groups,
+            "selected": {0, 1},
+            "page": 0,
+            "note": "",
+        }
+
+        text, markup = await avto_bot._build_group_scan_message(404)
+        buttons = {
+            button.callback_data: button
+            for row in markup.inline_keyboard
+            for button in row
+        }
+
+        self.assertNotIn("Group Alpha", text, "group details should not be duplicated above the buttons")
+        first_info, first_select = markup.inline_keyboard[0]
+        self.assertEqual(first_info.callback_data, "gscan:info:0")
+        self.assertEqual(first_select.callback_data, "gscan:toggle:0")
+        self.assertIn("Group Alpha", first_info.text)
+        self.assertIn("✅ yozish mumkin", first_info.text)
+        self.assertEqual(first_select.text, "☑️ Tanlangan")
+        second_info, second_select = markup.inline_keyboard[1]
+        self.assertIn("Read Only Beta", second_info.text)
+        self.assertIn("⛔ yozish yo'q", second_info.text)
+        self.assertIn("kutishda", second_info.text)
+        self.assertEqual(second_select.text, "☑️ Tanlangan")
+        active_info, active_select = markup.inline_keyboard[2]
+        self.assertIn("faol", active_info.text)
+        self.assertEqual(active_select.text, "🟢 Faol")
+        self.assertLessEqual(avto_bot._utf16_units(first_info.text), 64)
+        self.assertEqual(buttons["gscan:confirm"].style, "success")
+
+        info_query = FakeQuery("gscan:info:0", 404)
+        await avto_bot.on_callback(SimpleNamespace(callback_query=info_query), None)
+        self.assertTrue(info_query.answers[0][1]["show_alert"])
+        self.assertIn("Group Alpha", info_query.answers[0][0][0])
+        self.assertIn("Yozish mumkin", info_query.answers[0][0][0])
+        self.assertEqual(buttons["gscan:confirm"].to_dict()["style"], "success")
 
     async def asyncSetUp(self):
         self._tmp = tempfile.TemporaryDirectory()

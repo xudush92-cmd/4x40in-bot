@@ -1120,9 +1120,46 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ─────────────────────────────────────────────────────────────────────────
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
-    await q.answer()
     uid = q.from_user.id
     data = q.data or ""
+    if data.startswith("gscan:info:"):
+        if not is_super(uid) and await db.is_suspended(uid):
+            await q.answer("Hisobingiz vaqtincha to'xtatilgan.", show_alert=True)
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "group_scan_review":
+            await q.answer("Skanerlash holati topilmadi. Qaytadan skanerlang.", show_alert=True)
+            return
+        if time.time() - state.get("ts", 0) > GROUP_SCAN_STATE_TTL_S:
+            user_states.pop(uid, None)
+            await q.answer("Skanerlash natijasi eskirdi. Qayta skanerlang.", show_alert=True)
+            return
+        groups = state.get("groups", [])
+        try:
+            index = int(data.rsplit(":", 1)[1])
+            if not 0 <= index < len(groups):
+                raise IndexError
+            group = groups[index]
+        except (ValueError, IndexError):
+            await q.answer("Guruh ma'lumoti topilmadi.", show_alert=True)
+            return
+        title = str(group.get("title") or group.get("chat_id") or "Guruh")
+        if group.get("writable") is True:
+            permission = "✅ Yozish mumkin"
+        elif group.get("writable") is False:
+            permission = "⛔ Yozish huquqi yo'q"
+        else:
+            permission = "❔ Yozish huquqi aniqlanmadi"
+        existing = group.get("existing_status")
+        status = {
+            "active": "🟢 Allaqachon faol",
+            "waiting": "⏳ Kutish holatida",
+        }.get(existing, "🆕 Yangi guruh")
+        selected = "Tanlangan" if index in state.get("selected", set()) else "Tanlanmagan"
+        details = f"{title[:100]}\n{permission} · {status}\n{selected}. O'ngdagi tugma bilan tanlang."
+        await q.answer(details[:200], show_alert=True)
+        return
+    await q.answer()
 
     if not is_super(uid) and await db.is_suspended(uid):
         user = await db.get_user(uid)
@@ -3444,12 +3481,51 @@ async def _scan_user_groups(client, uid: int):
     return groups, note, truncated, dialog_count
 
 
-def _group_status_label(group: dict) -> str:
+def _utf16_units(value: str) -> int:
+    """Telegram button labels are limited by UTF-16 code units."""
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _truncate_utf16(value: str, max_units: int) -> str:
+    result: list[str] = []
+    units = 0
+    for char in str(value):
+        char_units = 2 if ord(char) > 0xFFFF else 1
+        if units + char_units > max_units:
+            break
+        result.append(char)
+        units += char_units
+    truncated = "".join(result)
+    if len(truncated) < len(str(value)) and max_units > 0:
+        while result and _utf16_units("".join(result) + "…") > max_units:
+            result.pop()
+        truncated = "".join(result) + "…"
+    return truncated
+
+
+def _group_scan_info_label(group: dict, index: int) -> str:
+    """Keep the group name and statuses together in the left button of its row."""
+    existing = group.get("existing_status")
+    if existing == "active":
+        existing_label = "🟢 faol"
+    elif existing == "waiting":
+        existing_label = "⏳ kutishda"
+    else:
+        existing_label = "🆕 yangi"
+
     if group.get("writable") is True:
-        return "✅ yozish mumkin"
-    if group.get("writable") is False:
-        return "⛔ yozish huquqi yo'q"
-    return "❔ huquq aniqlanmadi"
+        permission = "✅ yozish mumkin"
+    elif group.get("writable") is False:
+        permission = "⛔ yozish yo'q"
+    else:
+        error = group.get("error")
+        permission = f"❔ {str(error)[:16]}" if error else "❔ tekshirilmagan"
+
+    prefix = f"{index + 1}. "
+    suffix = f" · {permission} · {existing_label}"
+    title = " ".join(str(group.get("title") or group.get("chat_id") or "Guruh").split())
+    title_budget = max(1, 60 - _utf16_units(prefix) - _utf16_units(suffix))
+    return prefix + _truncate_utf16(title, title_budget) + suffix
 
 
 async def _build_group_scan_message(uid: int):
@@ -3493,21 +3569,10 @@ async def _build_group_scan_message(uid: int):
     if groups:
         start = page * GROUP_SCAN_PAGE_SIZE
         end = min(start + GROUP_SCAN_PAGE_SIZE, len(groups))
-        lines.extend(["", f"Guruhlar ({start + 1}–{end}/{len(groups)}):"])
-        for index in range(start, end):
-            group = groups[index]
-            marker = "☑️" if index in selected else "◻️"
-            title = group.get("title") or group.get("chat_id")
-            lines.append(f"{index + 1}. {marker} {title[:90]}")
-            status = _group_status_label(group)
-            existing = group.get("existing_status")
-            if existing == "active":
-                status += " · allaqachon faol ro'yxatda"
-            elif existing == "waiting":
-                status += " · hozir kutish holatida"
-            elif group.get("writable") is None and group.get("error"):
-                status += f" · {group['error'][:50]}"
-            lines.append(f"   {status}")
+        lines.extend([
+            "",
+            f"Guruhlar ({start + 1}–{end}/{len(groups)}): chap tugmada nom/yozish huquqi/holat, o'ng tomonda tanlash.",
+        ])
     else:
         lines.extend(["", "Telegram dialoglaridan guruh topilmadi."])
 
@@ -3517,12 +3582,25 @@ async def _build_group_scan_message(uid: int):
         end = min(start + GROUP_SCAN_PAGE_SIZE, len(groups))
         for index in range(start, end):
             group = groups[index]
-            if group.get("existing_status") == "active":
-                continue
-            checked = "☑️" if index in selected else "◻️"
-            title = (group.get("title") or group.get("chat_id") or "Guruh").strip()
-            label = f"{checked} {index + 1}. {title[:35]}"
-            rows.append([InlineKeyboardButton(label, callback_data=f"gscan:toggle:{index}")])
+            is_active = group.get("existing_status") == "active"
+            selection_label = (
+                "🟢 Faol"
+                if is_active
+                else "☑️ Tanlangan" if index in selected else "◻️ Tanlash"
+            )
+            selection_callback = (
+                f"gscan:info:{index}" if is_active else f"gscan:toggle:{index}"
+            )
+            rows.append([
+                InlineKeyboardButton(
+                    _group_scan_info_label(group, index),
+                    callback_data=f"gscan:info:{index}",
+                ),
+                InlineKeyboardButton(
+                    selection_label,
+                    callback_data=selection_callback,
+                ),
+            ])
         rows.append([InlineKeyboardButton("✅ Yozish mumkin bo'lganlarni tanlash", callback_data="gscan:select:writable")])
         nav = []
         if page > 0:
@@ -3532,8 +3610,16 @@ async def _build_group_scan_message(uid: int):
         if nav:
             rows.append(nav)
         rows.append([
-            InlineKeyboardButton("✅ Tanlanganlarni tasdiqlash", callback_data="gscan:confirm"),
-            InlineKeyboardButton("❌ Bekor", callback_data="gscan:cancel"),
+            InlineKeyboardButton(
+                "✅ Tanlanganlarni tasdiqlash",
+                callback_data="gscan:confirm",
+                style="success",
+            ),
+            InlineKeyboardButton(
+                "❌ Bekor",
+                callback_data="gscan:cancel",
+                style="danger",
+            ),
         ])
     else:
         rows.append([InlineKeyboardButton("❌ Yopish", callback_data="gscan:cancel")])
