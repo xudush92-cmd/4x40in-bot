@@ -160,6 +160,38 @@ async def init_db() -> None:
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_message_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                send_time TEXT NOT NULL DEFAULT '10:00',
+                active_text TEXT NOT NULL,
+                expired_text TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "INSERT OR IGNORE INTO daily_message_config "
+            "(id, enabled, send_time, active_text, expired_text) VALUES (1, 0, '10:00', ?, ?)",
+            (
+                "👥 Do'stlaringizni referal havolangiz orqali taklif qiling!\n\n"
+                "🎁 Admin faol referal uchun qo'shimcha tarif kunlari bilan rag'batlantirishi mumkin.\n\n"
+                "🔗 Shaxsiy havolangiz: {referral_link}",
+                "⏰ Tarifingiz muddati tugadi.\n\n"
+                "Botni qayta faollashtirish uchun admin bilan bog'laning: {admin_phone}",
+            ),
+        )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_message_deliveries (
+                uid INTEGER NOT NULL,
+                segment TEXT NOT NULL CHECK (segment IN ('active', 'expired')),
+                delivery_date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'attempted',
+                detail TEXT DEFAULT '',
+                attempted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (uid, delivery_date)
+            )
+        """)
+
         # Indekslar — tezroq query
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chats_uid ON chats(uid)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_posts_uid ON posts(uid)")
@@ -493,6 +525,110 @@ async def get_broadcast_targets(segment: str, exclude_uid: int) -> list[int]:
             (exclude_uid,),
         ) as cur:
             return [int(row[0]) for row in await cur.fetchall()]
+
+
+_DAILY_MESSAGE_TEXT_COLUMNS = {
+    "active": "active_text",
+    "expired": "expired_text",
+}
+
+
+async def get_daily_message_config() -> dict:
+    db = await _get_conn()
+    async with _op_lock:
+        async with db.execute(
+            "SELECT enabled, send_time, active_text, expired_text "
+            "FROM daily_message_config WHERE id=1"
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else {}
+
+
+async def set_daily_messages_enabled(enabled: bool) -> None:
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute(
+            "UPDATE daily_message_config SET enabled=? WHERE id=1",
+            (int(bool(enabled)),),
+        )
+        await db.commit()
+
+
+async def set_daily_message_text(segment: str, text: str) -> None:
+    column = _DAILY_MESSAGE_TEXT_COLUMNS.get(segment)
+    if column is None:
+        raise ValueError("Noma'lum kunlik xabar turi")
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute(
+            f"UPDATE daily_message_config SET {column}=? WHERE id=1", (text,)
+        )
+        await db.commit()
+
+
+async def get_daily_message_targets(
+    segment: str, exclude_uid: int, delivery_date: str | None = None
+) -> list[int]:
+    """Kunlik xabar auditoriyasi: faqat muddati bor faol yoki muddati o'tgan tariflar."""
+    clauses = {
+        "active": (
+            "uid != ? AND is_admin=1 AND tariff_expires_at IS NOT NULL "
+            "AND datetime(tariff_expires_at) >= datetime('now') "
+            "AND (COALESCE(suspended, 0)=0 OR "
+            "(suspended=1 AND suspended_until IS NOT NULL "
+            "AND datetime(suspended_until) <= datetime('now')))"
+        ),
+        "expired": (
+            "uid != ? AND is_admin=1 AND tariff_expires_at IS NOT NULL "
+            "AND datetime(tariff_expires_at) < datetime('now')"
+        ),
+    }
+    if segment not in clauses:
+        raise ValueError("Noma'lum kunlik xabar auditoriyasi")
+    db = await _get_conn()
+    where = clauses[segment]
+    params: tuple = (exclude_uid,)
+    if delivery_date is not None:
+        where += (
+            " AND NOT EXISTS (SELECT 1 FROM daily_message_deliveries d "
+            "WHERE d.uid=users.uid AND d.delivery_date=?)"
+        )
+        params += (delivery_date,)
+    async with _op_lock:
+        async with db.execute(
+            "SELECT uid FROM users WHERE " + where + " ORDER BY uid", params
+        ) as cur:
+            return [int(row[0]) for row in await cur.fetchall()]
+
+
+async def claim_daily_message_delivery(uid: int, segment: str, delivery_date: str) -> bool:
+    """Bir userga shu segmentdan shu kuni yuborish urinishini bir marta oladi."""
+    if segment not in _DAILY_MESSAGE_TEXT_COLUMNS:
+        raise ValueError("Noma'lum kunlik xabar turi")
+    db = await _get_conn()
+    async with _op_lock:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO daily_message_deliveries "
+            "(uid, segment, delivery_date, status) VALUES (?, ?, ?, 'attempted')",
+            (uid, segment, delivery_date),
+        )
+        await db.commit()
+        return cur.rowcount == 1
+
+
+async def finish_daily_message_delivery(
+    uid: int, segment: str, delivery_date: str, status: str, detail: str = ""
+) -> None:
+    if status not in {"sent", "failed"}:
+        raise ValueError("Kunlik xabar holati noto'g'ri")
+    db = await _get_conn()
+    async with _op_lock:
+        await db.execute(
+            "UPDATE daily_message_deliveries SET status=?, detail=? "
+            "WHERE uid=? AND segment=? AND delivery_date=?",
+            (status, detail[:500], uid, segment, delivery_date),
+        )
+        await db.commit()
 
 
 async def record_admin_action(

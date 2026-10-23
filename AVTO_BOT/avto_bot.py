@@ -34,6 +34,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -158,6 +159,8 @@ MAX_ADMIN_TERM_DAYS = 3650
 MAX_ADMIN_MESSAGE_LENGTH = 3500
 MAX_CHAT_BATCH_SIZE = 50
 SUSPENSION_CHECK_INTERVAL_S = 60
+DAILY_MESSAGE_CHECK_INTERVAL_S = 60
+DAILY_MESSAGE_TIMEZONE = ZoneInfo("Asia/Tashkent")
 
 ADMIN_CONTACT_PHONE = "+998938670592"
 # Referal link uchun bot username (postlarga qo'shilmaydi, faqat referal linkda).
@@ -329,7 +332,6 @@ application: Application | None = None
 client_pool: ClientPool | None = None
 worker_manager: WorkerManager | None = None
 health_server: HealthServer | None = None
-broadcast_task: asyncio.Task | None = None
 rate_limiter: RateLimiter = RateLimiter()
 
 
@@ -1110,7 +1112,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # CALLBACK
 # ─────────────────────────────────────────────────────────────────────────
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global broadcast_task
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
@@ -1526,6 +1527,96 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text(text, reply_markup=markup)
         return
 
+    if data == "adm:daily":
+        if not is_super(uid):
+            return
+        user_states.pop(uid, None)
+        text, markup = await _build_daily_message_settings()
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data in {"adm:daily:start", "adm:daily:stop"}:
+        if not is_super(uid):
+            return
+        enabled = data == "adm:daily:start"
+        await db.set_daily_messages_enabled(enabled)
+        await db.record_admin_action(
+            uid, None, "daily_messages_started" if enabled else "daily_messages_stopped",
+            "scheduled messages enabled" if enabled else "scheduled messages paused",
+        )
+        text, markup = await _build_daily_message_settings()
+        await q.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data == "adm:daily:save":
+        if not is_super(uid):
+            return
+        state = user_states.get(uid, {})
+        if state.get("step") != "admin_daily_message_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
+            user_states.pop(uid, None)
+            await q.edit_message_text("⚠️ Saqlash holati topilmadi yoki vaqti o'tdi. Qaytadan boshlang.")
+            return
+        segment = state.get("segment")
+        message_text = state.get("text", "")
+        if segment not in {"active", "expired"} or not message_text:
+            user_states.pop(uid, None)
+            await q.edit_message_text("❌ Xabar ma'lumoti noto'g'ri. Qaytadan kiriting.")
+            return
+        await db.set_daily_message_text(segment, message_text)
+        await db.record_admin_action(
+            uid, None, "daily_message_updated", f"segment={segment}; chars={len(message_text)}"
+        )
+        user_states.pop(uid, None)
+        text, markup = await _build_daily_message_settings()
+        await q.edit_message_text("✅ Kunlik xabar saqlandi.\n\n" + text, reply_markup=markup)
+        return
+
+    if data.startswith("adm:daily:edit:"):
+        if not is_super(uid):
+            return
+        segment = data.rsplit(":", 1)[1]
+        if segment == "cancel":
+            user_states.pop(uid, None)
+            text, markup = await _build_daily_message_settings()
+            await q.edit_message_text(text, reply_markup=markup)
+            return
+        if segment not in {"active", "expired"}:
+            return
+        config = await db.get_daily_message_config()
+        current_text = config.get(f"{segment}_text", "")
+        label = "faol tarif" if segment == "active" else "muddati tugagan"
+        user_states[uid] = {
+            "step": f"admin_daily_message_{segment}",
+            "segment": segment,
+            "ts": time.time(),
+        }
+        hint = (
+            "\n\nFaol xabarda {referral_link} yozing; yozilmasa shaxsiy havola avtomatik qo'shiladi."
+            if segment == "active"
+            else "\n\nAdmin telefoni uchun {admin_phone} yozishingiz mumkin."
+        )
+        await q.edit_message_text(
+            f"✏️ {label} foydalanuvchilar uchun kunlik matnni yuboring "
+            f"({MAX_ADMIN_MESSAGE_LENGTH} belgigacha).\n"
+            f"Hozirgi matn:\n\n{current_text}{hint}\n\n"
+            "Bekor qilish: /cancel",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Bekor", callback_data="adm:daily:edit:cancel")]
+            ]),
+        )
+        return
+
+    # Oldingi bir martalik broadcast menyusi yangilanishdan keyin yaroqsiz.
+    if data == "adm:broadcast" or data.startswith("adm:broadcast:"):
+        if is_super(uid):
+            await q.edit_message_text(
+                "📅 Bir martalik umumiy xabar bo'limi kunlik xabarlar bilan almashtirildi.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📅 Kunlik xabarlar", callback_data="adm:daily")]
+                ]),
+            )
+        return
+
     if data in ("adm:users", "adm:tariff"):
         if not is_super(uid):
             return
@@ -1895,76 +1986,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await q.edit_message_text(result)
         return
 
-    if data == "adm:broadcast":
-        if not is_super(uid):
-            return
-        rows = [
-            [InlineKeyboardButton("📢 Barcha bot foydalanuvchilari", callback_data="adm:broadcast:segment:all")],
-            [InlineKeyboardButton("✅ Faol tarif", callback_data="adm:broadcast:segment:active")],
-            [InlineKeyboardButton("⌛ Muddati tugagan", callback_data="adm:broadcast:segment:expired")],
-            [InlineKeyboardButton("⏸ To'xtatilgan", callback_data="adm:broadcast:segment:suspended")],
-            [InlineKeyboardButton("⏳ Tasdiq kutayotgan", callback_data="adm:broadcast:segment:pending")],
-        ]
-        await q.edit_message_text("📢 Xabar yuboriladigan auditoriyani tanlang:", reply_markup=InlineKeyboardMarkup(rows))
-        return
-
-    if data.startswith("adm:broadcast:segment:"):
-        if not is_super(uid):
-            return
-        segment = data.rsplit(":", 1)[1]
-        if segment not in {"all", "active", "expired", "suspended", "pending"}:
-            return
-        targets = await db.get_broadcast_targets(segment, exclude_uid=SUPER_ADMIN)
-        user_states[uid] = {
-            "step": "admin_broadcast_text",
-            "segment": segment,
-            "target_count": len(targets),
-            "ts": time.time(),
-        }
-        await q.edit_message_text(
-            f"📢 Tanlangan auditoriya: {len(targets)} ta foydalanuvchi.\n"
-            f"Yuboriladigan matnni kiriting ({MAX_ADMIN_MESSAGE_LENGTH} belgigacha).\n"
-            "Bekor qilish: /cancel"
-        )
-        return
-
-    if data == "adm:broadcast:cancel":
-        if not is_super(uid):
-            return
-        user_states.pop(uid, None)
-        await q.edit_message_text("❌ Umumiy xabar bekor qilindi.")
-        return
-
-    if data == "adm:broadcast:send":
-        if not is_super(uid):
-            return
-        state = user_states.get(uid, {})
-        if state.get("step") != "admin_broadcast_confirm" or time.time() - state.get("ts", 0) > ADMIN_ACTION_TIMEOUT_S:
-            user_states.pop(uid, None)
-            await q.edit_message_text("⚠️ Xabar yuborish holati topilmadi yoki vaqti o'tdi. Qaytadan boshlang.")
-            return
-        if broadcast_task and not broadcast_task.done():
-            await q.edit_message_text("⏳ Boshqa umumiy xabar hozir yuborilmoqda. Yakunlanishini kuting.")
-            return
-        segment = state["segment"]
-        text = state["text"]
-        targets = await db.get_broadcast_targets(segment, exclude_uid=SUPER_ADMIN)
-        user_states.pop(uid, None)
-        if not targets:
-            await q.edit_message_text("ℹ️ Bu auditoriyada yuboruvchi topilmadi.")
-            return
-        if q.message is None:
-            await q.answer("Xabar yuborish oynasi topilmadi. Qaytadan boshlang.", show_alert=True)
-            return
-        chat_id = q.message.chat_id
-        message_id = q.message.message_id
-        await q.edit_message_text(f"⏳ Xabar yuborish navbatga olindi: 0/{len(targets)}")
-        broadcast_task = asyncio.create_task(
-            _run_broadcast(uid, segment, text, targets, chat_id, message_id),
-            name="admin-broadcast",
-        )
-        return
-
     if data == "adm:remove":
         if not is_super(uid):
             return
@@ -2002,7 +2023,7 @@ def admin_panel_kb(offset: int = 0, total: int = 0) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="adm:users"),
-            InlineKeyboardButton("📢 Hammaga xabar", callback_data="adm:broadcast"),
+            InlineKeyboardButton("📅 Kunlik xabarlar", callback_data="adm:daily"),
         ],
         [
             InlineKeyboardButton("🎫 Tarif / muddat", callback_data="adm:tariff"),
@@ -2022,6 +2043,45 @@ def admin_panel_kb(offset: int = 0, total: int = 0) -> InlineKeyboardMarkup:
         rows.append(nav)
     rows.append([InlineKeyboardButton("🔄 Yangilash", callback_data=f"adm:list:page:{offset}")])
     return InlineKeyboardMarkup(rows)
+
+
+def _daily_template_preview(value: str, limit: int = 500) -> str:
+    preview = (value or "").strip()
+    if len(preview) > limit:
+        preview = preview[:limit - 1].rstrip() + "…"
+    return preview or "(xabar kiritilmagan)"
+
+
+async def _build_daily_message_settings():
+    config = await db.get_daily_message_config()
+    enabled = bool(config.get("enabled"))
+    status = "🟢 Yoqilgan" if enabled else "⏸ To'xtatilgan"
+    active_preview = _daily_template_preview(config.get("active_text", ""))
+    expired_preview = _daily_template_preview(config.get("expired_text", ""))
+    text = (
+        "📅 KUNLIK XABARLAR\n\n"
+        f"Holat: {status}\n"
+        f"Yuborish vaqti: har kuni {config.get('send_time', '10:00')} (Toshkent vaqti).\n\n"
+        "✅ Muddati tugamagan, tarif muddati belgilangan foydalanuvchilar:\n"
+        f"{active_preview}\n\n"
+        "⌛ Muddati tugagan foydalanuvchilar:\n"
+        f"{expired_preview}\n\n"
+        "Faol xabardagi {referral_link} foydalanuvchining shaxsiy havolasiga almashtiriladi. "
+        "Agar joy qoldirilmasa, havola xabar oxiriga qo'shiladi.\n"
+        "Muddati tugagan xabarda {admin_phone} admin telefoniga almashtiriladi."
+    )
+    toggle_label = "⏸ Kunlik xabarni to'xtatish" if enabled else "▶️ Kunlik xabarni ishga tushirish"
+    toggle_action = "stop" if enabled else "start"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Faol tarif xabarini o'zgartirish", callback_data="adm:daily:edit:active")],
+        [InlineKeyboardButton("✏️ Muddati tugagan xabarni o'zgartirish", callback_data="adm:daily:edit:expired")],
+        [InlineKeyboardButton(toggle_label, callback_data=f"adm:daily:{toggle_action}")],
+        [
+            InlineKeyboardButton("🔄 Yangilash", callback_data="adm:daily"),
+            InlineKeyboardButton("⬅️ Adminlar", callback_data="adm:list"),
+        ],
+    ])
+    return text, keyboard
 
 
 async def _build_user_list(offset: int = 0):
@@ -2192,77 +2252,6 @@ async def _build_user_card(target: int):
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-async def _run_broadcast(
-    admin_uid: int,
-    segment: str,
-    text: str,
-    targets: list[int],
-    progress_chat_id: int,
-    progress_message_id: int,
-) -> None:
-    """Deliver a confirmed broadcast in the background with rate-limit handling."""
-    sent = 0
-    failed = 0
-    try:
-        for index, target in enumerate(targets, 1):
-            try:
-                await application.bot.send_message(target, text)
-                sent += 1
-            except RetryAfter as e:
-                retry_after = getattr(e, "retry_after", 1)
-                delay = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after)
-                await asyncio.sleep(max(1.0, delay))
-                try:
-                    await application.bot.send_message(target, text)
-                    sent += 1
-                except Exception as retry_error:
-                    failed += 1
-                    log(f"⚠️ Broadcast retry yetmadi {target}: {type(retry_error).__name__}", "warning")
-            except Exception as e:
-                failed += 1
-                log(f"⚠️ Broadcast yetmadi {target}: {type(e).__name__}", "warning")
-
-            if index % 25 == 0 or index == len(targets):
-                with contextlib.suppress(Exception):
-                    await application.bot.edit_message_text(
-                        chat_id=progress_chat_id,
-                        message_id=progress_message_id,
-                        text=(
-                            f"⏳ Xabar yuborilmoqda: {index}/{len(targets)}\n"
-                            f"✅ {sent} | ❌ {failed}"
-                        ),
-                    )
-            await asyncio.sleep(0.05)
-
-        with contextlib.suppress(Exception):
-            await db.record_admin_action(
-                admin_uid, None, "broadcast_sent",
-                f"segment={segment}; total={len(targets)}; sent={sent}; failed={failed}; chars={len(text)}",
-            )
-        log(f"📢 Broadcast {admin_uid}: {segment}, total={len(targets)}, sent={sent}, failed={failed}")
-        with contextlib.suppress(Exception):
-            await application.bot.edit_message_text(
-                chat_id=progress_chat_id,
-                message_id=progress_message_id,
-                text=(
-                    f"✅ Umumiy xabar yakunlandi.\n"
-                    f"👥 Auditoriya: {len(targets)}\n"
-                    f"✅ Yuborildi: {sent}\n❌ Yetkazilmadi: {failed}"
-                ),
-            )
-    except asyncio.CancelledError:
-        log(f"🛑 Broadcast bekor qilindi: admin={admin_uid}, sent={sent}/{len(targets)}", "warning")
-        raise
-    except Exception as e:
-        log(f"💥 Broadcast kutilmagan xato: {type(e).__name__}: {e}", "error")
-        with contextlib.suppress(Exception):
-            await application.bot.edit_message_text(
-                chat_id=progress_chat_id,
-                message_id=progress_message_id,
-                text=f"❌ Xabar tarqatishda xato. Hozirgacha yuborildi: {sent}/{len(targets)}.",
-            )
-
-
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cancel the current text-entry flow."""
     uid = update.effective_user.id
@@ -2366,7 +2355,7 @@ async def _handle_admin_input(update: Update, state: dict) -> None:
         )
         return
 
-    if step in {"admin_dm_text", "admin_broadcast_text"}:
+    if step in {"admin_dm_text", "admin_daily_message_active", "admin_daily_message_expired"}:
         if msg.photo or not msg.text:
             await msg.reply_text("❌ Hozircha faqat matnli xabar yuborish mumkin.")
             return
@@ -2393,19 +2382,19 @@ async def _handle_admin_input(update: Update, state: dict) -> None:
                 ]
             ])
         else:
-            state["step"] = "admin_broadcast_confirm"
+            segment = "active" if step.endswith("active") else "expired"
+            state.update({
+                "step": "admin_daily_message_confirm",
+                "segment": segment,
+                "ts": time.time(),
+            })
             user_states[uid] = state
-            current_targets = await db.get_broadcast_targets(
-                state["segment"], exclude_uid=SUPER_ADMIN
-            )
-            preview = (
-                f"📢 Umumiy xabar — {len(current_targets)} ta foydalanuvchiga yuboriladi:\n\n"
-                f"{message_text}"
-            )
+            label = "faol tarif" if segment == "active" else "muddati tugagan"
+            preview = f"📝 Yangi {label} kunlik xabari saqlansinmi?\n\n{message_text}"
             markup = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Hammaga yuborish", callback_data="adm:broadcast:send"),
-                    InlineKeyboardButton("❌ Bekor", callback_data="adm:broadcast:cancel"),
+                    InlineKeyboardButton("✅ Saqlash", callback_data="adm:daily:save"),
+                    InlineKeyboardButton("❌ Bekor", callback_data="adm:daily:edit:cancel"),
                 ]
             ])
         await msg.reply_text(preview, reply_markup=markup)
@@ -2413,7 +2402,7 @@ async def _handle_admin_input(update: Update, state: dict) -> None:
 
     if step in {
         "admin_suspend_confirm", "admin_resume_confirm", "admin_term_confirm",
-        "admin_dm_confirm", "admin_broadcast_confirm",
+        "admin_dm_confirm", "admin_daily_message_confirm",
     }:
         await msg.reply_text("Tasdiqlash yoki bekor qilish uchun xabardagi tugmalardan foydalaning. Bekor qilish: /cancel")
         return
@@ -3434,13 +3423,10 @@ async def _check_tariff_expiry() -> int:
         await db.set_running(uid, False)
         stopped += 1
 
-        # Foydalanuvchiga xabar — kutish rejimiga o'tdi (oxirgi/to'xtash xabari, 1 marta)
+        # Yoqilgan bo'lsa, admin tahrirlagan kunlik expired xabarini yuboramiz.
+        # Kunlik delivery kaliti hourly janitor va rejalashtiruvchi orasida dublikatni to'xtatadi.
         with contextlib.suppress(Exception):
-            await application.bot.send_message(
-                uid,
-                _waiting_mode_text(),
-                reply_markup=await menu_for(uid),
-            )
+            await _send_expired_user_message(uid)
 
         # Adminga xabar
         with contextlib.suppress(Exception):
@@ -3512,6 +3498,161 @@ async def tariff_expiry_loop(stop: asyncio.Event) -> None:
     except asyncio.CancelledError:
         pass
     log("⏰ Tariff expiry janitor to'xtadi")
+
+
+def _render_daily_message(template: str, uid: int, segment: str) -> str:
+    message = (template or "").replace("{admin_phone}", ADMIN_CONTACT_PHONE)
+    if segment == "active":
+        link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}"
+        if "{referral_link}" in message:
+            message = message.replace("{referral_link}", link)
+        else:
+            message = message.rstrip() + f"\n\n🔗 Shaxsiy referal havolangiz:\n{link}"
+    return message
+
+
+async def _send_expired_user_message(uid: int) -> None:
+    """Avoid double-notifying a user on expiry when daily messages are enabled."""
+    if application is None:
+        return
+    config = await db.get_daily_message_config()
+    if not config or not bool(config.get("enabled")):
+        await application.bot.send_message(
+            uid,
+            _waiting_mode_text(),
+            reply_markup=await menu_for(uid),
+        )
+        return
+
+    delivery_date = datetime.now(DAILY_MESSAGE_TIMEZONE).date().isoformat()
+    if not await db.claim_daily_message_delivery(uid, "expired", delivery_date):
+        return
+    status = "failed"
+    detail = ""
+    try:
+        await application.bot.send_message(
+            uid, _render_daily_message(config.get("expired_text", ""), uid, "expired")
+        )
+        status = "sent"
+    except Exception as e:
+        detail = type(e).__name__
+        log(f"⚠️ Tarif tugashi xabari yetmadi {uid}: {detail}", "warning")
+    await db.finish_daily_message_delivery(uid, "expired", delivery_date, status, detail)
+
+
+async def _send_daily_messages_if_due(
+    now: datetime | None = None,
+    stop: asyncio.Event | None = None,
+) -> dict[str, int]:
+    """Send each enabled daily template at most once per user and local date."""
+    counts = {"sent": 0, "failed": 0}
+    config = await db.get_daily_message_config()
+    if not config or not bool(config.get("enabled")) or application is None:
+        return counts
+
+    local_now = now or datetime.now(DAILY_MESSAGE_TIMEZONE)
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=DAILY_MESSAGE_TIMEZONE)
+    else:
+        local_now = local_now.astimezone(DAILY_MESSAGE_TIMEZONE)
+    try:
+        send_time = datetime.strptime(config.get("send_time") or "10:00", "%H:%M").time()
+    except ValueError:
+        send_time = datetime.strptime("10:00", "%H:%M").time()
+    if local_now.time().replace(tzinfo=None) < send_time:
+        return counts
+
+    delivery_date = local_now.date().isoformat()
+    for segment in ("active", "expired"):
+        if stop and stop.is_set():
+            break
+        template = (config.get(f"{segment}_text") or "").strip()
+        if not template:
+            continue
+        targets = await db.get_daily_message_targets(
+            segment, exclude_uid=SUPER_ADMIN, delivery_date=delivery_date
+        )
+        for target in targets:
+            if stop and stop.is_set():
+                return counts
+            # Re-read the switch while sending so a pause takes effect promptly.
+            current = await db.get_daily_message_config()
+            if not current or not bool(current.get("enabled")):
+                log("⏸ Kunlik xabar yuborish admin tomonidan to'xtatildi")
+                return counts
+            if not await db.claim_daily_message_delivery(target, segment, delivery_date):
+                continue
+
+            status = "failed"
+            detail = ""
+            try:
+                try:
+                    await application.bot.send_message(
+                        target, _render_daily_message(template, target, segment)
+                    )
+                except RetryAfter as e:
+                    retry_after = getattr(e, "retry_after", 1)
+                    delay = (
+                        retry_after.total_seconds()
+                        if hasattr(retry_after, "total_seconds")
+                        else float(retry_after)
+                    )
+                    if stop and await _sleep_or_stop(stop, max(1.0, delay)):
+                        detail = "stopped during Telegram rate limit wait"
+                    else:
+                        latest = await db.get_daily_message_config()
+                        if latest and bool(latest.get("enabled")):
+                            await application.bot.send_message(
+                                target, _render_daily_message(template, target, segment)
+                            )
+                        else:
+                            detail = "paused during Telegram rate limit wait"
+                if not detail:
+                    status = "sent"
+                    counts["sent"] += 1
+            except Exception as e:
+                detail = type(e).__name__
+                counts["failed"] += 1
+                log(
+                    f"⚠️ Kunlik xabar yetmadi ({segment}) {target}: {detail}",
+                    "warning",
+                )
+            await db.finish_daily_message_delivery(
+                target, segment, delivery_date, status, detail
+            )
+            if stop and stop.is_set():
+                return counts
+            await asyncio.sleep(0.05)
+
+    if counts["sent"] or counts["failed"]:
+        log(
+            f"📅 Kunlik xabar yakunlandi ({delivery_date}): "
+            f"✅ {counts['sent']} | ❌ {counts['failed']}"
+        )
+    return counts
+
+
+async def daily_message_loop(stop: asyncio.Event) -> None:
+    """Check once per minute; delivery records make daily sends restart-safe."""
+    log("📅 Kunlik xabar rejalashtiruvchisi boshlandi (har kuni 10:00, Toshkent)")
+    try:
+        while not stop.is_set():
+            try:
+                await _send_daily_messages_if_due(stop=stop)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log(f"💥 Kunlik xabar xatosi: {type(e).__name__}: {e}", "error")
+            try:
+                await asyncio.wait_for(
+                    stop.wait(), timeout=DAILY_MESSAGE_CHECK_INTERVAL_S
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+    except asyncio.CancelledError:
+        pass
+    log("📅 Kunlik xabar rejalashtiruvchisi to'xtadi")
 
 
 async def suspension_expiry_loop(stop: asyncio.Event) -> None:
@@ -3658,6 +3799,10 @@ async def main() -> None:
     suspension_task = asyncio.create_task(
         suspension_expiry_loop(suspension_stop), name="suspension-expiry"
     )
+    daily_message_stop = asyncio.Event()
+    daily_message_task = asyncio.create_task(
+        daily_message_loop(daily_message_stop), name="daily-message-scheduler"
+    )
 
     # 9. Cheksiz turish (yoki shutdown signali)
     try:
@@ -3670,16 +3815,15 @@ async def main() -> None:
         janitor_stop.set()
         tariff_stop.set()
         suspension_stop.set()
+        daily_message_stop.set()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(janitor_task, timeout=5)
         with contextlib.suppress(Exception):
             await asyncio.wait_for(tariff_task, timeout=5)
         with contextlib.suppress(Exception):
             await asyncio.wait_for(suspension_task, timeout=5)
-        if broadcast_task and not broadcast_task.done():
-            broadcast_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await asyncio.wait_for(broadcast_task, timeout=5)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(daily_message_task, timeout=5)
         with contextlib.suppress(Exception):
             await worker_manager.stop_all()
         with contextlib.suppress(Exception):
