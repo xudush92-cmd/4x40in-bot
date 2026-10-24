@@ -17,11 +17,9 @@ def init_db() -> None:
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             text TEXT UNIQUE)""")
         _migrate_old_sets(conn)
-        # Guruhlar jadvali
-        conn.execute("""CREATE TABLE IF NOT EXISTS groups (
-                            chat_id INTEGER PRIMARY KEY,
-                            title TEXT,
-                            is_active INTEGER DEFAULT 0)""")
+        # Eski "groups" jadvali ishlatilmaydi (guruhlar user_groups da,
+        # har biri egasi bilan). Qolib ketgan bo'lsa — olib tashlaymiz.
+        conn.execute("DROP TABLE IF EXISTS groups")
         # Sozlamalar jadvali
         conn.execute("""CREATE TABLE IF NOT EXISTS settings (
                             key TEXT PRIMARY KEY,
