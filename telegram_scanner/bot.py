@@ -242,9 +242,24 @@ def menu_for(user_id: int):
     return user_menu_for(user_id)
 
 
-def user_connected(user_id: int) -> bool:
+# Sessiya holatlari: Telegram sessiyani bekor qilgan bo'lsa qayta login kerak
+_BROKEN_SESSION_STATES = {"invalid", "mismatch"}
+
+
+def session_broken(user_id: int) -> bool:
+    """Sessiya bor, lekin Telegram uni bekor qilgan (qayta ulash kerak)."""
     row = get_user_full(user_id)
-    return bool(row and row[8] and not row[10])
+    if not row:
+        return False
+    return bool(row[8]) and (row[11] or "").lower() in _BROKEN_SESSION_STATES
+
+
+def user_connected(user_id: int) -> bool:
+    """Akkaunt haqiqatan ishlayaptimi (sessiya bor VA bekor qilinmagan)."""
+    row = get_user_full(user_id)
+    if not row or not row[8] or row[10]:
+        return False
+    return (row[11] or "").lower() not in _BROKEN_SESSION_STATES
 
 
 def user_menu_for(user_id: int) -> ReplyKeyboardMarkup:
@@ -264,12 +279,25 @@ def account_status_text(user_id: int) -> str:
     (_uid, _name, _uname, blocked, expires, _created, full_name,
      phone, session_enc, pending_enc, awaiting, status, _warn, last_found,
      _scanner_on) = row
+    status_code = (status or "none").lower()
     if awaiting:
         conn = "⏳ Login qilingan — admin tasdig'i kutilmoqda"
-    elif session_enc:
-        conn = "✅ Telegram akkaunt ulangan"
-    else:
+    elif not session_enc:
         conn = "❌ Telegram akkaunt ulanmagan"
+    elif status_code == "invalid":
+        # Telegram sessiyani bekor qilgan (boshqa qurilmadan chiqarilgan,
+        # parol o'zgargan yoki akkaunt cheklangan) — skaner ishlamaydi.
+        conn = (
+            "❌ bekor qilingan — Telegram bu sessiyani uzib qo'ygan, "
+            "shuning uchun xabar kelmaydi. Pastdagi 🔑 tugma bilan "
+            "qaytadan ulang"
+        )
+    elif status_code == "mismatch":
+        conn = "⚠️ boshqa akkauntga tegishli — qayta ulash kerak"
+    elif status_code == "temporary":
+        conn = "⏳ vaqtincha uzilgan — birozdan keyin o'zi tiklanadi"
+    else:
+        conn = "✅ Telegram akkaunt ulangan"
     phone_text = phone or "—"
     if phone and len(phone) > 6:
         phone_text = phone[:4] + " *** " + phone[-2:]
@@ -281,12 +309,16 @@ def account_status_text(user_id: int) -> str:
         "📱 <b>Akkaunt holati</b>\n\n"
         f"👤 Ism: <b>{html.escape(full_name or _name or '—')}</b>\n"
         f"📞 Telefon: <b>{html.escape(phone_text)}</b>\n"
-        f"🔐 Sessiya: {conn} ({html.escape(status or 'none')})\n"
+        f"🔐 Sessiya: {conn}\n"
         f"📡 Skaner: {'▶️ yoniq' if _scanner_on else '⏸ oʻchirilgan'}\n"
         f"🔔 Xabar sharti: kamida <b>{get_user_match_count(_uid)}</b> ta kalit\n\n"
-        + subscription_text(get_user(user_id))
-        + f"\n🕐 Oxirgi topilgan xabar: {last}\n\n"
-        "Tarif masalasi admin bilan og'zaki hal qilinadi."
+        + (
+            "💳 Tarif: 👑 admin — tarif talab qilinmaydi"
+            if is_admin(user_id)
+            else subscription_text(get_user(user_id))
+            + "\n\nTarif masalasi admin bilan og'zaki hal qilinadi."
+        )
+        + f"\n🕐 Oxirgi topilgan xabar: {last}"
     )
 
 
@@ -768,6 +800,7 @@ async def account_status(message: types.Message, state: FSMContext):
                 callback_data=f"ascan:{1 if on else 0}",
             )])
         else:
+            # Sessiya bekor qilingan bo'lsa ham qayta ulash tugmasi shu yerda.
             rows.append([InlineKeyboardButton(
                 text="🔑 Akkauntni ulash", callback_data="sess_in")])
         await message.answer(
@@ -776,7 +809,12 @@ async def account_status(message: types.Message, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
         )
         return
-    await message.answer(account_status_text(uid), parse_mode="HTML")
+    # Sessiya bekor bo'lsa menyuda 🔑 Login qaytadi — odam qayta ulanadi.
+    await message.answer(
+        account_status_text(uid),
+        parse_mode="HTML",
+        reply_markup=user_menu_for(uid),
+    )
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("ascan:"))
@@ -1015,6 +1053,30 @@ _STATUS_ICON = {"ok": "✅", "fail": "❌", "skip": "⏭", "info": "ℹ️"}
 _ORDINAL = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
 
 
+def _session_block_note(uid: int) -> str | None:
+    """Sessiya tufayli xabar kelmayotgan bo'lsa — ogohlantirish matni."""
+    row = get_user_full(uid)
+    if not row:
+        return (
+            "❌ <b>Akkaunt ulanmagan</b> — guruhlardan xabar umuman "
+            "kelmaydi. 📱 Akkaunt holati → 🔑 Akkauntni ulash."
+        )
+    session_enc, status_code = row[8], (row[11] or "none").lower()
+    if not session_enc:
+        return (
+            "❌ <b>Akkaunt ulanmagan</b> — guruhlardan xabar umuman "
+            "kelmaydi. 📱 Akkaunt holati → 🔑 Akkauntni ulash."
+        )
+    if status_code == "invalid":
+        return (
+            "❌ <b>Sessiya bekor qilingan</b> — Telegram akkauntni uzib "
+            "qo'ygan, skaner ulana olmaydi. 📱 Akkaunt holati → "
+            "🔑 Akkauntni ulash bilan qayta ulang (pastdagi natija faqat "
+            "filtrlar bo'yicha)."
+        )
+    return None
+
+
 def scan_test_report(uid: int, text: str) -> str:
     """Namuna xabarni HAQIQIY skaner zanjiridan o'tkazib, hisobot beradi.
 
@@ -1025,6 +1087,12 @@ def scan_test_report(uid: int, text: str) -> str:
 
     verdict = evaluate(uid, text, check_group=False)
     lines = ["🧪 <b>Skaner testi</b>", ""]
+
+    # Filtrlar "o'tdi" desa ham, sessiya bekor bo'lsa xabar kelmaydi —
+    # buni eng tepada aytmasak, odam testga ishonib qoladi.
+    session_note = _session_block_note(uid)
+    if session_note:
+        lines += [session_note, ""]
     if verdict.ok:
         lines.append("🎯 <b>NATIJA: xabar KELADI</b>")
     else:
@@ -1587,7 +1655,7 @@ async def admin_scan_groups(message: types.Message, state: FSMContext):
     if dialogs is None:
         await message.answer(
             "⚠️ Sessiya hozir onlayn emas. 1 daqiqadan keyin qayta urining "
-            "yoki 🔑 Login dan qayta kiring.",
+            "yoki 📱 Akkaunt holati → 🔑 Akkauntni ulash orqali qayta ulang.",
             reply_markup=main_menu(admin=True),
         )
         return
@@ -2250,7 +2318,8 @@ def scanner_status_text() -> str:
     else:
         session_line = (
             "📡 Faol sessiyalar: <b>0</b> ta — hech kim onlayn emas. "
-            "🔑 Login qiling (yoki server ishga tushganini tekshiring)"
+            "📱 Akkaunt holati → 🔑 Akkauntni ulash (yoki server ishga "
+            "tushganini tekshiring)"
         )
 
     lines = [
