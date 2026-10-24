@@ -152,7 +152,16 @@ def evaluate(
             )
         add("group", OK, "egasiniki, kuzatuvda")
     else:
-        add("group", INFO, "test rejimi — guruh tekshirilmadi")
+        # Test rejimi: aniq guruh noma'lum, LEKIN umuman faol guruh
+        # bo'lmasa hech qanday xabar kelmaydi — buni yashirmaymiz.
+        active_ids = get_owner_active_chat_ids(owner_id)
+        if not active_ids:
+            return finish(
+                "group",
+                "faol guruh yo'q — avval ➕ Guruh qo'shish dan guruh "
+                "qo'shing va u ✅ Kuzatuvda bo'lishi kerak",
+            )
+        add("group", INFO, f"faol guruhlar: {len(active_ids)} ta (test rejimi)")
 
     # 5. Emoji / stiker
     if is_sticker:
