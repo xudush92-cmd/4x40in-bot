@@ -153,6 +153,37 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
             )
 
 
+async def list_user_dialogs(owner_id: int, limit: int = 300):
+    """Akkaunt ko'radigan GURUHLAR ro'yxati: [(chat_id, title), ...].
+
+    Guruh ID sini qo'lda yozishda xato bo'ladi. Bu funksiya sessiya
+    haqiqatan ko'rayotgan guruhlarni aniq ID bilan qaytaradi — egasi
+    ro'yxatdan tanlaydi. Sessiya onlayn bo'lmasa None.
+    """
+    client = _clients.get(owner_id)
+    if client is None or not client.is_connected():
+        return None
+    try:
+        dialogs = await client.get_dialogs(limit=limit)
+    except Exception:
+        logger.warning("Dialoglar xato owner=%s", owner_id, exc_info=True)
+        return None
+    out = []
+    for d in dialogs:
+        entity = d.entity
+        if isinstance(entity, Chat) or (
+            isinstance(entity, Channel) and entity.megagroup
+        ):
+            try:
+                out.append(
+                    (utils.get_peer_id(entity), getattr(entity, "title", "") or "")
+                )
+            except Exception:
+                continue
+    out.sort(key=lambda x: (x[1] or "").lower())
+    return out
+
+
 def _has_sticker(message) -> bool:
     """Telegram xabari stiker ekanini tekshiradi."""
     return bool(message is not None and getattr(message, "sticker", None))
@@ -161,6 +192,14 @@ def _has_sticker(message) -> bool:
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
+        # Shaxsiy yozishmalar skanerlanmaydi. get_peer_id ijobiy bo'lsa —
+        # bu PeerUser (lichka). Ilgari bunday xabarlar ham logga tushib,
+        # "guruh ro'yxatida yo'q" degan chalg'ituvchi yozuv berardi.
+        if getattr(event, "is_private", False):
+            return
+        chat_id = getattr(event, "chat_id", None)
+        if chat_id is None or chat_id > 0:
+            return
         is_sticker = _has_sticker(getattr(event, "message", None))
         if not event.raw_text and not is_sticker:
             return

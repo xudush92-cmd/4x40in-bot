@@ -96,6 +96,7 @@ BTN_STATS = "📊 Statistika"
 BTN_BROADCAST = "📣 Xabar yuborish"
 BTN_STOPWORDS = "🚫 Stop-so'zlar"
 BTN_APPLICATIONS = "📝 Arizalar"
+BTN_SCAN_GROUPS = "🔎 Akkauntdagi guruhlar"
 # Foydalanuvchi tugmalari (boshqaruv tugmalari ularda BO'LMAYDI)
 BTN_LOGIN = "🔑 Login"
 BTN_ACCOUNT = "📱 Akkaunt holati"
@@ -106,7 +107,7 @@ BTN_SCAN_RESUME = "🟢 ▶️ Start"
 MENU_BUTTONS = {
     BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
     BTN_COUNT, BTN_TOGGLE, BTN_TEST, BTN_USERS, BTN_STATS,
-    BTN_BROADCAST, BTN_APPLICATIONS, BTN_STOPWORDS,
+    BTN_BROADCAST, BTN_APPLICATIONS, BTN_STOPWORDS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
@@ -180,6 +181,7 @@ def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
             # Admin ham o'z akkaunti bilan skanerlaydi: guruhlarini
             # o'zi qo'shadi va o'z guruhlaridan xabar oladi.
             [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
+            [KeyboardButton(text=BTN_SCAN_GROUPS)],
             [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
             [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
             [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_LOGIN)],
@@ -230,6 +232,13 @@ def subscription_text(user_row) -> str:
             f"({days} kun qoldi)"
         )
     return "💳 Tarif: ❌ faol emas (muddati tugagan yoki yoqilmagan)"
+
+
+def menu_for(user_id: int):
+    """Rolga mos menyu: admin — boshqaruv, oddiy — foydalanuvchi menyusi."""
+    if is_admin(user_id):
+        return main_menu(admin=True)
+    return user_menu_for(user_id)
 
 
 def user_connected(user_id: int) -> bool:
@@ -390,13 +399,18 @@ async def begin_login(message: types.Message, state: FSMContext, user_id: int | 
     if row and row[10]:
         await message.answer(
             "⏳ Arizangiz admin tasdig'ini kutmoqda.",
-            reply_markup=user_menu_for(uid),
+            reply_markup=menu_for(uid),
         )
         return
     if row and row[8]:
+        # Admin uchun boshqaruv menyusi qaytariladi — aks holda akkaunt
+        # holatini ko'rgan admin oddiy foydalanuvchi menyusiga tushib
+        # qolardi (kalitlar/stop/foydalanuvchilar tugmalari yo'qolardi).
         await message.answer(
-            "✅ Akkauntingiz allaqachon ulangan.",
-            reply_markup=user_menu_for(uid),
+            "✅ Akkauntingiz allaqachon ulangan.\n\n"
+            + account_status_text(uid),
+            parse_mode="HTML",
+            reply_markup=menu_for(uid),
         )
         return
     await login_cleanup(uid)
@@ -405,7 +419,7 @@ async def begin_login(message: types.Message, state: FSMContext, user_id: int | 
         try:
             length = await request_code(uid, row[7])
         except LoginError as e:
-            await message.answer(str(e), reply_markup=user_menu_for(uid))
+            await message.answer(str(e), reply_markup=menu_for(uid))
             return
         if length == 0:
             await _complete_signed_in(message, state, uid)
@@ -1588,6 +1602,90 @@ async def admin_list_groups(message: types.Message, state: FSMContext):
     )
     for row in groups:
         await message.answer(
+            _user_group_text(row),
+            parse_mode="HTML",
+            reply_markup=_user_group_keyboard(row),
+        )
+
+
+# --- Admin: akkauntdagi guruhlarni aniqlash (ID taxmin qilmaslik uchun) ---
+def _dialogs_keyboard(dialogs, added_ids) -> InlineKeyboardMarkup:
+    rows = []
+    for chat_id, title in dialogs[:25]:
+        mark = "✅ " if chat_id in added_ids else "➕ "
+        label = f"{mark}{_short_text(title or chat_id, 30)}"
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"gadd:{chat_id}")
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+@dp.message(AdminFilter(), F.text == BTN_SCAN_GROUPS)
+async def admin_scan_groups(message: types.Message, state: FSMContext):
+    await state.clear()
+    uid = message.from_user.id
+    if not user_connected(uid):
+        await message.answer(
+            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+    try:
+        import scanner_manager
+
+        dialogs = await scanner_manager.list_user_dialogs(uid)
+    except Exception:
+        logger.exception("Dialoglar ro'yxati")
+        dialogs = None
+    if dialogs is None:
+        await message.answer(
+            "⚠️ Sessiya hozir onlayn emas. 1 daqiqadan keyin qayta urining "
+            "yoki 🔑 Login dan qayta kiring.",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+    if not dialogs:
+        await message.answer(
+            "📭 Akkauntingiz hech qanday guruhda a'zo emas.\n"
+            "Avval Telegramda guruhga qo'shiling, keyin qayta urining.",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+    added = {row[3] for row in get_user_groups(uid) if row[3]}
+    await message.answer(
+        f"🔎 <b>Akkauntingizdagi guruhlar — {len(dialogs)} ta</b>\n\n"
+        "Guruh nomini bosing — ro'yxatga qo'shiladi. ✅ — allaqachon qo'shilgan.\n"
+        "Bu ro'yxat sessiya haqiqatan ko'rayotgan guruhlardir.",
+        parse_mode="HTML",
+        reply_markup=_dialogs_keyboard(dialogs, added),
+    )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("gadd:"))
+async def admin_add_dialog_group(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    try:
+        chat_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    ok, err = add_user_group(uid, str(chat_id))
+    if not ok:
+        await callback.answer(err or "Qo'shilmadi", show_alert=True)
+        return
+    # Darhol hal qilamiz — 60 soniya kutmang
+    try:
+        import scanner_manager
+
+        client = scanner_manager._clients.get(uid)
+        if client is not None:
+            await scanner_manager._resolve_owner_groups(uid, client)
+    except Exception:
+        logger.exception("Guruhni darhol hal qilish")
+    row = next((g for g in get_user_groups(uid) if g[3] == chat_id), None)
+    await callback.answer("✅ Qo'shildi")
+    if row:
+        await callback.message.answer(
             _user_group_text(row),
             parse_mode="HTML",
             reply_markup=_user_group_keyboard(row),
