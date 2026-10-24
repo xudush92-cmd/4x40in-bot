@@ -24,24 +24,20 @@ from database import (
     get_client_words,
     get_filter_words_with_id,
     get_stop_words,
-    add_managed_group,
     add_user_group,
     approve_pending_session,
     clear_pending_session,
     clear_session,
     count_user_groups,
-    delete_managed_group,
     delete_phrase,
     delete_user_completely,
     delete_user_group,
-    extend_subscription,
     get_all_phrases_with_id,
     get_all_user_groups,
     get_all_users,
     get_all_users_full,
     get_counter,
     get_keywords,
-    get_managed_groups,
     get_match_count,
     get_setting,
     get_user,
@@ -52,21 +48,16 @@ from database import (
     get_user_groups,
     get_user_match_count,
     get_user_scanner_enabled,
-    increment_counter,
     init_db,
     is_subscription_active,
-    mark_user_group_error,  # noqa: F401
-    requeue_managed_group,
     requeue_user_group,
     set_new_term,
     set_pending_session,
     set_registration_info,
-    set_session_status,
     set_user_match_count,
     set_user_scanner_enabled,
     set_setting,
     set_user_blocked,
-    toggle_managed_group,
     toggle_user_group,
     upsert_user,
 )
@@ -972,6 +963,10 @@ def scan_test_report(uid: int, text: str) -> str:
             f"{html.escape(stage.text, quote=False)}"
         )
 
+    warn = count_warning(verdict.required)
+    if warn:
+        lines += ["", warn]
+
     lines.append("")
     if verdict.ok:
         lines.append(
@@ -1047,7 +1042,10 @@ async def user_scan_test_check(message: types.Message, state: FSMContext):
 # --- Foydalanuvchi: O'Z xabar sharti (har kimniki alohida) ---
 def _user_count_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text=str(n), callback_data=f"usetcnt:{n}")
+        InlineKeyboardButton(
+            text=str(n) + (" ⚠️" if n >= TOO_HIGH_COUNT else ""),
+            callback_data=f"usetcnt:{n}",
+        )
         for n in (1, 2, 3, 4, 5)
     ]
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
@@ -1078,10 +1076,16 @@ async def _apply_user_match_count(message: types.Message, state: FSMContext,
                              reply_markup=user_menu_for(uid))
         return
     set_user_match_count(uid, value)
-    note = ""
+    notes = []
     if total and value > total:
-        note = (f"\n⚠️ Diqqat: hozir kalitlar {total} ta, shartingiz "
-                f"{value} ta — bunday holda xabar kelmasligi mumkin.")
+        notes.append(
+            f"⚠️ Hozir kalitlar {total} ta, shartingiz {value} ta — "
+            "bunday holda xabar kelmasligi mumkin."
+        )
+    warn = count_warning(value)
+    if warn:
+        notes.append(warn)
+    note = ("\n\n" + "\n\n".join(notes)) if notes else ""
     await message.answer(
         f"✅ Sizning shartingiz o'rnatildi: kamida <b>{value}</b> ta "
         f"kalit so'z topilsa xabar keladi.{note}",
@@ -1190,7 +1194,10 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
 # --- Xabar berish sharti (admin belgilaydi / o'zgartiradi) ---
 def _count_keyboard() -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(text=str(n), callback_data=f"setcnt:{n}")
+        InlineKeyboardButton(
+            text=str(n) + (" ⚠️" if n >= TOO_HIGH_COUNT else ""),
+            callback_data=f"setcnt:{n}",
+        )
         for n in (1, 2, 3, 4, 5)
     ]
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
@@ -1220,12 +1227,16 @@ async def _apply_match_count(message: types.Message, state: FSMContext, value: i
         )
         return
     set_setting("match_count", value)
-    note = ""
+    notes = []
     if total and value > total:
-        note = (
-            f"\n⚠️ Diqqat: hozir kalitlar {total} ta, shart {value} ta — "
+        notes.append(
+            f"⚠️ Hozir kalitlar {total} ta, shart {value} ta — "
             "kalit qo'shmasangiz hech qachon xabar kelmaydi."
         )
+    warn = count_warning(value)
+    if warn:
+        notes.append(warn)
+    note = ("\n\n" + "\n\n".join(notes)) if notes else ""
     await message.answer(
         f"✅ Xabar sharti o'rnatildi: kamida <b>{value}</b> ta kalit so'z "
         f"topilsa xabar beriladi.{note}",
@@ -1470,143 +1481,6 @@ def normalize_group_input(text: str) -> str | None:
     if re.fullmatch(r"[A-Za-z0-9_]{5,}", t):
         return "@" + t
     return None
-
-
-@dp.message(AdminFilter(), F.text == BTN_GROUP_ADD)
-async def ask_group(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "Guruhlarni har bir foydalanuvchi <b>o'z akkauntidan</b> qo'shadi. "
-        "Ularni 👥 Foydalanuvchilar bo'limidagi foydalanuvchi "
-        "kartochkasidan kuzatasiz.",
-        parse_mode="HTML",
-        reply_markup=main_menu(admin=True),
-    )
-
-
-@dp.message(AdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
-async def save_group(message: types.Message, state: FSMContext):
-    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
-        await state.clear()
-        return
-
-    value = normalize_group_input(message.text or "")
-    if value is None:
-        await message.answer(
-            "⚠️ Tushunmadim. Guruh manzilini (@username yoki t.me havola) "
-            "yoki raqamli ID (-100...) yuboring."
-        )
-        return  # holatda qolamiz — qayta yozishi mumkin
-
-    await state.clear()
-    if not add_managed_group(value):
-        await message.answer(
-            "ℹ️ Bu guruh allaqachon ro'yxatda bor. 📋 Guruhlarim dan ko'ring.",
-            reply_markup=main_menu(),
-        )
-        return
-    await message.answer(
-        f"✅ Guruh qabul qilindi: <b>{html.escape(value)}</b>\n\n"
-        "⏳ Userbot tekshirmoqda (odatda 30 soniyagacha). "
-        "Tekshiruv natijasi shu yerga xabar bo'lib keladi. "
-        "Holatni 📋 Guruhlarim dan ham ko'rishingiz mumkin.",
-        parse_mode="HTML",
-        reply_markup=main_menu(),
-    )
-
-
-def _group_text(row) -> str:
-    gid, input_value, chat_id, title, is_active, status, last_error = row
-    name = title or input_value
-    if status == "ok":
-        state_line = (
-            "✅ Skanerlanmoqda" if is_active else "⏸ To'xtatilgan (skanerlanmaydi)"
-        )
-    elif status == "pending":
-        state_line = "⏳ Userbot tekshirmoqda..."
-    else:
-        state_line = f"⚠️ Tekshiruvda xato: {last_error or 'nomaʼlum'}"
-    chat_line = f"\n🆔 <code>{chat_id}</code>" if chat_id else ""
-    return f"👥 <b>{html.escape(name or '')}</b>\n{state_line}{chat_line}"
-
-
-def _group_keyboard(row) -> InlineKeyboardMarkup:
-    gid, input_value, chat_id, title, is_active, status, last_error = row
-    rows = []
-    if status == "ok":
-        # O'rnini almashtiradigan tugma: holatga qarab matni o'zgaradi
-        toggle_text = "⏸ To'xtatish" if is_active else "▶️ Yoqish"
-        rows.append(
-            [InlineKeyboardButton(text=toggle_text, callback_data=f"gact:{gid}:{is_active}")]
-        )
-    else:
-        rows.append(
-            [InlineKeyboardButton(text="🔄 Qayta tekshirish", callback_data=f"grecheck:{gid}")]
-        )
-    rows.append(
-        [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"gdel:{gid}")]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _find_group(group_id: int):
-    for row in get_managed_groups():
-        if row[0] == group_id:
-            return row
-    return None
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("gact:"))
-async def toggle_managed_callback(callback: types.CallbackQuery):
-    """⏸/▶️ — tugma o'z o'rnida qarama-qarshi holatga almashadi."""
-    try:
-        _, gid_str, current_str = callback.data.split(":")
-        gid, current = int(gid_str), int(current_str)
-    except ValueError:
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    new_status = 0 if current == 1 else 1
-    toggle_managed_group(gid, new_status)
-    row = _find_group(gid)
-    if row:
-        await callback.message.edit_text(
-            _group_text(row), parse_mode="HTML", reply_markup=_group_keyboard(row)
-        )
-    await callback.answer("⏸ To'xtatildi" if new_status == 0 else "▶️ Yoqildi")
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("grecheck:"))
-async def recheck_group_callback(callback: types.CallbackQuery):
-    try:
-        gid = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    requeue_managed_group(gid)
-    row = _find_group(gid)
-    if row:
-        await callback.message.edit_text(
-            _group_text(row), parse_mode="HTML", reply_markup=_group_keyboard(row)
-        )
-    await callback.answer("🔄 Tekshiruv navbatga qo'yildi (30 soniyagacha)")
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("gdel:"))
-async def delete_group_callback(callback: types.CallbackQuery):
-    try:
-        gid = int(callback.data.split(":", 1)[1])
-    except (ValueError, IndexError):
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    row = _find_group(gid)
-    name = (row[3] or row[1]) if row else gid
-    delete_managed_group(gid)
-    await callback.message.edit_text(
-        f"🗑 Guruh butunlay o'chirildi: <b>{html.escape(str(name))}</b>\n"
-        "Endi bu guruh skanerlanmaydi.",
-        parse_mode="HTML",
-    )
-    await callback.answer("O'chirildi")
 
 
 # --- Admin: foydalanuvchilar boshqaruvi (bitta to'liq kartochka) ---
@@ -2178,6 +2052,23 @@ async def show_stats(message: types.Message, state: FSMContext):
     )
 
 
+# Xabar sharti juda yuqori bo'lsa, mijoz xabarlari deyarli o'tmaydi.
+# Amaliy o'lchov: shart 2 da 12/12, 3 da 10/12, 4 da 1/12 o'tadi.
+TOO_HIGH_COUNT = 4
+
+
+def count_warning(required: int) -> str:
+    """Shart yuqori bo'lsa tushunarli ogohlantirish (aks holda '')."""
+    if required < TOO_HIGH_COUNT:
+        return ""
+    return (
+        f"⚠️ <b>Shart juda yuqori: {required} ta.</b>\n"
+        "Qisqa mijoz xabarlarida odatda 2-3 ta kalit bo'ladi — "
+        f"{required} ta talab qilinsa, ularning deyarli barchasi kelmaydi.\n"
+        "👉 <b>2</b> ni tanlash tavsiya etiladi."
+    )
+
+
 def scanner_status_text() -> str:
     """Diagnostika: nega xabar kelmayotganini bir qarashda ko'rsatadi."""
     groups = get_all_user_groups()
@@ -2186,29 +2077,35 @@ def scanner_status_text() -> str:
     errored = [g for g in groups if g[6] == "error"]
     paused = [g for g in groups if g[6] == "ok" and g[5] != 1]
 
-    last_seen_raw = get_setting("userbot_last_seen")
-    if last_seen_raw:
-        try:
-            ago = max(0, int(time.time()) - int(last_seen_raw))
-            userbot_line = (
-                f"🤖 Userbot: {'✅ ishlayapti' if ago <= 90 else '❌ javob bermayapti'} "
-                f"({ago} soniya oldin signal)"
-            )
-        except ValueError:
-            userbot_line = "🤖 Userbot: ❓ holati noma'lum"
+    # Markaziy userbot yo'q: har bir foydalanuvchi o'z sessiyasi bilan
+    # ishlaydi. Shuning uchun "userbot javob bermayapti" o'rniga
+    # haqiqiy sessiyalar holati ko'rsatiladi.
+    try:
+        import scanner_manager
+
+        online_ids = scanner_manager.online_user_ids()
+    except Exception:
+        online_ids = []
+
+    if online_ids:
+        session_line = (
+            f"📡 Faol sessiyalar: <b>{len(online_ids)}</b> ta "
+            "(skaner ishlayapti)"
+        )
     else:
-        userbot_line = (
-            "🤖 Userbot: ❌ hali signal yo'q — userbot ishga tushmagan "
-            "yoki Replitda faqat bot.py ishlayapti (main.py kerak)"
+        session_line = (
+            "📡 Faol sessiyalar: <b>0</b> ta — hech kim onlayn emas. "
+            "🔑 Login qiling (yoki server ishga tushganini tekshiring)"
         )
 
     lines = [
         "📊 <b>Skaner holati</b>",
         "",
         f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ TOʻXTATILGAN — ▶️ yoqish kerak'}",
-        userbot_line,
+        session_line,
         f"🔑 Kalitlar: <b>{len(get_keywords())}</b> ta",
-        f"🔔 Shart: kamida <b>{get_match_count()}</b> ta kalit topilsa",
+        f"🔔 Shart: kamida <b>{get_match_count()}</b> ta kalit topilsa"
+        + ("  ⚠️ juda yuqori" if get_match_count() >= TOO_HIGH_COUNT else ""),
         f"👥 Faol guruhlar: <b>{len(active)}</b> ta",
     ]
     if pending:

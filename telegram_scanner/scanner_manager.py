@@ -48,6 +48,11 @@ def is_client_online(user_id: int) -> bool:
     return bool(client and client.is_connected())
 
 
+def online_user_ids() -> list[int]:
+    """Hozir ulangan (tirik) sessiyalar egalari."""
+    return [uid for uid, client in _clients.items() if client.is_connected()]
+
+
 async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
     rows = get_pending_user_groups(owner_id)
     if not rows:
