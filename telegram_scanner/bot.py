@@ -18,18 +18,14 @@ from aiogram.types import (
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
 from database import (
     MAX_USER_GROUPS,
-    add_filter_word_checked,
     add_keyword_checked,
-    delete_filter_word,
-    get_client_words,
-    get_filter_words_with_id,
-    get_stop_words,
     add_user_group,
     approve_pending_session,
     clear_pending_session,
     clear_session,
     count_user_groups,
     delete_phrase,
+    keyword_reject_reason,
     delete_user_completely,
     delete_user_group,
     get_all_phrases_with_id,
@@ -84,17 +80,19 @@ from matcher import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BTN_ADD = "➕ Kalit so'z qo'shish"
-BTN_PHRASES = "📋 Kalitlar ro'yxati"
+BTN_WORDS = "🔑 Kalit so'zlar"        # yagona ro'yxat: qo'shish + ko'rish
+BTN_ADD = "➕ Kalit so'z qo'shish"     # eski nom (moslik uchun)
+BTN_PHRASES = "📋 Kalitlar ro'yxati"   # eski nom (moslik uchun)
+BTN_STOPWORDS_OLD = "🚫 Stop-so'zlar"  # eski nom (moslik uchun)
 BTN_GROUP_ADD = "➕ Guruh qo'shish"
 BTN_GROUPS = "📋 Guruhlarim"
 BTN_COUNT = "🔔 Xabar sharti"
-BTN_TOGGLE = "⏸ To'xtatish / ▶️ Davom ettirish"
+BTN_TOGGLE = "⏸/▶️ Tizim (hammaga)"        # butun tizim: barcha skanerlar
+BTN_TOGGLE_OLD = "⏸ To'xtatish / ▶️ Davom ettirish"   # eski nom
 BTN_TEST = "🧪 Skaner testi"
 BTN_USERS = "👥 Foydalanuvchilar"
 BTN_STATS = "📊 Statistika"
 BTN_BROADCAST = "📣 Xabar yuborish"
-BTN_STOPWORDS = "🚫 Stop-so'zlar"
 BTN_APPLICATIONS = "📝 Arizalar"
 BTN_SCAN_GROUPS = "🔎 Akkauntdagi guruhlar"
 # Foydalanuvchi tugmalari (boshqaruv tugmalari ularda BO'LMAYDI)
@@ -104,10 +102,13 @@ BTN_HELP = "ℹ️ Yordam"
 # Foydalanuvchining UMUMIY skaner boshqaruvi (bitta tugma, menyuda)
 BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
 BTN_SCAN_RESUME = "🟢 ▶️ Start"
+# Eski nomlar yangi bitta bo'limga yo'naltiriladi
+BTN_STOPWORDS = BTN_STOPWORDS_OLD
 MENU_BUTTONS = {
-    BTN_ADD, BTN_PHRASES, BTN_GROUP_ADD, BTN_GROUPS,
-    BTN_COUNT, BTN_TOGGLE, BTN_TEST, BTN_USERS, BTN_STATS,
-    BTN_BROADCAST, BTN_APPLICATIONS, BTN_STOPWORDS, BTN_SCAN_GROUPS,
+    BTN_WORDS, BTN_ADD, BTN_PHRASES, BTN_STOPWORDS_OLD, BTN_GROUP_ADD,
+    BTN_GROUPS, BTN_COUNT, BTN_TOGGLE, BTN_TOGGLE_OLD, BTN_TEST,
+    BTN_USERS, BTN_STATS,
+    BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
@@ -175,17 +176,17 @@ def is_admin(user_id: int | None) -> bool:
 
 def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
     if admin:
+        # Tartib: 1) so'zlar va shart  2) guruhlar  3) odamlar
+        # 4) xabar/statistika  5) akkaunt va tekshiruv  6) tizim.
+        # 🔑 Login va ℹ️ Yordam admin menyusida YO'Q: login kerak bo'lsa
+        # 📱 Akkaunt holati ichidagi tugmadan ochiladi.
         kb = [
-            [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_PHRASES)],
-            [KeyboardButton(text=BTN_STOPWORDS), KeyboardButton(text=BTN_COUNT)],
-            # Admin ham o'z akkaunti bilan skanerlaydi: guruhlarini
-            # o'zi qo'shadi va o'z guruhlaridan xabar oladi.
-            [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
-            [KeyboardButton(text=BTN_SCAN_GROUPS)],
+            [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
+            [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_SCAN_GROUPS)],
+            [KeyboardButton(text=BTN_GROUPS), KeyboardButton(text=BTN_TEST)],
             [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
             [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
-            [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_LOGIN)],
-            [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_TOGGLE)],
+            [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_TOGGLE)],
         ]
     else:
         kb = user_menu_keyboard()
@@ -756,13 +757,50 @@ async def registration_reject(callback: types.CallbackQuery):
 async def account_status(message: types.Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
-    # Bu bo'limda tugmalar yo'q — faqat holat ko'rsatiladi
-    # (sessiyani uzish tugmasi olib tashlangan). Admin ham ko'radi:
-    # uning akkaunti ham skanerlaydi.
-    markup = main_menu(admin=True) if is_admin(uid) else None
-    await message.answer(
-        account_status_text(uid), parse_mode="HTML", reply_markup=markup
-    )
+    # Admin ham o'z akkauntini shu yerdan boshqaradi: menyuda 🔑 Login
+    # tugmasi yo'q, u faqat kerak bo'lganda shu ekranda chiqadi.
+    if is_admin(uid):
+        rows = []
+        if user_connected(uid):
+            on = get_user_scanner_enabled(uid)
+            rows.append([InlineKeyboardButton(
+                text="🔴 Skanerimni to'xtatish" if on else "🟢 Skanerimni yoqish",
+                callback_data=f"ascan:{1 if on else 0}",
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                text="🔑 Akkauntni ulash", callback_data="sess_in")])
+        await message.answer(
+            account_status_text(uid),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+        )
+        return
+    await message.answer(account_status_text(uid), parse_mode="HTML")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("ascan:"))
+async def admin_scanner_toggle(callback: types.CallbackQuery):
+    """Admin o'z skanerini yoqadi/o'chiradi (faqat o'ziga ta'sir qiladi)."""
+    try:
+        current = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato.", show_alert=True)
+        return
+    enable = current == 0
+    set_user_scanner_enabled(callback.from_user.id, enable)
+    await callback.answer("🟢 Yoqildi" if enable else "🔴 To'xtatildi")
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🔴 Skanerimni to'xtatish" if enable else "🟢 Skanerimni yoqish",
+                    callback_data=f"ascan:{1 if enable else 0}",
+                )
+            ]])
+        )
+    except Exception:
+        pass
 
 
 @dp.callback_query(F.data == "sess_in")
@@ -777,7 +815,7 @@ async def user_ask_group(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if not user_connected(uid):
         await message.answer(
-            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            "Avval Telegram akkauntingizni ulang: 📱 Akkaunt holati → 🔑 Akkauntni ulash",
             reply_markup=user_menu_for(uid),
         )
         return
@@ -1052,7 +1090,7 @@ async def user_scan_test_start(message: types.Message, state: FSMContext):
     if not user_connected(uid):
         await state.clear()
         await message.answer(
-            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            "Avval Telegram akkauntingizni ulang: 📱 Akkaunt holati → 🔑 Akkauntni ulash",
             reply_markup=user_menu_for(uid),
         )
         return
@@ -1168,9 +1206,14 @@ async def help_user(message: types.Message, state: FSMContext):
         return
     await message.answer(
         "ℹ️ <b>Yordam</b>\n\n"
-        "• 🔑 Login — Telegram akkauntingizni ulaysiz (kod raqamli tugmalarda teriladi).\n"
-        "• ➕ Guruh qo'shish — o'z guruhlaringizni kuzatuvga qo'shasiz, xabarlar faqat sizga keladi.\n"
-        "• 🔔 Xabar sharti — xabarda nechta kalit topilsa sizga xabar kelishini o'zingiz belgilaysiz (faqat sizga ta'sir qiladi).\n"
+        "• 📱 Akkaunt holati — Telegram akkauntingizni ulaysiz (kod raqamli "
+        "tugmalarda teriladi) va skaneringizni yoqasiz/to'xtatasiz.\n"
+        "• ➕ Guruh qo'shish — o'z guruhlaringizni kuzatuvga qo'shasiz; "
+        "xabarlar faqat sizga keladi.\n"
+        "• 🔔 Xabar sharti — xabarda nechta kalit topilsa sizga xabar "
+        "kelishini o'zingiz belgilaysiz (faqat sizga ta'sir qiladi).\n"
+        "• 🧪 Skaner testi — xabar nima uchun kelayotganini/kelmayotganini "
+        "qadamma-qadam ko'rsatadi.\n"
         "• Tarif admin bilan og'zaki kelishiladi — botda to'lov yo'q.\n"
         "• Savollar bo'lsa adminga yozing.",
         parse_mode="HTML",
@@ -1179,18 +1222,56 @@ async def help_user(message: types.Message, state: FSMContext):
 
 
 
-@dp.message(AdminFilter(), F.text == BTN_ADD)
-async def ask_phrase(message: types.Message, state: FSMContext):
-    await state.set_state(AddPhrase.waiting_phrase)
+# --- Admin: KALIT SO'ZLAR (yagona ro'yxat) ---
+@dp.message(AdminFilter(), F.text.in_({BTN_WORDS, BTN_ADD, BTN_PHRASES, BTN_STOPWORDS}))
+async def words_menu(message: types.Message, state: FSMContext):
+    """Bitta umumiy kalit so'zlar ro'yxati — boshqa yordamchi ro'yxat yo'q."""
+    await state.clear()
+    words = get_all_phrases_with_id()
+    total = len(words)
+    preview = ", ".join(w for _i, w in words[:15])
+    if total > 15:
+        preview += f" … (+{total - 15})"
+    empty_hint = "ro'yxat bo'sh — pastdagi ➕ So'z qo'shish ni bosing"
+    preview_text = html.escape(preview) if preview else empty_hint
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ So'z qo'shish", callback_data="wadd")],
+        [InlineKeyboardButton(text="📋 To'liq ro'yxat", callback_data="wlist")],
+    ])
     await message.answer(
-        "Kalit so'z yuboring. Har bir so'z — alohida kalit, "
-        "so'zlar soni <b>cheklanmagan</b>.\n\n"
-        "Bitta xabarda bir nechta so'z yuborsangiz, har biri alohida "
-        "kalit bo'lib saqlanadi.\n"
-        "Masalan: <i>toshkent samarqand odam mashina kerak yuk</i>\n\n"
+        f"🔑 <b>Kalit so'zlar — {total} ta</b>\n\n"
+        f"{preview_text}\n\n"
+        "Xabar o'tishi uchun xabarda kamida "
+        f"<b>{get_match_count()}</b> ta kalit topilishi kerak "
+        "(shartni 🔔 Xabar sharti dan o'zgartirasiz).\n\n"
+        "ℹ️ Emoji yoki stikerli xabarlar avtomatik tashlanadi — "
+        "bu haydovchi e'lonlari uchun yetarli.",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(AdminFilter(), F.data == "wadd")
+async def words_add_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AddPhrase.waiting_phrase)
+    await callback.message.answer(
+        "Kerakli so'zlarni yuboring — bitta xabar bilan bir nechta so'z "
+        "yuborsangiz bo'ladi.\n\n"
+        "• Har bir so'z alohida kalit bo'ladi\n"
+        "• Probel, vergul yoki yangi qator bilan ajrating\n"
+        "• Faqat o'zak yozing (qo'shimchasiz), lotin harflarida\n"
+        "• Takror so'z o'zi tashlab yuboriladi\n\n"
+        "Masalan: <code>toshkent xorazm urganch odam yuk pochta</code>\n\n"
         "Bekor qilish: /cancel",
         parse_mode="HTML",
     )
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data == "wlist")
+async def words_list_callback(callback: types.CallbackQuery):
+    await _send_words_list(callback.message)
+    await callback.answer()
 
 
 @dp.message(AdminFilter(), StateFilter(AddPhrase.waiting_phrase), F.text)
@@ -1205,8 +1286,12 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
         return  # holatda qolamiz — qayta yozishi mumkin
 
     await state.clear()
-    added, conflicts = [], []
+    added, conflicts, rejects = [], [], []
     for word in words:
+        reason = keyword_reject_reason(word)
+        if reason:
+            rejects.append((word, reason))
+            continue
         is_added, where = add_keyword_checked(word)
         if is_added:
             added.append(word)
@@ -1216,13 +1301,20 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
     parts = []
     if added:
         parts.append(
-            f"✅ Qo'shildi ({len(added)} ta): <b>{html.escape(', '.join(added))}</b>"
+            f"✅ Qo'shildi ({len(added)} ta): "
+            f"<b>{html.escape(', '.join(added), quote=False)}</b>"
         )
     for word, where in conflicts:
         where_text = ", ".join(where) if where else "bazada"
         parts.append(
-            f"⚠️ <b>{html.escape(word)}</b> — {html.escape(where_text)} "
-            "ro'yxatida bor, qo'shilmadi."
+            f"⚠️ <b>{html.escape(word, quote=False)}</b> — "
+            f"{html.escape(where_text, quote=False)} ro'yxatida bor, "
+            "qo'shilmadi."
+        )
+    for word, reason in rejects:
+        parts.append(
+            f"🚫 <b>{html.escape(word, quote=False)}</b> — "
+            f"{html.escape(reason, quote=False)}"
         )
     parts.append("")
     parts.append(current_status_text())
@@ -1308,188 +1400,43 @@ async def set_count_message(message: types.Message, state: FSMContext):
     await _apply_match_count(message, state, int(text))
 
 
-@dp.message(AdminFilter(), F.text == BTN_PHRASES)
-async def list_phrases(message: types.Message, state: FSMContext):
-    await state.clear()
+async def _send_words_list(message: types.Message):
     phrases = get_all_phrases_with_id()
     if not phrases:
-        await message.answer("Ro'yxat bo'sh.")
-        return
-
-    await message.answer(
-        f"Sizning kalit so'zlaringiz — jami {len(phrases)} ta "
-        f"(o'chirish uchun tugmani bosing):"
-    )
-    for p_id, p_text in phrases:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"del:{p_id}")]
-            ]
-        )
         await message.answer(
-            f"🔑 {html.escape(p_text)}", parse_mode="HTML", reply_markup=kb
-        )
-
-
-# --- Admin: stop-so'zlar (haydovchi filtri) va mijoz so'zlari ---
-_FILTER_KIND = {
-    "stop": ("stop_words", "🚫 Stop-so'zlar"),
-    "client": ("client_words", "👤 Mijoz so'zlari"),
-}
-
-
-async def _send_filter_list(message: types.Message, kind: str):
-    table, title = _FILTER_KIND[kind]
-    entries = get_filter_words_with_id(table)
-    add_cb = f"fadd:{kind}"
-    await message.answer(
-        f"{title} — jami {len(entries)} ta.\n"
-        "O'chirish uchun yozuvning tugmasini bosing, qo'shish uchun "
-        "pastdagi ➕ tugmani bosing.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="➕ Qo'shish", callback_data=add_cb)
-        ]]),
-    )
-    for w_id, w_text in entries:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="🗑 O'chirish", callback_data=f"fdel:{kind}:{w_id}")
-        ]])
-        await message.answer(
-            f"{'🚫' if kind == 'stop' else '👤'} {html.escape(w_text)}",
-            parse_mode="HTML", reply_markup=kb,
-        )
-
-
-@dp.message(AdminFilter(), F.text == BTN_STOPWORDS)
-async def stopwords_menu(message: types.Message, state: FSMContext):
-    await state.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚫 Stop-so'zlar", callback_data="flist:stop")],
-        [InlineKeyboardButton(text="👤 Mijoz so'zlari", callback_data="flist:client")],
-    ])
-    await message.answer(
-        "🚫 <b>Haydovchi filtri</b>\n\n"
-        "0. <b>Emoji/stiker</b>: xabarda emoji bo'lsa yoki stiker bo'lsa — "
-        "avtomatik bloklanadi.\n"
-        "1. <b>Stop-so'zlar</b>: xabarda shulardan <b>bittasi</b> bo'lsa ham — "
-        "xabar haydovchiniki, bloklanadi.\n"
-        "2. <b>Mijoz so'zlari</b>: xabar o'tishi uchun mijozga xos so'zdan "
-        "kamida bittasi bo'lishi kerak (asosiy kalitlardan tashqari).\n\n"
-        "Barcha so'zlarni faqat admin kiritadi; takroriy so'z bazaga "
-        "ikkinchi marta qo'shilmaydi.\n\n"
-        "Qaysi ro'yxatni ochamiz?",
-        parse_mode="HTML",
-        reply_markup=kb,
-    )
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("flist:"))
-async def filter_list_callback(callback: types.CallbackQuery):
-    kind = callback.data.split(":", 1)[1]
-    if kind not in _FILTER_KIND:
-        await callback.answer("Xato.", show_alert=True)
-        return
-    await _send_filter_list(callback.message, kind)
-    await callback.answer()
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("fadd:"))
-async def filter_add_start(callback: types.CallbackQuery, state: FSMContext):
-    kind = callback.data.split(":", 1)[1]
-    if kind not in _FILTER_KIND:
-        await callback.answer("Xato.", show_alert=True)
-        return
-    await state.set_state(FilterWords.waiting_word)
-    await state.update_data(filter_kind=kind)
-    await callback.message.answer(
-        "Yangi yozuvni yuboring — bitta so'z yoki ibora bo'lishi mumkin.\n"
-        "Masalan: <i>odam olamiz</i>\n\n"
-        "Bir nechta so'zni bir martada ham yuborishingiz mumkin — "
-        "har biri alohida yozuv bo'ladi (qator, vergul yoki probil bilan):\n"
-        "<i>olamiz, olaman, chiqamiz</i>\n\nBekor qilish: /cancel",
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@dp.message(AdminFilter(), StateFilter(FilterWords.waiting_word), F.text)
-async def filter_add_save(message: types.Message, state: FSMContext):
-    text = (message.text or "").strip()
-    if text in MENU_BUTTONS | _LEGACY_BUTTONS:
-        await state.clear()
-        return
-    data = await state.get_data()
-    kind = data.get("filter_kind", "stop")
-    table, title = _FILTER_KIND[kind]
-    entries = split_entries(text)
-    if not entries:
-        await message.answer(
-            "⚠️ Bo'sh yozuv qo'shib bo'lmaydi.",
+            "📋 Ro'yxat bo'sh. 🔑 Kalit so'zlar → ➕ So'z qo'shish.",
             reply_markup=main_menu(admin=True),
         )
         return
-    await state.clear()
-
-    added: list[str] = []
-    conflicts: list[tuple[str, list[str]]] = []
-    for entry in entries:
-        is_added, where = add_filter_word_checked(table, entry)
-        if is_added:
-            added.append(entry)
-        else:
-            conflicts.append((entry, where))
-
-    parts: list[str] = []
-    if added:
-        shown = ", ".join(added[:20])
-        if len(added) > 20:
-            shown += f" ... (+{len(added) - 20} ta)"
-        parts.append(
-            f"✅ <b>{title}</b>ga qo'shildi ({len(added)} ta):\n"
-            f"{html.escape(shown)}"
-        )
-    for entry, where in conflicts[:10]:
-        where_text = ", ".join(where) if where else "bazada"
-        parts.append(
-            f"⚠️ <b>{html.escape(entry.lower())}</b> — "
-            f"{html.escape(where_text)} ro'yxatida bor, qo'shilmadi."
-        )
-    if len(conflicts) > 10:
-        parts.append(f"⚠️ yana {len(conflicts) - 10} ta yozuv qo'shilmadi.")
-    if not parts:
-        parts.append("⚠️ Hech narsa qo'shilmadi.")
-    # Uzun qator probil bilan yuborilgan bo'lsa, iboralar so'zlarga
-    # bo'linib ketadi: "joy bor" -> "joy" + "bor". Bu xavfli, ogohlantiramiz.
-    if any(
-        len(line.split()) > _MAX_PHRASE_WORDS for line in text.splitlines()
-    ):
-        parts.append(
-            "ℹ️ Probel bilan ajratilgan ro'yxat so'zlarga bo'lindi. "
-            "Iboralar (<i>joy bor</i>, <i>kim olib ketadi</i>) buzilmasligi "
-            "uchun ularni har birini alohida qatorda yuboring."
-        )
-    parts.append("")
-    parts.append(f"Jami yuborildi: {len(entries)} ta.")
     await message.answer(
-        "\n".join(parts), parse_mode="HTML", reply_markup=main_menu(admin=True)
+        f"📋 <b>Kalit so'zlar — {len(phrases)} ta</b>\n"
+        "O'chirish uchun so'zning yonidagi tugmani bosing.",
+        parse_mode="HTML",
     )
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("fdel:"))
-async def filter_delete_callback(callback: types.CallbackQuery):
-    try:
-        _f, kind, w_id = callback.data.split(":")
-        w_id = int(w_id)
-    except (ValueError, IndexError):
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    if kind not in _FILTER_KIND:
-        await callback.answer("Xato.", show_alert=True)
-        return
-    delete_filter_word(_FILTER_KIND[kind][0], w_id)
-    await callback.message.edit_text("🗑 O'chirildi!")
-    await callback.answer()
+    # Har bir so'z alohida xabar emas — 10 tadan qator qilib yuboramiz
+    chunk: list = []
+    for p_id, p_text in phrases:
+        chunk.append((p_id, p_text))
+        if len(chunk) == 10:
+            await message.answer(
+                "\n".join(f"• {html.escape(t)}" for _i, t in chunk)
+            )
+            chunk = []
+    if chunk:
+        await message.answer(
+            "\n".join(f"• {html.escape(t)}" for _i, t in chunk)
+        )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"🗑 {html.escape(t[:40])}", callback_data=f"del:{i}")]
+        for i, t in phrases[:60]
+    ])
+    await message.answer(
+        "O'chirish uchun bosing:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            row for row in kb.inline_keyboard
+        ]),
+    )
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("del:"))
@@ -1500,8 +1447,8 @@ async def delete_phrase_callback(callback: types.CallbackQuery):
         await callback.answer("Xato ma'lumot.", show_alert=True)
         return
     delete_phrase(p_id)
-    await callback.message.edit_text("🗑 O'chirildi!")
-    await callback.answer()
+    await callback.message.edit_text("🗑 O'chirildi")
+    await callback.answer("O'chirildi")
 
 
 def normalize_group_input(text: str) -> str | None:
@@ -1531,7 +1478,7 @@ async def admin_ask_group(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if not user_connected(uid):
         await message.answer(
-            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            "Avval Telegram akkauntingizni ulang: 📱 Akkaunt holati → 🔑 Akkauntni ulash",
             reply_markup=main_menu(admin=True),
         )
         return
@@ -1626,7 +1573,7 @@ async def admin_scan_groups(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     if not user_connected(uid):
         await message.answer(
-            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            "Avval Telegram akkauntingizni ulang: 📱 Akkaunt holati → 🔑 Akkauntni ulash",
             reply_markup=main_menu(admin=True),
         )
         return
@@ -1816,8 +1763,7 @@ def _admin_user_card_text(row) -> str:
         f"🧪 Skaner holati: <b>{working_line}</b>\n\n"
         f"🔔 Xabar sharti: {condition_line}\n"
         f"🚫 Haydovchi filtri: faol (emoji/stiker blok, "
-        f"{len(get_stop_words())} stop-so'z, "
-        f"{len(get_client_words())} mijoz so'zi)\n\n"
+        f"{len(get_keywords())} kalit so'z)\n\n"
         f"👥 <b>Guruhlari: {len(groups)} ta</b> "
         f"(ulangan: {len(ok_groups)}, tekshiruvda: {len(pending_groups)}, "
         f"xato: {len(error_groups)})\n"
@@ -2362,16 +2308,25 @@ async def scan_test_check(message: types.Message, state: FSMContext):
     )
 
 
-@dp.message(AdminFilter(), F.text == BTN_TOGGLE)
+@dp.message(AdminFilter(), F.text.in_({BTN_TOGGLE, BTN_TOGGLE_OLD}))
 async def toggle_system(message: types.Message, state: FSMContext):
+    """BUTUN tizimni yoqadi/to'xtatadi — barcha foydalanuvchi skanerlariga ta'sir."""
     await state.clear()
     current = get_setting("is_active")
     new_status = "0" if current == "1" else "1"
     set_setting("is_active", new_status)
 
-    status_text = "⏸ To'xtatildi" if new_status == "0" else "▶️ Davom ettirildi"
+    if new_status == "0":
+        head = "⏸ <b>Butun tizim to'xtatildi</b> — hech kimga xabar bormaydi."
+    else:
+        head = "▶️ <b>Tizim ishga tushdi</b> — skanerlari yoniq guruhlar ishlaydi."
+    # Eslatma: bu umumiy o'chirgich. Adminning SHAXSIY skaneri
+    # 📱 Akkaunt holati ichidan boshqariladi (u alohida holat).
     await message.answer(
-        f"Tizim holati: <b>{status_text}</b>", parse_mode="HTML"
+        head
+        + "\n\nShaxsiy skaneringiz holati: 📱 Akkaunt holati.",
+        parse_mode="HTML",
+        reply_markup=main_menu(),
     )
 
 

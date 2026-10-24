@@ -2,7 +2,7 @@ import sqlite3
 from contextlib import closing
 
 from config import DB_NAME
-from matcher import canonical_entry
+from matcher import canonical_entry, display_entry
 
 
 def _connect() -> sqlite3.Connection:
@@ -54,23 +54,15 @@ def init_db() -> None:
                             key TEXT NOT NULL,
                             value INTEGER DEFAULT 0,
                             PRIMARY KEY (user_id, key))""")
-        # Stop-so'zlar (haydovchi e'lonlari filtri) — admin boshqaradi.
-        conn.execute("""CREATE TABLE IF NOT EXISTS stop_words (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            text TEXT UNIQUE)""")
-        # Mijozga xos so'zlar (ikkinchi filtr) — admin boshqaradi.
-        conn.execute("""CREATE TABLE IF NOT EXISTS client_words (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            text TEXT UNIQUE)""")
-        # Filtr so'zlari kodda yozilmaydi: ularni faqat admin botdan kiritadi.
         # Standart sozlamalar
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
         )
-        # Xabar berish sharti: nechta kalit so'z topilsa xabar beriladi
-        # (admin botdan xohlagan vaqtda o'zgartiradi)
+        # Xabar berish sharti: kamida nechta kalit topilsa xabar beriladi.
+        # 2 — amaliy o'lchov bo'yicha eng yaxshi (qisqa mijoz xabarlari
+        # odatda 2-3 kalitdan iborat).
         conn.execute(
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('match_count', '3')"
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('match_count', '2')"
         )
 
 
@@ -114,98 +106,22 @@ def _migrate_old_sets(conn) -> None:
             )
 
 
-# Filtr so'zlari kodda saqlanmaydi va avtomatik yozilmaydi.
-# Ularni admin botdagi tegishli bo'limlardan bazaga kiritadi.
-_FILTER_TABLES = {"stop_words", "client_words"}
-
-# Barcha so'z ro'yxatlari: bitta so'z bir nechta ro'yxatda bo'lmasligi kerak.
-_WORD_LISTS = (
-    ("phrases", "kalit so'zlar"),
-    ("stop_words", "stop-so'zlar"),
-    ("client_words", "mijoz so'zlari"),
-)
+# Bitta umumiy kalit so'zlar ro'yxati (phrases jadvali).
+# Alohida stop-so'zlar / mijoz so'zlari ro'yxati YO'Q: admin faqat
+# kerakli so'zlarni yozadi, ro'yxat ko'paytirilmaydi.
+# Haydovchi e'lonlari emoji filtri bilan ajratiladi (ro'yxat kerak emas).
 
 
 def find_lists_for_entry(entry: str) -> list[str]:
-    """So'z qaysi ro'yxatlarda borligini qaytaradi (nomlari bilan).
-
-    Lotin/kirill, katta-kichik harf va tinish belgilari farqi
-    hisobga olinmaydi.
-    """
+    """So'z kalitlar ro'yxatida bormi (lotin/kirill, registr hisobsiz)."""
     canonical = canonical_entry(entry)
     if not canonical:
         return []
-    found = []
     with closing(_connect()) as conn:
-        for table, label in _WORD_LISTS:
-            rows = conn.execute(f"SELECT text FROM {table}").fetchall()
-            if any(canonical_entry(row[0]) == canonical for row in rows):
-                found.append(label)
-    return found
-
-
-def get_filter_words(table: str) -> list[str]:
-    if table not in _FILTER_TABLES:
-        raise ValueError(table)
-    with closing(_connect()) as conn:
-        rows = conn.execute(
-            f"SELECT text FROM {table} ORDER BY id"
-        ).fetchall()
-    return [row[0] for row in rows]
-
-
-def get_filter_words_with_id(table: str) -> list[tuple[int, str]]:
-    if table not in _FILTER_TABLES:
-        raise ValueError(table)
-    with closing(_connect()) as conn:
-        return conn.execute(
-            f"SELECT id, text FROM {table} ORDER BY id"
-        ).fetchall()
-
-
-def add_filter_word_checked(table: str, entry: str) -> tuple[bool, list[str]]:
-    """Yozuv qo'shadi: (qo'shildimi, qaysi ro'yxatlarda borligi).
-
-    So'z boshqa ro'yxatda (kalit/stop/mijoz) bo'lsa ham qo'shilmaydi —
-    chaqiruvchi bot aynan qaysi ro'yxatda ekanini ko'rsatadi.
-    """
-    if table not in _FILTER_TABLES:
-        raise ValueError(table)
-    cleaned = " ".join((entry or "").split()).lower()
-    if not canonical_entry(cleaned):
-        return False, []
-    conflicts = find_lists_for_entry(cleaned)
-    if conflicts:
-        return False, conflicts
-    with closing(_connect()) as conn, conn:
-        try:
-            conn.execute(
-                f"INSERT INTO {table} (text) VALUES (?)", (cleaned,)
-            )
-        except sqlite3.IntegrityError:
-            return False, find_lists_for_entry(cleaned)
-    return True, []
-
-
-def add_filter_word(table: str, entry: str) -> bool:
-    """Eski interfeys: True — qo'shildi."""
-    added, _conflicts = add_filter_word_checked(table, entry)
-    return added
-
-
-def delete_filter_word(table: str, word_id: int) -> None:
-    if table not in _FILTER_TABLES:
-        raise ValueError(table)
-    with closing(_connect()) as conn, conn:
-        conn.execute(f"DELETE FROM {table} WHERE id = ?", (word_id,))
-
-
-def get_stop_words() -> list[str]:
-    return get_filter_words("stop_words")
-
-
-def get_client_words() -> list[str]:
-    return get_filter_words("client_words")
+        rows = conn.execute("SELECT text FROM phrases").fetchall()
+    if any(canonical_entry(row[0]) == canonical for row in rows):
+        return ["kalit so'zlar"]
+    return []
 
 
 def get_keywords() -> list[str]:
@@ -220,15 +136,57 @@ def get_phrases() -> list[str]:
     return get_keywords()
 
 
+# 2 harfli, lekin haqiqiy so'zlar (qisqalik tekshiruvidan ozod)
+_SHORT_OK = {"uk"}
+
+# Ma'lum xato shakllar -> to'g'ri shakl. Ro'yxatga xato yozilmasin.
+_BAD_FORMS = {
+    "mang'ud": "mang'it",
+    "mangud": "mang'it",
+}
+
+
+def keyword_reject_reason(word: str) -> str | None:
+    """So'zni ro'yxatga qabul qilib bo'lmaydigan sabab (None — muammo yo'q).
+
+    Qoidalar: bo'sh so'z, ma'lum xato shakl va qo'shimchali shakl
+    (ro'yxatda o'zak bo'lsa, ``toshkentga`` kabi shakl kerak emas).
+    """
+    canonical = canonical_entry(word)
+    shown = display_entry(word)
+    if not canonical:
+        return "bo'sh so'z"
+    fix = _BAD_FORMS.get(canonical)
+    if fix:
+        return f"xato shakl — to'g'risi «{fix}»"
+    if len(canonical) < 3 and canonical not in _SHORT_OK:
+        return "juda qisqa so'z (kamida 3 harf)"
+    for known in get_keywords():
+        known_canonical = canonical_entry(known)
+        if not known_canonical or known_canonical == canonical:
+            continue
+        # Qo'shimchali shakl: o'zak + 1..5 harf qo'shimcha
+        if (
+            len(known_canonical) >= 3
+            and canonical.startswith(known_canonical)
+            and 1 <= len(canonical) - len(known_canonical) <= 5
+        ):
+            return (
+                f"qo'shimchali shakl — «{shown}» emas, "
+                f"o'zak «{display_entry(known)}» yetarli"
+            )
+    return None
+
+
 def add_keyword_checked(word: str) -> tuple[bool, list[str]]:
     """Kalit qo'shadi: (qo'shildimi, qaysi ro'yxatlarda borligi).
 
     Takroriylik lotin/kirill va katta-kichik harf farqini hisobga
     olmasdan tekshiriladi: ``ТОШКЕНТ`` bilan ``toshkent`` bitta kalit.
-    So'z stop/mijoz ro'yxatida bo'lsa ham kalitga qo'shilmaydi.
+    Ro'yxatga HAR DOIM lotin (kanonik) shakl yoziladi.
     """
-    cleaned = " ".join((word or "").split()).lower()
-    if not canonical_entry(cleaned):
+    cleaned = display_entry(word)
+    if not cleaned:
         return False, []
     conflicts = find_lists_for_entry(cleaned)
     if conflicts:

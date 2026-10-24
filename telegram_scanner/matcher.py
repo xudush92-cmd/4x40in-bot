@@ -485,6 +485,17 @@ def contains_emoji(text: str | None) -> bool:
     return bool(text and _EMOJI_RE.search(text))
 
 
+def display_entry(text: str | None) -> str:
+    """Ro'yxatga YOZILADIGAN ko'rinish: kichik harf, bir xil apostrof, lotin.
+
+    ``canonical_entry`` dan farqi — solishtirish uchun soddalashtirish
+    (``q``->``k``, ``o'``->``u``) QILINMAYDI: foydalanuvchi qanday so'zni
+    ko'rsa, ro'yxatda shunday turadi. Kirill so'z lotinga o'giriladi.
+    """
+    tokens = normalize_tokens(text or "")
+    return " ".join(cyr_to_lat(t) if _is_cyrillic(t) else t for t in tokens)
+
+
 def canonical_entry(text: str | None) -> str:
     """Takroriylikni tekshirish uchun yozuvning yagona shakli.
 

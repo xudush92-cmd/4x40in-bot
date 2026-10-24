@@ -1,19 +1,20 @@
 """Filtr zanjiri — skaner ham, test ham AYNAN shu koddan foydalanadi.
 
-Muammo shu ediki, botdagi "🧪 Skaner testi" faqat kalit so'zlarni sanab
-"xabar berilardi" derdi, real skaner esa emoji, stop-so'z yoki mijoz
-so'zi sababli xabarni tashlab yuborardi. Natijada test yolg'on gapirardi.
+Bitta umumiy kalit so'zlar ro'yxati. Boshqa yordamchi ro'yxat yo'q
+(stop-so'zlar va mijoz so'zlari olib tashlangan): admin faqat kerakli
+so'zlarni yozadi, ortiqcha ro'yxat ko'paytirilmaydi.
 
-Endi tartib BITTA joyda — ``evaluate()`` da:
+Tartib BITTA joyda — ``evaluate()`` da:
 
     1. Tizim (admin) to'xtatmaganmi
-    2. Tarif faolmi (admin bundan mustasno)
+    2. Tarif faolmi / bloklanmaganmi (admin bundan mustasno)
     3. Foydalanuvchining umumiy Stop/Start holati
     4. Xabar shu foydalanuvchining faol guruhidanmi
     5. Emoji / stiker  -> haydovchi belgisi, blok
-    6. Stop-so'z / ibora -> haydovchi e'loni, blok
-    7. Kalit so'zlar soni shartga yetadimi
-    8. Kamida bitta mijoz so'zi bormi
+    6. Kalit so'zlar soni shartga yetadimi
+
+Emoji filtri ro'yxat talab qilmaydi: haydovchi e'lonlari deyarli doim
+emoji bilan bezatiladi, mijoz xabarlarida esa emoji bo'lmaydi.
 
 Skaner faqat ``verdict.ok`` ni ko'radi; test esa ``verdict.stages`` ni
 ko'rsatib, qaysi bosqichda to'xtaganini aytadi.
@@ -24,22 +25,15 @@ from dataclasses import dataclass, field
 
 from config import ADMIN_ID
 from database import (
-    get_client_words,
     get_keywords,
     get_match_count,
     get_owner_active_chat_ids,
     get_setting,
-    get_stop_words,
     get_user_match_count,
     get_user,
     get_user_scanner_enabled,
 )
-from matcher import (
-    contains_emoji,
-    find_client_words,
-    find_stop_words,
-    match_keywords,
-)
+from matcher import contains_emoji, match_keywords
 
 # Bosqich nomlari — testda shu tartibda ko'rsatiladi
 STAGE_TITLES = [
@@ -48,9 +42,7 @@ STAGE_TITLES = [
     ("scanner", "Umumiy skaner"),
     ("group", "Guruh"),
     ("emoji", "Emoji / stiker"),
-    ("stop", "Stop-so'zlar"),
     ("keywords", "Kalit so'zlar"),
-    ("client", "Mijoz so'zi"),
 ]
 
 OK = "ok"          # bosqich o'tdi
@@ -76,8 +68,6 @@ class Verdict:
     matched: list[str] = field(default_factory=list)
     required: int = 0
     total_keywords: int = 0
-    client_found: list[str] = field(default_factory=list)
-    stops_found: list[str] = field(default_factory=list)
 
 
 def _fmt(words) -> str:
@@ -170,19 +160,12 @@ def evaluate(
         return finish("emoji", "emoji bor — haydovchi belgisi")
     add("emoji", OK, "toza")
 
-    # 6. Stop-so'zlar
-    stops = find_stop_words(text, get_stop_words())
-    verdict.stops_found = stops
-    if stops:
-        return finish("stop", _fmt(stops))
-    add("stop", OK, "toza")
-
-    # 7. Kalit so'zlar
+    # 6. Kalit so'zlar (yagona ro'yxat)
     keywords = get_keywords()
     required = get_user_match_count(owner_id)
     verdict.required, verdict.total_keywords = required, len(keywords)
     if not keywords:
-        return finish("keywords", "bazada kalit so'z yo'q (admin kiritmagan)")
+        return finish("keywords", "ro'yxat bo'sh — admin kalit so'z kiritmagan")
     result = match_keywords(text, keywords, required)
     verdict.matched = list(result.matched_words)
     if result.matched_count < required:
@@ -196,16 +179,6 @@ def evaluate(
         OK,
         f"{result.matched_count} ta: {_fmt(result.matched_words)} (shart: {required})",
     )
-
-    # 8. Mijoz so'zi
-    clients = find_client_words(text, get_client_words())
-    verdict.client_found = clients
-    if not clients:
-        return finish(
-            "client",
-            "mijoz so'zi yo'q — haydovchi e'loni bo'lishi mumkin",
-        )
-    add("client", OK, _fmt(clients))
 
     verdict.ok = True
     verdict.stage = "ok"
