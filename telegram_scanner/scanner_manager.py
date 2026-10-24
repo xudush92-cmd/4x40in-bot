@@ -17,6 +17,7 @@ from telethon.tl.types import Channel, Chat
 from config import ADMIN_ID, API_HASH, API_ID
 from database import (
     get_all_users_full,
+    get_owner_active_chat_ids,
     get_pending_user_groups,
     get_user_full,
     increment_counter,
@@ -189,15 +190,66 @@ def _has_sticker(message) -> bool:
     return bool(message is not None and getattr(message, "sticker", None))
 
 
+# --- Diagnostika: sessiya xabarlarni umuman ko'ryaptimi? ---
+# "Guruh qo'shdim, test KELADI deydi, lekin real xabar kelmaydi" degan
+# holatda eng muhim savol: userbot guruhdagi xabarni UMUMAN ko'ryaptimi?
+# Quyidagi hisoblagichlar shuni bot ekranida ko'rsatish uchun.
+_seen_events: dict[int, int] = {}          # owner -> nechta guruh xabari
+_seen_private: dict[int, int] = {}         # owner -> nechta lichka xabari
+_last_event: dict[int, tuple] = {}         # owner -> (vaqt, chat_id, matn)
+
+
+def _note_event(owner_id: int, private: bool, chat_id, text: str) -> None:
+    if private:
+        _seen_private[owner_id] = _seen_private.get(owner_id, 0) + 1
+    else:
+        _seen_events[owner_id] = _seen_events.get(owner_id, 0) + 1
+        _last_event[owner_id] = (
+            int(time.time()), chat_id, (text or "")[:60]
+        )
+
+
+def scan_diagnostics(owner_id: int) -> dict:
+    """Skaner holati: client tirikmi, xabar ko'ryaptimi, qaysi chatlar."""
+    client = _clients.get(owner_id)
+    last = _last_event.get(owner_id)
+    return {
+        "client": client is not None,
+        "connected": bool(client is not None and client.is_connected()),
+        "events": _seen_events.get(owner_id, 0),
+        "private": _seen_private.get(owner_id, 0),
+        "last_ts": last[0] if last else 0,
+        "last_chat": last[1] if last else None,
+        "last_text": last[2] if last else "",
+        "watched": get_owner_active_chat_ids(owner_id),
+    }
+
+
+def reset_diagnostics(owner_id: int) -> None:
+    _seen_events.pop(owner_id, None)
+    _seen_private.pop(owner_id, None)
+    _last_event.pop(owner_id, None)
+
+
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
+        chat_id = getattr(event, "chat_id", None)
+        is_private = bool(getattr(event, "is_private", False))
+        _note_event(owner_id, is_private, chat_id, event.raw_text or "")
+        if not is_private:
+            # Har bir guruh xabari logga tushadi: "kelmayapti" deganda
+            # xabar umuman kelmaganini yoki filtrda to'xtaganini ajratish
+            # oson bo'ladi.
+            logger.info(
+                "[SCAN] event owner=%s chat=%s out=%s",
+                owner_id, chat_id, bool(getattr(event, "out", False)),
+            )
         # Shaxsiy yozishmalar skanerlanmaydi. get_peer_id ijobiy bo'lsa —
         # bu PeerUser (lichka). Ilgari bunday xabarlar ham logga tushib,
         # "guruh ro'yxatida yo'q" degan chalg'ituvchi yozuv berardi.
         if getattr(event, "is_private", False):
             return
-        chat_id = getattr(event, "chat_id", None)
         if chat_id is None or chat_id > 0:
             return
         is_sticker = _has_sticker(getattr(event, "message", None))

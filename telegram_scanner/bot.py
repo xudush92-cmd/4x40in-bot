@@ -1081,6 +1081,69 @@ _STATUS_ICON = {"ok": "✅", "fail": "❌", "skip": "⏭", "info": "ℹ️"}
 _ORDINAL = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
 
 
+def _scan_diag_lines(uid: int) -> list[str]:
+    """«Xabar nima uchun kelmayapti?» degan savolga aniq javob.
+
+    Uch holat farqlanadi:
+      1. Sessiya guruh xabarlarini UMUMAN ko'rmayapti (0 ta) — muammo
+         Telegram/akkaunt tomonda (bildirishnomalar, cheklov, boshqa
+         akkaunt), filtrlar aybdor emas.
+      2. Ko'ryapti, lekin bizning chat ID ro'yxatida yo'q — guruh
+         boshqa akkauntga ulangan yoki chat ID mos emas.
+      3. Ko'ryapti va ro'yxatda bor — sabab filtr bosqichlarida.
+    """
+    try:
+        import scanner_manager
+    except Exception:
+        return []
+    try:
+        info = scanner_manager.scan_diagnostics(uid)
+    except Exception:
+        logger.exception("Diagnostika")
+        return []
+
+    lines = ["", "📡 <b>Sessiya diagnostikasi</b>"]
+    if not info.get("client"):
+        lines.append("❌ Skaner clienti ishga tushmagan (sessiya yuklanmagan)")
+        return lines
+    if not info.get("connected"):
+        lines.append("⚠️ Client yaratilgan, lekin Telegramga ulanmagan")
+    watched = info.get("watched") or []
+    lines.append(f"👁 Kuzatilayotgan chatlar: <b>{len(watched)}</b> ta")
+    if watched:
+        shown = ", ".join(f"<code>{c}</code>" for c in watched[:4])
+        more = f" … (+{len(watched) - 4})" if len(watched) > 4 else ""
+        lines.append(f"   {shown}{more}")
+    seen = info.get("events", 0)
+    if seen:
+        ts = info.get("last_ts") or 0
+        when = (
+            time.strftime("%d.%m %H:%M:%S", time.localtime(ts)) if ts else "—"
+        )
+        lines.append(
+            f"📥 Ko'rilgan guruh xabarlari: <b>{seen}</b> ta "
+            f"(oxirgisi: {when}, chat <code>{info.get('last_chat')}</code>)"
+        )
+        last_chat = info.get("last_chat")
+        if watched and last_chat not in watched:
+            lines.append(
+                "⚠️ Oxirgi xabar kelgan chat kuzatuv ro'yxatida <b>yo'q</b> — "
+                "guruh boshqa akkauntga ulangan bo'lishi mumkin."
+            )
+    else:
+        lines.append(
+            "📥 Ko'rilgan guruh xabarlari: <b>0</b> ta — sessiya guruh "
+            "xabarlarini umuman ko'rmayapti."
+        )
+        lines.append(
+            "Sabablari: akkauntda bildirishnomalar o'chirilgan, akkaunt "
+            "cheklangan, yoki xabar boshqa akkauntdan yozilgan. "
+            "Telefonda Telegram → Sozlamalar → Bildirishnomalar ni "
+            "tekshiring."
+        )
+    return lines
+
+
 def _session_block_note(uid: int) -> str | None:
     """Sessiya tufayli xabar kelmayotgan bo'lsa — ogohlantirish matni."""
     row = get_user_full(uid)
@@ -1140,6 +1203,8 @@ def scan_test_report(uid: int, text: str) -> str:
     warn = count_warning(verdict.required)
     if warn:
         lines += ["", warn]
+
+    lines += _scan_diag_lines(uid)
 
     lines.append("")
     if verdict.ok:
