@@ -1368,7 +1368,7 @@ async def words_add_start(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(AdminFilter(), F.data == "wlist")
 async def words_list_callback(callback: types.CallbackQuery):
-    await _send_words_list(callback.message)
+    await _edit_words_page(callback.message, 0)
     await callback.answer()
 
 
@@ -1498,55 +1498,105 @@ async def set_count_message(message: types.Message, state: FSMContext):
     await _apply_match_count(message, state, int(text))
 
 
-async def _send_words_list(message: types.Message):
+WORDS_PER_PAGE = 20
+
+
+def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Ro'yxatning bitta sahifasi: matn + o'chirish tugmalari.
+
+    Ro'yxat sahifalarga bo'linadi, chunki Telegram bitta xabarga cheklangan
+    sondagi tugma sig'diradi (112 kalitda hammasi ko'rinmay qolardi).
+    """
     phrases = get_all_phrases_with_id()
+    total = len(phrases)
     if not phrases:
-        await message.answer(
-            "📋 Ro'yxat bo'sh. 🔑 Kalit so'zlar → ➕ So'z qo'shish.",
-            reply_markup=main_menu(admin=True),
+        return (
+            "📋 <b>Ro'yxat bo'sh</b>\n\n"
+            "➕ So'z qo'shish bilan kalit so'zlar kiriting.",
+            InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="➕ So'z qo'shish", callback_data="wadd")
+            ]]),
         )
-        return
-    await message.answer(
-        f"📋 <b>Kalit so'zlar — {len(phrases)} ta</b>\n"
-        "O'chirish uchun so'zning yonidagi tugmani bosing.",
-        parse_mode="HTML",
-    )
-    # Har bir so'z alohida xabar emas — 10 tadan qator qilib yuboramiz
-    chunk: list = []
-    for p_id, p_text in phrases:
-        chunk.append((p_id, p_text))
-        if len(chunk) == 10:
-            await message.answer(
-                "\n".join(f"• {html.escape(t)}" for _i, t in chunk)
-            )
-            chunk = []
-    if chunk:
-        await message.answer(
-            "\n".join(f"• {html.escape(t)}" for _i, t in chunk)
-        )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+    pages = max(1, (total + WORDS_PER_PAGE - 1) // WORDS_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    start = page * WORDS_PER_PAGE
+    chunk = phrases[start:start + WORDS_PER_PAGE]
+    rows = [
         [InlineKeyboardButton(
-            text=f"🗑 {html.escape(t[:40])}", callback_data=f"del:{i}")]
-        for i, t in phrases[:60]
-    ])
-    await message.answer(
-        "O'chirish uchun bosing:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            row for row in kb.inline_keyboard
-        ]),
+            text=f"🗑 {html.escape(t[:40], quote=False)}",
+            callback_data=f"del:{p_id}:{page}",
+        )]
+        for p_id, t in chunk
+    ]
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(
+                text="◀️", callback_data=f"wpage:{page - 1}"))
+        nav.append(InlineKeyboardButton(
+            text=f"{page + 1}/{pages}", callback_data="wnav"))
+        if page < pages - 1:
+            nav.append(InlineKeyboardButton(
+                text="▶️", callback_data=f"wpage:{page + 1}"))
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(
+        text="➕ So'z qo'shish", callback_data="wadd")])
+    text = (
+        f"📋 <b>Kalit so'zlar — {total} ta</b>\n"
+        f"Sahifa {page + 1}/{pages}. O'chirish uchun so'zning "
+        "tugmasini bosing — ro'yxat ochiq qoladi."
     )
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _edit_words_page(message: types.Message, page: int = 0) -> None:
+    """Ro'yxatni o'sha xabarning o'zida yangilaydi (yangi xabar yubormaydi)."""
+    text, kb = _words_page(page)
+    try:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        # Xabar juda eski yoki o'zgarmagan bo'lsa — yangisini yuboramiz.
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wpage:"))
+async def words_page_callback(callback: types.CallbackQuery):
+    try:
+        page = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        page = 0
+    await _edit_words_page(callback.message, page)
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data == "wnav")
+async def words_page_label(callback: types.CallbackQuery):
+    await callback.answer("Sahifani ◀️ ▶️ bilan almashtirasiz")
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("del:"))
 async def delete_phrase_callback(callback: types.CallbackQuery):
+    """So'zni o'chiradi va RO'YXATNI O'SHA XABARDA qoldiradi."""
+    parts = callback.data.split(":")
     try:
-        p_id = int(callback.data.split(":", 1)[1])
+        p_id = int(parts[1])
     except (ValueError, IndexError):
         await callback.answer("Xato ma'lumot.", show_alert=True)
         return
+    page = 0
+    if len(parts) > 2:
+        try:
+            page = int(parts[2])
+        except ValueError:
+            page = 0
+    # O'chirilayotgan so'z nomini eslab qolamiz (javobda ko'rsatamiz)
+    name = next(
+        (t for i, t in get_all_phrases_with_id() if i == p_id), None
+    )
     delete_phrase(p_id)
-    await callback.message.edit_text("🗑 O'chirildi")
-    await callback.answer("O'chirildi")
+    await _edit_words_page(callback.message, page)
+    await callback.answer(f"🗑 {name} o'chirildi" if name else "🗑 O'chirildi")
 
 
 def normalize_group_input(text: str) -> str | None:
