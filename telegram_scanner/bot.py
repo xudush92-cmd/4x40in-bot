@@ -209,8 +209,8 @@ def scan_panel_keyboard(uid: int) -> list:
     )
     return [
         [KeyboardButton(text=toggle)],
-        [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_SCAN_GROUPS)],
-        [KeyboardButton(text=BTN_GROUPS), KeyboardButton(text=BTN_TEST)],
+        [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
+        [KeyboardButton(text=BTN_TEST)],
         [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -1020,18 +1020,7 @@ async def user_ask_group(message: types.Message, state: FSMContext):
             reply_markup=user_menu_for(uid),
         )
         return
-    if count_user_groups(uid) >= MAX_USER_GROUPS:
-        await message.answer(f"⚠️ Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha olasiz.")
-        return
-    await state.set_state(AddGroup.waiting_group)
-    await message.answer(
-        "Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
-        "• <code>@guruh_nomi</code> yoki <code>https://t.me/guruh_nomi</code>\n"
-        "• <code>-1001234567890</code> (raqamli ID)\n\n"
-        "⚠️ Ulangan Telegram akkauntingiz shu guruhda a'zo bo'lishi shart.\n\n"
-        "Bekor qilish: /cancel",
-        parse_mode="HTML",
-    )
+    await _show_account_groups(message, uid)
 
 
 @dp.message(NotAdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
@@ -1829,22 +1818,7 @@ async def admin_ask_group(message: types.Message, state: FSMContext):
             reply_markup=main_menu(admin=True),
         )
         return
-    if count_user_groups(uid) >= MAX_USER_GROUPS:
-        await message.answer(
-            f"⚠️ Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha olasiz.",
-            reply_markup=main_menu(admin=True),
-        )
-        return
-    await state.set_state(AddGroup.waiting_group)
-    await message.answer(
-        "Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
-        "• <code>@guruh_nomi</code> yoki <code>https://t.me/guruh_nomi</code>\n"
-        "• <code>-1001234567890</code> (raqamli ID)\n\n"
-        "⚠️ Sizning Telegram akkauntingiz shu guruhda a'zo bo'lishi shart.\n"
-        "Topilgan xabarlar faqat shu chatga keladi.\n\n"
-        "Bekor qilish: /cancel",
-        parse_mode="HTML",
-    )
+    await _show_account_groups(message, uid)
 
 
 @dp.message(AdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
@@ -1903,6 +1877,82 @@ async def admin_list_groups(message: types.Message, state: FSMContext):
 
 
 # --- Admin: akkauntdagi guruhlarni aniqlash (ID taxmin qilmaslik uchun) ---
+GROUP_PICKER_TEXT = (
+    "➕ <b>Guruh qo'shish</b>\n\n"
+    "Akkauntingiz a'zo bo'lgan guruhlar ro'yxati. Nomini bosing — "
+    "ro'yxatga qo'shiladi (✅ — allaqachon qo'shilgan).\n\n"
+    "Ro'yxatda yo'q guruhni <b>✍️ Qo'lda kiritish</b> bilan qo'shasiz."
+)
+
+GROUP_MANUAL_TEXT = (
+    "✍️ Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
+    "• <code>@guruh_nomi</code> yoki <code>https://t.me/guruh_nomi</code>\n"
+    "• <code>-1001234567890</code> (raqamli ID)\n\n"
+    "⚠️ Ulangan Telegram akkauntingiz shu guruhda a'zo bo'lishi shart.\n"
+    "Topilgan xabarlar faqat sizga keladi.\n\n"
+    "Bekor qilish: /cancel"
+)
+
+
+async def _show_account_groups(message: types.Message, uid: int) -> None:
+    """➕ Guruh qo'shish: avval akkauntdagi guruhlar ro'yxati.
+
+    Ro'yxat sessiya ko'rayotgan guruhlardan olinadi — ID yozish shart
+    emas. Ro'yxat bo'sh yoki sessiya offline bo'lsa qo'lda kiritish
+    taklif qilinadi (u har doim ishlaydi).
+    """
+    menu = menu_for(uid)
+    if not user_connected(uid):
+        await message.answer(
+            "Avval Telegram akkauntingizni ulang: 📱 Akkaunt holati → "
+            "🔑 Akkauntni ulash",
+            reply_markup=menu,
+        )
+        return
+    if count_user_groups(uid) >= MAX_USER_GROUPS:
+        await message.answer(
+            f"⚠️ Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha olasiz.",
+            reply_markup=menu,
+        )
+        return
+
+    manual_row = [InlineKeyboardButton(
+        text="✍️ Qo'lda kiritish", callback_data="gmanual")]
+    dialogs = None
+    try:
+        import scanner_manager
+
+        dialogs = await scanner_manager.list_user_dialogs(uid)
+    except Exception:
+        logger.exception("Dialoglar ro'yxati")
+
+    if dialogs is None:
+        # Sessiya hozir onlayn emas — qo'lda kiritish ishlayveradi.
+        await message.answer(
+            "⚠️ Sessiya hozir onlayn emas, guruhlar ro'yxatini ololmadim.\n"
+            "Qo'lda kiritish bilan qo'shishingiz mumkin.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[manual_row]),
+        )
+        return
+    if not dialogs:
+        await message.answer(
+            "📭 Akkauntingiz hech qanday guruhda a'zo emas.\n"
+            "Avval Telegramda guruhga qo'shiling, keyin qayta urining.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[manual_row]),
+        )
+        return
+
+    added = {row[3] for row in get_user_groups(uid) if row[3]}
+    kb = _dialogs_keyboard(dialogs, added)
+    rows = list(kb.inline_keyboard) if kb else []
+    rows.append(manual_row)
+    await message.answer(
+        GROUP_PICKER_TEXT,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
 def _dialogs_keyboard(dialogs, added_ids) -> InlineKeyboardMarkup:
     rows = []
     for chat_id, title in dialogs[:25]:
@@ -1914,48 +1964,32 @@ def _dialogs_keyboard(dialogs, added_ids) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-@dp.message(AdminFilter(), F.text == BTN_SCAN_GROUPS)
-async def admin_scan_groups(message: types.Message, state: FSMContext):
+@dp.message(F.text == BTN_SCAN_GROUPS)
+async def scan_groups_alias(message: types.Message, state: FSMContext):
+    """Eski «🔎 Akkauntdagi guruhlar» tugmasi — endi ➕ bilan bir joyda.
+
+    Tugma menyudan olib tashlandi (➕ Guruh qo'shish o'zi ro'yxatni
+    ko'rsatadi), lekin eski klaviaturalarda qolib ketgan bo'lsa ishlaydi.
+    """
     await state.clear()
-    uid = message.from_user.id
-    if not user_connected(uid):
-        await message.answer(
-            "Avval Telegram akkauntingizni ulang: 📱 Akkaunt holati → 🔑 Akkauntni ulash",
-            reply_markup=main_menu(admin=True),
-        )
-        return
-    try:
-        import scanner_manager
-
-        dialogs = await scanner_manager.list_user_dialogs(uid)
-    except Exception:
-        logger.exception("Dialoglar ro'yxati")
-        dialogs = None
-    if dialogs is None:
-        await message.answer(
-            "⚠️ Sessiya hozir onlayn emas. 1 daqiqadan keyin qayta urining "
-            "yoki 📱 Akkaunt holati → 🔑 Akkauntni ulash orqali qayta ulang.",
-            reply_markup=main_menu(admin=True),
-        )
-        return
-    if not dialogs:
-        await message.answer(
-            "📭 Akkauntingiz hech qanday guruhda a'zo emas.\n"
-            "Avval Telegramda guruhga qo'shiling, keyin qayta urining.",
-            reply_markup=main_menu(admin=True),
-        )
-        return
-    added = {row[3] for row in get_user_groups(uid) if row[3]}
-    await message.answer(
-        f"🔎 <b>Akkauntingizdagi guruhlar — {len(dialogs)} ta</b>\n\n"
-        "Guruh nomini bosing — ro'yxatga qo'shiladi. ✅ — allaqachon qo'shilgan.\n"
-        "Bu ro'yxat sessiya haqiqatan ko'rayotgan guruhlardir.",
-        parse_mode="HTML",
-        reply_markup=_dialogs_keyboard(dialogs, added),
-    )
+    await _show_account_groups(message, message.from_user.id)
 
 
-@dp.callback_query(AdminFilter(), F.data.startswith("gadd:"))
+@dp.callback_query(F.data == "gmanual")
+async def group_manual_callback(callback: types.CallbackQuery, state: FSMContext):
+    """«✍️ Qo'lda kiritish» — guruh manzili/ID sini yozish."""
+    uid = callback.from_user.id
+    if count_user_groups(uid) >= MAX_USER_GROUPS:
+        await callback.answer(
+            f"Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh", show_alert=True
+        )
+        return
+    await state.set_state(AddGroup.waiting_group)
+    await callback.message.answer(GROUP_MANUAL_TEXT, parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("gadd:"))
 async def admin_add_dialog_group(callback: types.CallbackQuery):
     uid = callback.from_user.id
     try:
