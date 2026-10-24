@@ -4,7 +4,7 @@ import logging
 import re
 import time
 
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.filters import BaseFilter, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -72,9 +72,7 @@ from login_manager import (
 )
 from session_crypto import decrypt_session, encrypt_session
 from matcher import (
-    _MAX_PHRASE_WORDS,
     parse_key_words,
-    split_entries,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -139,10 +137,6 @@ class AddPhrase(StatesGroup):
 
 class SetCount(StatesGroup):
     waiting_count = State()  # nechta so'z topilsa xabar berish soni kutilmoqda
-
-
-class FilterWords(StatesGroup):
-    waiting_word = State()  # stop-so'z yoki mijoz so'zi kutilmoqda (data: kind)
 
 
 class AddGroup(StatesGroup):
@@ -330,8 +324,34 @@ def current_status_text() -> str:
     )
 
 
+class MenuEscapeMiddleware(BaseMiddleware):
+    """Menyu tugmasi bosilganda FSM holatini tozalaydi.
+
+    Muammo: odam ➕ Guruh qo'shish ni bosib, keyin boshqa menyu tugmasini
+    bossa — matn avvalgi holat handleriga tushib, u jimgina holatni
+    tozalab qaytarardi. Natijada tugma "birinchi bosishda ishlamaydi"
+    bo'lib qolardi. Endi holat oldindan tozalanadi va tugma darhol
+    o'z ishini bajaradi.
+    """
+
+    async def __call__(self, handler, event, data):
+        state = data.get("state")
+        text = (getattr(event, "text", None) or "").strip()
+        if state is not None and text in MENU_BUTTONS | _LEGACY_BUTTONS:
+            try:
+                await state.clear()
+                # StateFilter "raw_state" ni data'dan o'qiydi — u yangilangan
+                # bo'lishi shart, aks holda eski holat handleri baribir
+                # ushlab qoladi va tugma jim qoladi.
+                data["raw_state"] = None
+            except Exception:
+                logger.exception("Holatni tozalash (menyu tugmasi)")
+        return await handler(event, data)
+
+
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
+dp.message.outer_middleware(MenuEscapeMiddleware())
 # DIQQAT: global admin filtri YO'Q — oddiy foydalanuvchilar ham botni
 # ishlatadi. Har bir admin handlerida alohida AdminFilter() turadi.
 
@@ -974,28 +994,6 @@ async def user_list_groups(message: types.Message, state: FSMContext):
 def _find_user_group(uid: int, gid: int):
     row = get_user_group(gid)
     return row if row and row[1] == uid else None
-
-
-@dp.callback_query(F.data.startswith("ugact:"))
-async def user_group_toggle(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    try:
-        _, gid_s, cur_s = callback.data.split(":")
-        gid, cur = int(gid_s), int(cur_s)
-    except ValueError:
-        await callback.answer("Xato.", show_alert=True)
-        return
-    if not _find_user_group(uid, gid):
-        await callback.answer("Bu guruh sizniki emas.", show_alert=True)
-        return
-    new = 0 if cur == 1 else 1
-    toggle_user_group(gid, uid, new)
-    row = get_user_group(gid)
-    if row:
-        await callback.message.edit_text(
-            _user_group_text(row), parse_mode="HTML",
-            reply_markup=_user_group_keyboard(row))
-    await callback.answer("⏸ Stop" if new == 0 else "▶️ Start")
 
 
 @dp.callback_query(F.data.startswith("ugdel:"))
@@ -2292,12 +2290,16 @@ async def broadcast_collect(message: types.Message, state: FSMContext):
     )
 
 
-@dp.callback_query(AdminFilter(), StateFilter(Broadcast.confirming),
+@dp.callback_query(AdminFilter(), StateFilter(Broadcast),
                    F.data == "bcastcancel")
 async def broadcast_cancel(callback: types.CallbackQuery, state: FSMContext):
+    """Bekor qilish — auditoriya tanlangandan KEYIN ham ishlaydi."""
     await state.clear()
-    await callback.message.edit_text("❌ Xabar yuborish bekor qilindi.")
-    await callback.answer()
+    try:
+        await callback.message.edit_text("❌ Xabar yuborish bekor qilindi.")
+    except Exception:
+        await callback.message.answer("❌ Xabar yuborish bekor qilindi.")
+    await callback.answer("Bekor qilindi")
 
 
 @dp.callback_query(AdminFilter(), StateFilter(Broadcast.confirming),
@@ -2499,6 +2501,28 @@ async def user_fallback(message: types.Message, state: FSMContext):
         + subscription_text(get_user(message.from_user.id)),
         parse_mode="HTML",
         reply_markup=user_menu_for(message.from_user.id),
+    )
+
+
+@dp.callback_query()
+async def stale_callback(callback: types.CallbackQuery):
+    """Eskirgan tugma (bot qayta ishga tushgan, holat yo'qolgan va h.k.).
+
+    Bu handler ENG OXIRIDA turadi: yuqoridagi hech bir handler tugmani
+    tanimasa, foydalanuvchi jim qolmaydi — aniq yo'l ko'rsatiladi.
+    """
+    await callback.answer(
+        "⏳ Bu tugma eskirgan (holat yangilangan). Menyudan qaytadan boshlang.",
+        show_alert=True,
+    )
+
+
+@dp.message(AdminFilter(), F.text)
+async def admin_fallback(message: types.Message, state: FSMContext):
+    """Admin notanish matn yozsa ham jim qolmaydi."""
+    await message.answer(
+        "Tushunmadim 🙂 Quyidagi menyudan foydalaning:",
+        reply_markup=main_menu(admin=True),
     )
 
 

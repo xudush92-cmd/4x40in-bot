@@ -16,8 +16,8 @@ Qo'shimcha imkoniyatlar:
     "dangasa" yozilgan kirill (ў→у, қ→к, ғ→г, ҳ→х) ham;
   * fe'l shaxsi ajratiladi: "jo'naymiz" (biz) "jo'naysiz" (siz) bilan
     aralashtirilmaydi;
-  * stop-so'zlarda so'roq qo'shimchasi ajratiladi: "жой бор" (haydovchi
-    e'loni) "жой борми" (mijoz savoli) bilan tenglashtirilmaydi;
+  * so'roq shaklini qat'iy ajratish imkoniyati bor (ixtiyoriy):
+    "жой бор" "жой борми" bilan tenglashtirilmaydi;
   * katta ro'yxatlarda ham tez ishlashi uchun prefiks indeksi ishlatiladi.
 """
 
@@ -506,39 +506,3 @@ def canonical_entry(text: str | None) -> str:
     """
     tokens = normalize_tokens(text or "")
     return " ".join(_lazy_latin(_canon(token)) for token in tokens)
-
-
-# --- Ko'p yozuvni bir martada kiritish ---
-
-_MAX_PHRASE_WORDS = 3
-
-
-def split_entries(text: str | None, max_phrase_words: int = _MAX_PHRASE_WORDS) -> list[str]:
-    """Yuborilgan matndan alohida ro'yxat yozuvlarini ajratadi.
-
-    Admin ko'p so'zni bir xabarda yuborishi mumkin. Qoidalar:
-
-    * har bir qator — kamida bitta yozuv;
-    * vergul (`,`) va nuqtali vergul (`;`) har doim ajratadi;
-    * qatorda ``max_phrase_words`` tadan ko'p so'z bo'lsa, demak bu
-      ro'yxat yuborilgan — har bir so'z alohida yozuv bo'ladi;
-    * qisqa qator (1-3 so'z) — ibora sifatida saqlanadi
-      (``joy bor``, ``kim olib ketadi``).
-
-    Takrorlar tartibni saqlagan holda olib tashlanadi.
-    """
-    entries: list[str] = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        for chunk in re.split(r"[;,]", line):
-            chunk = " ".join(chunk.split())
-            if not chunk:
-                continue
-            words = chunk.split(" ")
-            if len(words) > max_phrase_words:
-                entries.extend(words)
-            else:
-                entries.append(chunk)
-    return list(dict.fromkeys(entries))

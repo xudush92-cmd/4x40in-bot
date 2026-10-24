@@ -11,7 +11,6 @@ from matcher import (
     match_keywords,
     normalize_tokens,
     parse_key_words,
-    split_entries,
 )
 
 KEYWORDS = ["toshkent", "samarqand", "odam", "mashina", "kerak", "yuk", "bugun"]
@@ -182,50 +181,6 @@ class TestShortWordGuard(unittest.TestCase):
         stop = ["olamiz", "chiqamiz", "boramiz", "ketamiz"]
         text = "Toshkentdan Xorazmga odam olamiz, 2 kishi, bugun chiqamiz"
         self.assertTrue(find_stop_words(text, stop))
-
-
-class TestSplitEntries(unittest.TestCase):
-    """Admin ko'p so'zni bitta xabarda yuborsa, har biri alohida yozuv."""
-
-    def test_lines_split(self):
-        self.assertEqual(
-            split_entries("toshkent\nxorazm\nurganch"),
-            ["toshkent", "xorazm", "urganch"],
-        )
-
-    def test_space_separated_list_split(self):
-        self.assertEqual(
-            split_entries("olamiz olaman chiqamiz chiqaman"),
-            ["olamiz", "olaman", "chiqamiz", "chiqaman"],
-        )
-
-    def test_comma_and_semicolon_split(self):
-        self.assertEqual(
-            split_entries("kerak, bormi; joy kerak"),
-            ["kerak", "bormi", "joy kerak"],
-        )
-
-    def test_phrase_kept_together(self):
-        self.assertEqual(split_entries("joy bor"), ["joy bor"])
-        self.assertEqual(split_entries("kim olib ketadi"), ["kim olib ketadi"])
-
-    def test_duplicates_removed_and_strip(self):
-        self.assertEqual(split_entries("  kerak \n kerak \n\n BORMI "),
-                         ["kerak", "BORMI"])
-
-    def test_empty_input(self):
-        self.assertEqual(split_entries(""), [])
-        self.assertEqual(split_entries(None), [])
-
-    def test_full_stop_list_paste(self):
-        text = ("olamiz olaman chiqamiz chiqaman boramiz boraman ketamiz ketaman "
-                "yuklaymiz yuklayman qabul qilamiz kelishamiz yetkazamiz")
-        # "qabul qilamiz" iborasi probil bilan yuborilganda bo'linadi —
-        # shuning uchun 14 ta. Ibora saqlanishi uchun qator bilan yuboriladi.
-        self.assertEqual(len(split_entries(text)), 14)
-        self.assertEqual(
-            len(split_entries(text.replace("qabul qilamiz", "qabul qilamiz\n"))), 13
-        )
 
 
 class TestLazyCyrillic(unittest.TestCase):

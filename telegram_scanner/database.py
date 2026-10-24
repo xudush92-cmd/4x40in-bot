@@ -130,10 +130,6 @@ def get_keywords() -> list[str]:
 
 
 # Eski nomlar (moslik uchun)
-def get_phrases() -> list[str]:
-    return get_keywords()
-
-
 # 2 harfli, lekin haqiqiy so'zlar (qisqalik tekshiruvidan ozod)
 _SHORT_OK = {"uk"}
 
@@ -203,10 +199,6 @@ def add_keyword(word: str) -> bool:
     """Eski interfeys: True — saqlandi."""
     added, _conflicts = add_keyword_checked(word)
     return added
-
-
-def add_phrase(text: str, required_count: int = 2) -> bool:
-    return add_keyword(text)
 
 
 def delete_phrase(phrase_id: int) -> None:

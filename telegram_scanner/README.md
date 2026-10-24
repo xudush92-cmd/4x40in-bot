@@ -6,8 +6,9 @@ mijozlarni **o'sha guruh egasiga** yuboradigan tizim: **boshqaruv boti**
 
 > ⚠️ Markaziy "userbot" rejimi **yo'q**. Har bir foydalanuvchi o'z Telegram
 > akkaunti bilan ulanadi, faqat o'zi qo'shgan guruhlar kuzatiladi va
-> topilgan xabar faqat shu foydalanuvchiga boradi. Kalit so'zlar, stop-
-> so'zlar va mijoz so'zlari esa hammaga umumiy (faqat admin kiritadi).
+> topilgan xabar faqat shu foydalanuvchiga boradi. **Kalit so'zlar bitta
+> umumiy ro'yxat** — ularni faqat admin kiritadi (stop-so'zlar va mijoz
+> so'zlari kabi alohida ro'yxatlar yo'q).
 
 ## O'rnatish
 
@@ -31,7 +32,7 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
 
 `main.py` ikkalasini birga ko'taradi: boshqaruv boti va barcha
 foydalanuvchilar sessiyalari. Alohida terminal kerak emas — foydalanuvchilar
-akkauntlarini botning o'zidagi 🔑 Login orqali ulaydi.
+akkauntlarini 📱 Akkaunt holati → 🔑 Akkauntni ulash orqali ulaydi.
 
 ## Replitda ishga tushirish
 
@@ -63,7 +64,7 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 - **Admin** (`ADMIN_ID`, bitta odam): kalitlar (faqat admin kiritadi),
   xabar sharti (standart), tizim stop/start, 🧪 test, 📊 umumiy
   statistika, 👥 foydalanuvchilar, 📝 arizalar, 📣 xabar yuborish.
-  Admin ham **o'z akkaunti bilan skanerlaydi**: 🔑 Login orqali akkauntini
+  Admin ham **o'z akkaunti bilan skanerlaydi**: 📱 Akkaunt holati orqali akkauntini
   ulaydi (tasdiqlash talab qilinmaydi), ➕ Guruh qo'shish bilan o'z
   guruhlarini qo'shadi va 📋 Guruhlarim da ko'radi. Admin guruhlari
   `user_groups` jadvalida o'z `owner_user_id` si bilan turadi, shuning
@@ -87,49 +88,52 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   ishlaydi, o'z guruhlarini qo'shadi (maks. **100 ta**), o'chiradi,
   menyuda bitta UMUMIY ⏸Stop/▶️Start tugmasi bor. Xabar FAQAT o'sha
   guruh egasiga boradi.
-- **Foydalanuvchi menyusi**: ➕ Guruh qo'shish, 📋 Guruhlarim,
-  📊 Statistika (faqat o'ziniki), 📱 Akkaunt holati (sessiya + tarif
-  shu yerda), ℹ️ Yordam. Kalit/shart/test/alohida tarif tugmasi YO'Q.
+- **Admin menyusi** (6 qator): 🔑 Kalit so'zlar · 🔔 Xabar sharti ·
+  ➕ Guruh qo'shish · 🔎 Akkauntdagi guruhlar · 📋 Guruhlarim ·
+  🧪 Skaner testi · 👥 Foydalanuvchilar · 📝 Arizalar ·
+  📣 Xabar yuborish · 📊 Statistika · 📱 Akkaunt holati ·
+  ⏸/▶️ Tizim (hammaga). Alohida 🔑 Login va ℹ️ Yordam tugmalari
+  YO'Q — login kerak bo'lsa 📱 Akkaunt holati ichidan ochiladi.
+- **Foydalanuvchi menyusi**: 🔴/🟢 Stop (bitta umumiy tugma, eng
+  tepada), ➕ Guruh qo'shish, 📋 Guruhlarim, 📊 Statistika (faqat
+  o'ziniki), 📱 Akkaunt holati (sessiya + tarif shu yerda),
+  🧪 Skaner testi, 🔔 Xabar sharti, ℹ️ Yordam. Kalitlar va boshqa
+  foydalanuvchilar ko'rinmaydi.
 - **Tarif**: to'lov tizimi yo'q — og'zaki. Admin muddatni qo'lda
   yozadi (yoki 1/7/30/90 tugma); **yangi muddat eskisini bekor
   qiladi** (ustiga qo'shilmaydi). Tugashga 3/2/1 kun qolganda
   kuniga 1 marta ogohlantirish boradi.
 - Sessiyalar `SESSION_ENCRYPTION_KEY` bilan shifrlanadi (serverda
   alohida maxfiy kalit qo'ying).
-- **Haydovchi filtri**: admin menyusidagi **🚫 Stop-so'zlar**
-  tugmasidan boshqariladi. Tartib: (0) xabarda emoji bo'lsa yoki
-  stiker bo'lsa — mijoz izlayotgan haydovchi deb bloklanadi;
-  (1) admin kiritgan stop-so'zlardan bittasi bo'lsa — bloklanadi;
-  (2) qolgan xabarda asosiy kalitlar (har bir foydalanuvchining o'z
-  sharti bo'yicha) + admin kiritgan mijoz so'zlaridan kamida bittasi
-  bo'lishi shart. Kodda tayyor so'z ro'yxatlari yo'q — barcha
-  so'zlarni admin kiritadi, takroriy so'z (katta/kichik harf va
-  lotin/kirill farqi bilan ham) ikkinchi marta qo'shilmaydi. So'z
-  boshqa ro'yxatda (kalit/stop/mijoz) bo'lsa ham qo'shilmaydi —
-  bot aynan qaysi ro'yxatda ekanini ko'rsatadi.
-- **Ko'p so'zni bir martada kiritish**: stop-so'zlar va mijoz so'zlari
-  bo'limida bir xabarda bir nechta yozuv yuborish mumkin. Har bir
-  qator, vergul yoki nuqtali vergul — alohida yozuv. Bitta qatorda
-  3 tadan ko'p so'z bo'lsa (probil bilan yuborilgan ro'yxat), u
-  so'zlarga bo'linadi va bot bu haqda ogohlantiradi. Iboralar
-  (`joy bor`, `kim olib ketadi`) buzilmasligi uchun ularni har birini
-  alohida qatorda yuboring. Kalit so'zlar bo'limi ham bir xabarda bir
-  nechta so'zni qabul qiladi.
+- **Filtr zanjiri** (`filters.py` — skaner ham, test ham AYNAN shu
+  kodni ishlatadi), 6 bosqich:
+  1. Tizim (admin) to'xtatmaganmi;
+  2. Tarif faolmi / bloklanmaganmi (admin bundan mustasno);
+  3. Foydalanuvchining umumiy Stop/Start holati;
+  4. Xabar shu foydalanuvchining faol guruhidanmi;
+  5. Emoji yoki stiker bormi — haydovchi e'loni, blok;
+  6. Kalit so'zlar shartga yetadimi.
+  Emoji bosqichi hech qanday ro'yxat talab qilmaydi: haydovchi
+  e'lonlari deyarli doim emoji bilan bezatiladi, mijoz xabarlarida
+  esa emoji bo'lmaydi.
+- **Bitta umumiy ro'yxat**: faqat 🔑 Kalit so'zlar bor (admin
+  kiritadi). Ro'yxatga yozuv: takror so'z (katta/kichik harf,
+  lotin/kirill, tinish belgisi farqi bilan) qo'shilmaydi; xato
+  shakl («mang'ud» → «mang'it»), 3 harfdan qisqa so'z va
+  qo'shimchali shakl («toshkentga» — o'zak «toshkent» bor) rad
+  etiladi. Ro'yxatga har doim lotin shakli yoziladi.
+- **Ko'p so'zni bir martada kiritish**: bitta xabarda bir nechta
+  so'z yuboriladi — probil, vergul yoki yangi qator bilan
+  ajratiladi; har biri alohida kalit bo'ladi. Ro'yxat 20 tadan
+  sahifalanadi (◀️ ▶️), so'z tugmasi bosilganda o'sha xabarning
+  o'zi yangilanadi — ro'yxat yopilib qolmaydi.
 - **Yozilish shakllari**: so'zlarni faqat **lotin** alifbosida kiritish
   yetarli. Skaner kirill alifbosini ham, "dangasa" yozilgan kirillni
   ham (ў→у, қ→к, ғ→г, ҳ→х) tanidi: `qarshi` = `қарши` = `карши`,
-  `jo'naymiz` = `жўнаймиз` = `жунаймиз`. Apostrof muhim:
-  `bo'sh` to'g'ri, `bosh` — boshqa so'z.
-- **Fe'l shaxsi**: `olamiz`/`olaman` bir shaxs (biz) — mos keladi;
-  `olamiz` va `olasiz` (siz) mos kelmaydi. Shuning uchun mijozning
-  "қачон жўнайсиз?" savoli haydovchining `jo'naymiz` stop-so'zi bilan
-  bloklanmaydi. Niyat shakli (`jo'natmoqchiman`) hozirgi zamondan
-  (`jo'natamiz`) ajratiladi.
-- **So'roq shakli**: stop-so'zlar uchun `-mi` qo'shimchasi qat'iy
-  hisobga olinadi. `жой бор` (haydovchi e'loni) bloklanadi, lekin
-  `жой борми` (mijoz savoli) o'tadi. Shu tufayli `joy bor`,
-  `bo'sh joyimiz` kabi iboralarni bemalol stop-so'z qilib qo'shsa
-  bo'ladi.
+  `jo'naymiz` = `жўнаймиз` =
+  `жунаймиз`. Apostrof muhim: `bo'sh` to'g'ri, `bosh` — boshqa so'z.
+  Fe'l shakllari ham mos keladi: `olamiz`/`olaman` (bir shaxs),
+  `odam`/`odamlar`.
 - **Tezlik**: kalitlar prefiks indeksi bo'yicha qidiriladi. 5000 ta
   kalitda bitta xabar ~2 ms (avval ~600 ms edi).
 
