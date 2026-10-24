@@ -44,7 +44,7 @@ from matcher import (
 # Bosqich nomlari — testda shu tartibda ko'rsatiladi
 STAGE_TITLES = [
     ("system", "Tizim (admin) holati"),
-    ("tariff", "Tarif"),
+    ("tariff", "Tarif / bloklanish"),
     ("scanner", "Umumiy skaner"),
     ("group", "Guruh"),
     ("emoji", "Emoji / stiker"),
@@ -126,6 +126,9 @@ def evaluate(
         add("tariff", INFO, "admin — tarif talab qilinmaydi")
     else:
         row = get_user(owner_id)
+        if row and row[3]:
+            # Bloklangan foydalanuvchiga xabar ketmasligi shart.
+            return finish("tariff", "hisobingiz bloklangan")
         expires = row[4] if row else 0
         import time as _time
 

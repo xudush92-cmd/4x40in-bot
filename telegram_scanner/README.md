@@ -63,8 +63,13 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 - **Admin** (`ADMIN_ID`, bitta odam): kalitlar (faqat admin kiritadi),
   xabar sharti (standart), tizim stop/start, 🧪 test, 📊 umumiy
   statistika, 👥 foydalanuvchilar, 📝 arizalar, 📣 xabar yuborish.
-  Admindan alohida "guruhlar" bo'limi YO'Q va admin guruh o'chirmaydi —
-  har bir foydalanuvchining guruhlari, xabar sharti, skaner holati,
+  Admin ham **o'z akkaunti bilan skanerlaydi**: 🔑 Login orqali akkauntini
+  ulaydi (tasdiqlash talab qilinmaydi), ➕ Guruh qo'shish bilan o'z
+  guruhlarini qo'shadi va 📋 Guruhlarim da ko'radi. Admin guruhlari
+  `user_groups` jadvalida o'z `owner_user_id` si bilan turadi, shuning
+  uchun boshqa foydalanuvchilarnikidan aralashmaydi. Admin tarif talab
+  qilmaydi — bu xatolarni o'z ko'zi bilan kuzatish uchun.
+  Har bir foydalanuvchining guruhlari, xabar sharti, skaner holati,
   tarifi, sessiyasi va statistikasi **bitta foydalanuvchi
   kartochkasida** ko'rsatiladi. 👥 Foydalanuvchilar bo'limida avval
   ism-familiya tugmalari chiqadi — bosilsa kartochka ochiladi,

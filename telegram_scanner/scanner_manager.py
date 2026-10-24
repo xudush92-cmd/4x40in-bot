@@ -6,6 +6,7 @@ xabar topilsa FAQAT egasiga boradi. Kalitlar va shart — adminniki (global).
 """
 import asyncio
 import datetime
+import html
 import logging
 import time
 
@@ -54,6 +55,12 @@ def online_user_ids() -> list[int]:
 
 
 async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
+    """Tekshiruvdagi guruhlarni hal qiladi va egasiga natijani aytadi.
+
+    Xabar yuborilmasa foydalanuvchi "guruh qo'shdim" deb kutib qoladi va
+    "skaner ishlamayapti" deb o'ylaydi. Shuning uchun har bir natija
+    (ulandi yoki xato + sabab) egasiga aytiladi.
+    """
     rows = get_pending_user_groups(owner_id)
     if not rows:
         return
@@ -73,13 +80,30 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
         except Exception:
             continue
 
-    for gid, _owner, input_value, _chat, _status in rows:
+    async def _fail(gid: int, value: str, reason: str, prev: str) -> None:
+        mark_user_group_error(gid, reason)
+        logger.info("[GROUP] owner=%s xato: %s -> %s", owner_id, value, reason)
+        # Xato guruhlar har 60 soniyada qayta tekshiriladi. Faqat birinchi
+        # urinishda (pending -> xato) xabar beramiz, aks holda spam bo'ladi.
+        if prev != "pending":
+            return
+        await send_to_bot_api(
+            "⚠️ <b>Guruh ulanmadi</b>\n\n"
+            f"👥 <code>{html.escape(value, quote=False)}</code>\n"
+            f"Sabab: {html.escape(reason, quote=False)}\n\n"
+            "🔄 Tuzatib, 📋 Guruhlarim → Qayta tekshirish ni bosing.",
+            chat_id=owner_id,
+        )
+
+    for gid, _owner, input_value, _chat, prev_status in rows:
         value = (input_value or "").strip()
         entity = None
         if "t.me/+" in value or "t.me/joinchat/" in value:
-            mark_user_group_error(
-                gid,
-                "Yopiq havolani tekshirib bo'lmaydi: guruh ID sini (-100...) yuboring",
+            await _fail(
+                gid, value,
+                "yopiq taklif havolasini tekshirib bo'lmaydi — guruh ID "
+                "sini (-100...) yuboring",
+                prev_status,
             )
             continue
         if value.lstrip("-").isdigit():
@@ -92,29 +116,41 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
                     entity = by_id[cand]
                     break
             if entity is None:
-                mark_user_group_error(
-                    gid, "Akkauntingiz bu guruhda a'zo emas yoki ID noto'g'ri"
+                await _fail(
+                    gid, value,
+                    "akkauntingiz bu guruhda a'zo emas yoki ID noto'g'ri",
+                    prev_status,
                 )
                 continue
         else:
             username = value.lstrip("@").lower()
             entity = by_username.get(username)
             if entity is None:
-                # Dialogda yo'q — a'zo emas yoki username xato
-                mark_user_group_error(
-                    gid,
-                    "Akkauntingiz bu guruhda a'zo emas yoki manzil noto'g'ri",
+                await _fail(
+                    gid, value,
+                    "akkauntingiz bu guruhda a'zo emas yoki manzil noto'g'ri",
+                    prev_status,
                 )
                 continue
         if isinstance(entity, Chat) or (
             isinstance(entity, Channel) and entity.megagroup
         ):
-            resolve_user_group(
-                gid, utils.get_peer_id(entity), getattr(entity, "title", "") or value
-            )
+            title = getattr(entity, "title", "") or value
+            resolve_user_group(gid, utils.get_peer_id(entity), title)
             logger.info("[GROUP] owner=%s ulandi: %s", owner_id, value)
+            if prev_status != "ok":
+                await send_to_bot_api(
+                    "✅ <b>Guruh ulandi!</b>\n\n"
+                    f"👥 {html.escape(title, quote=False)}\n"
+                    f"🆔 <code>{utils.get_peer_id(entity)}</code>\n\n"
+                    "Endi bu guruh skanerlanadi. To'xtatish: menyudagi "
+                    "🔴 ⏸ Stop",
+                    chat_id=owner_id,
+                )
         else:
-            mark_user_group_error(gid, "Bu guruh emas (kanal/foydalanuvchi)")
+            await _fail(
+                gid, value, "bu guruh emas (kanal yoki foydalanuvchi)", prev_status
+            )
 
 
 def _has_sticker(message) -> bool:

@@ -177,8 +177,12 @@ def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
         kb = [
             [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_PHRASES)],
             [KeyboardButton(text=BTN_STOPWORDS), KeyboardButton(text=BTN_COUNT)],
+            # Admin ham o'z akkaunti bilan skanerlaydi: guruhlarini
+            # o'zi qo'shadi va o'z guruhlaridan xabar oladi.
+            [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
             [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
             [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_LOGIN)],
             [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_TOGGLE)],
         ]
     else:
@@ -377,8 +381,8 @@ def _numpad_text(buffer: str, length: int = 5) -> str:
 @dp.message(F.text == BTN_LOGIN)
 async def begin_login(message: types.Message, state: FSMContext, user_id: int | None = None):
     uid = user_id or message.from_user.id
-    if is_admin(uid):
-        return
+    # Admin ham o'z akkauntini ulaydi — shu bilan skaner va xatolarni
+    # o'z ko'zi bilan kuzatadi. Tasdiqlash talab qilinmaydi (o'zi admin).
     row = get_user_full(uid)
     if row and row[3]:
         await message.answer("⛔ Hisobingiz bloklangan. Admin bilan bog'laning.")
@@ -602,6 +606,26 @@ async def _complete_signed_in(message: types.Message, state: FSMContext, uid: in
             pass
     set_pending_session(uid, encrypt_session(session_str))
     await state.clear()
+
+    # Admin o'zini tasdiqlamaydi: sessiya darhol aktiv bo'ladi va
+    # skaner clienti ko'tariladi.
+    if is_admin(uid):
+        approve_pending_session(uid)
+        try:
+            import scanner_manager
+
+            await scanner_manager.start_user_client(uid)
+        except Exception:
+            logger.exception("Admin client start (login)")
+        await message.answer(
+            "✅ <b>Login muvaffaqiyatli!</b>\n\n"
+            "Akkauntingiz ulandi va skaner tayyor. Endi "
+            "➕ Guruh qo'shish orqali guruhingizni qo'shing.",
+            parse_mode="HTML",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+
     await message.answer(
         "✅ <b>Login muvaffaqiyatli!</b>\n\n"
         "⏳ Endi admin tasdiqlashini kuting — tasdiqlangach, akkauntingiz "
@@ -716,13 +740,15 @@ async def registration_reject(callback: types.CallbackQuery):
 # --- Foydalanuvchi: akkaunt holati ---
 @dp.message(F.text == BTN_ACCOUNT)
 async def account_status(message: types.Message, state: FSMContext):
-    if is_admin(message.from_user.id):
-        return
     await state.clear()
     uid = message.from_user.id
     # Bu bo'limda tugmalar yo'q — faqat holat ko'rsatiladi
-    # (sessiyani uzish tugmasi olib tashlangan).
-    await message.answer(account_status_text(uid), parse_mode="HTML")
+    # (sessiyani uzish tugmasi olib tashlangan). Admin ham ko'radi:
+    # uning akkaunti ham skanerlaydi.
+    markup = main_menu(admin=True) if is_admin(uid) else None
+    await message.answer(
+        account_status_text(uid), parse_mode="HTML", reply_markup=markup
+    )
 
 
 @dp.callback_query(F.data == "sess_in")
@@ -1481,6 +1507,91 @@ def normalize_group_input(text: str) -> str | None:
     if re.fullmatch(r"[A-Za-z0-9_]{5,}", t):
         return "@" + t
     return None
+
+
+# --- Admin: O'Z guruhlari (admin ham oddiy foydalanuvchi kabi skanerlaydi) ---
+# Guruhlar `user_groups` jadvalida, owner_user_id = ADMIN_ID bilan turadi.
+# Shu tufayli admin guruhlari boshqa foydalanuvchilarnikidan aralashmaydi.
+@dp.message(AdminFilter(), F.text == BTN_GROUP_ADD)
+async def admin_ask_group(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    if not user_connected(uid):
+        await message.answer(
+            "Avval Telegram akkauntingizni ulang: 🔑 Login",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+    if count_user_groups(uid) >= MAX_USER_GROUPS:
+        await message.answer(
+            f"⚠️ Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha olasiz.",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+    await state.set_state(AddGroup.waiting_group)
+    await message.answer(
+        "Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
+        "• <code>@guruh_nomi</code> yoki <code>https://t.me/guruh_nomi</code>\n"
+        "• <code>-1001234567890</code> (raqamli ID)\n\n"
+        "⚠️ Sizning Telegram akkauntingiz shu guruhda a'zo bo'lishi shart.\n"
+        "Topilgan xabarlar faqat shu chatga keladi.\n\n"
+        "Bekor qilish: /cancel",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(AdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
+async def admin_save_group(message: types.Message, state: FSMContext):
+    if (message.text or "").strip() in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    uid = message.from_user.id
+    value = normalize_group_input(message.text or "")
+    if value is None:
+        await message.answer(
+            "⚠️ Manzil (@username / t.me havola) yoki ID (-100...) yuboring."
+        )
+        return
+    await state.clear()
+    ok, err = add_user_group(uid, value)
+    if not ok:
+        await message.answer(
+            f"⚠️ {html.escape(err)}", reply_markup=main_menu(admin=True)
+        )
+        return
+    await message.answer(
+        f"✅ Guruh qabul qilindi: <b>{html.escape(value)}</b>\n"
+        "⏳ Akkauntingiz orqali tekshirilmoqda (odatda 1 daqiqagacha).\n"
+        "Holat: 📋 Guruhlarim",
+        parse_mode="HTML",
+        reply_markup=main_menu(admin=True),
+    )
+
+
+@dp.message(AdminFilter(), F.text == BTN_GROUPS)
+async def admin_list_groups(message: types.Message, state: FSMContext):
+    await state.clear()
+    uid = message.from_user.id
+    groups = get_user_groups(uid)
+    if not groups:
+        await message.answer(
+            "Sizda hali guruh yo'q. ➕ Guruh qo'shish orqali qo'shing.\n\n"
+            "Admin ham o'z akkaunti bilan skanerlaydi — guruhni qo'shsangiz, "
+            "topilgan xabarlar shu chatga keladi.",
+            reply_markup=main_menu(admin=True),
+        )
+        return
+    ok = sum(1 for g in groups if g[6] == "ok")
+    pending = sum(1 for g in groups if g[6] == "pending")
+    await message.answer(
+        f"📋 Sizning guruhlaringiz — {len(groups)} ta "
+        f"(kuzatuvda: {ok}, tekshiruvda: {pending})"
+    )
+    for row in groups:
+        await message.answer(
+            _user_group_text(row),
+            parse_mode="HTML",
+            reply_markup=_user_group_keyboard(row),
+        )
 
 
 # --- Admin: foydalanuvchilar boshqaruvi (bitta to'liq kartochka) ---
