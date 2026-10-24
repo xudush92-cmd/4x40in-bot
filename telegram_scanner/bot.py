@@ -98,6 +98,10 @@ BTN_LOGIN = "🔑 Login"
 BTN_ACCOUNT = "📱 Akkaunt holati"
 BTN_HELP = "ℹ️ Yordam"
 # Foydalanuvchining UMUMIY skaner boshqaruvi (bitta tugma, menyuda)
+# Ikki alohida panel: admin boshqaruvi va skanerning O'Z ishlari
+BTN_ADMIN_PANEL = "🛠 Admin panel"
+BTN_SCAN_PANEL = "🎛 Skaner paneli"
+BTN_MAIN_MENU = "↩️ Asosiy menyu"
 BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
 BTN_SCAN_RESUME = "🟢 ▶️ Start"
 # Eski nomlar yangi bitta bo'limga yo'naltiriladi
@@ -108,6 +112,7 @@ MENU_BUTTONS = {
     BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
+    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -174,17 +179,40 @@ def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
         # 4) xabar/statistika  5) akkaunt va tekshiruv  6) tizim.
         # 🔑 Login va ℹ️ Yordam admin menyusida YO'Q: login kerak bo'lsa
         # 📱 Akkaunt holati ichidagi tugmadan ochiladi.
+        # Ikki panel aralashmasin: boshqaruv → 🛠 Admin panel,
+        # skanerning o'z ishlari → 🎛 Skaner paneli.
         kb = [
-            [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
-            [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_SCAN_GROUPS)],
-            [KeyboardButton(text=BTN_GROUPS), KeyboardButton(text=BTN_TEST)],
-            [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
-            [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_ADMIN_PANEL), KeyboardButton(text=BTN_SCAN_PANEL)],
             [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_TOGGLE)],
         ]
     else:
         kb = user_menu_keyboard()
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def admin_panel_keyboard() -> list:
+    """🛠 Admin panel: foydalanuvchilar, arizalar, kalitlar, statistika."""
+    return [
+        [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
+        [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
+        [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
+        [KeyboardButton(text=BTN_MAIN_MENU)],
+    ]
+
+
+def scan_panel_keyboard(uid: int) -> list:
+    """🎛 Skaner paneli: o'z guruhlari, test, shaxsiy Stop/Start."""
+    toggle = (
+        BTN_SCAN_PAUSE
+        if get_user_scanner_enabled(uid)
+        else BTN_SCAN_RESUME
+    )
+    return [
+        [KeyboardButton(text=toggle)],
+        [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_SCAN_GROUPS)],
+        [KeyboardButton(text=BTN_GROUPS), KeyboardButton(text=BTN_TEST)],
+        [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_MAIN_MENU)],
+    ]
 
 
 def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
@@ -352,6 +380,45 @@ class MenuEscapeMiddleware(BaseMiddleware):
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
 dp.message.outer_middleware(MenuEscapeMiddleware())
+
+
+@dp.message(AdminFilter(), F.text == BTN_ADMIN_PANEL)
+async def open_admin_panel(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "🛠 <b>Admin panel</b>\n\n"
+        "Kalit so'zlar, xabar sharti, foydalanuvchilar, arizalar, "
+        "xabar yuborish va statistika.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=admin_panel_keyboard(), resize_keyboard=True
+        ),
+    )
+
+
+@dp.message(AdminFilter(), F.text == BTN_SCAN_PANEL)
+async def open_scan_panel(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "🎛 <b>Skaner paneli</b>\n\n"
+        "O'z guruhlaringiz, skaner testi va shaxsiy Stop/Start shu yerda. "
+        "Bu tugmalar faqat sizning akkauntingizga ta'sir qiladi.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=scan_panel_keyboard(message.from_user.id),
+            resize_keyboard=True,
+        ),
+    )
+
+
+@dp.message(F.text == BTN_MAIN_MENU)
+async def back_to_main_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "🏠 Asosiy menyu",
+        reply_markup=menu_for(message.from_user.id),
+    )
+
 # DIQQAT: global admin filtri YO'Q — oddiy foydalanuvchilar ham botni
 # ishlatadi. Har bir admin handlerida alohida AdminFilter() turadi.
 
@@ -838,6 +905,10 @@ async def account_status(message: types.Message, state: FSMContext):
             # Sessiya bekor qilingan bo'lsa ham qayta ulash tugmasi shu yerda.
             rows.append([InlineKeyboardButton(
                 text="🔑 Akkauntni ulash", callback_data="sess_in")])
+        # Sessiya bazada bor, lekin skaner clienti ko'tarilmagan bo'lsa —
+        # serverga bormasdan shu yerdan qayta yuklash mumkin.
+        rows.append([InlineKeyboardButton(
+            text="🔄 Skanerni qayta yuklash", callback_data="sreload")])
         await message.answer(
             account_status_text(uid),
             parse_mode="HTML",
@@ -850,6 +921,48 @@ async def account_status(message: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=user_menu_for(uid),
     )
+
+
+@dp.callback_query(AdminFilter(), F.data == "sreload")
+async def scanner_reload_callback(callback: types.CallbackQuery):
+    """Skaner clientini qayta yuklaydi (sessiya o'zgarmaydi)."""
+    uid = callback.from_user.id
+    await callback.answer("Yuklanmoqda...")
+    try:
+        import scanner_manager
+
+        ok = await scanner_manager.restart_user_client(uid)
+    except Exception:
+        logger.exception("Skanerni qayta yuklash")
+        ok = False
+    info = {}
+    try:
+        import scanner_manager as _sm
+
+        info = _sm.scan_diagnostics(uid)
+    except Exception:
+        pass
+    if ok:
+        text = "✅ <b>Skaner qayta yuklandi.</b>\n\n" + account_status_text(uid)
+        reply = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🔴 Skanerimni to'xtatish", callback_data="ascan:1")
+        ]])
+    else:
+        reason = info.get("start_error") or "noma'lum sabab"
+        text = (
+            "❌ <b>Skaner yuklanmadi.</b>\n\n"
+            f"Sabab: {html.escape(reason, quote=False)}\n\n"
+            "Agar sabab sessiya bilan bog'liq bo'lsa — 🔑 Akkauntni ulash "
+            "bilan qayta ulang."
+        )
+        reply = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔑 Akkauntni ulash", callback_data="sess_in")
+        ]])
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=reply)
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=reply)
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("ascan:"))
@@ -1062,7 +1175,7 @@ async def user_stats(message: types.Message, state: FSMContext):
 
 
 # --- Foydalanuvchi: UMUMIY Stop/Start (bitta tugma, menyuda) ---
-@dp.message(NotAdminFilter(), F.text.in_({BTN_SCAN_PAUSE, BTN_SCAN_RESUME}))
+@dp.message(F.text.in_({BTN_SCAN_PAUSE, BTN_SCAN_RESUME}))
 async def user_scanner_toggle(message: types.Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
@@ -1073,7 +1186,12 @@ async def user_scanner_toggle(message: types.Message, state: FSMContext):
     else:
         text = ("🔴 <b>Skaner to'xtatildi.</b>\nBarcha guruhlaringizdan "
                 "xabar kelishi to'xtaydi (guruhlar o'chmaydi).")
-    await message.answer(text, parse_mode="HTML", reply_markup=user_menu_for(uid))
+    reply = (
+        ReplyKeyboardMarkup(keyboard=scan_panel_keyboard(uid), resize_keyboard=True)
+        if is_admin(uid)
+        else user_menu_for(uid)
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=reply)
 
 
 # --- Skaner testi: to'liq zanjir hisoboti (test == real skaner) ---
@@ -1104,7 +1222,25 @@ def _scan_diag_lines(uid: int) -> list[str]:
 
     lines = ["", "📡 <b>Sessiya diagnostikasi</b>"]
     if not info.get("client"):
+        reason = info.get("start_error") or ""
         lines.append("❌ Skaner clienti ishga tushmagan (sessiya yuklanmagan)")
+        if reason:
+            lines.append(f"   Sabab: {html.escape(reason, quote=False)}")
+        last_sync = info.get("last_sync") or 0
+        if last_sync:
+            ago = max(0, int(time.time()) - last_sync)
+            lines.append(
+                f"   Sync loop: oxirgi tekshiruv {ago} soniya oldin (ishlayapti)"
+            )
+        else:
+            lines.append(
+                "   Sync loop: hali ishlamagan — server qayta ishga "
+                "tushirilishi kerak"
+            )
+        lines.append(
+            "   📱 Akkaunt holati → 🔄 Skanerni qayta yuklash bilan "
+            "urinib ko'ring."
+        )
         return lines
     if not info.get("connected"):
         lines.append("⚠️ Client yaratilgan, lekin Telegramga ulanmagan")
@@ -2013,6 +2149,12 @@ def _user_keyboard(uid: int, blocked: int, with_back: bool = True) -> InlineKeyb
         ],
         [
             InlineKeyboardButton(
+                text="♻️ Skanerni qayta yuklash",
+                callback_data=f"ureload:{uid}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 text="🗑 Foydalanuvchini o'chirish",
                 callback_data=f"udel:{uid}",
             )
@@ -2246,6 +2388,31 @@ async def admin_user_delete(callback: types.CallbackQuery):
     delete_user_completely(user_id)
     await callback.message.edit_text("🗑 Foydalanuvchi butunlay o'chirildi.")
     await callback.answer("O'chirildi")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("ureload:"))
+async def admin_user_reload_scanner(callback: types.CallbackQuery):
+    """Boshqa foydalanuvchining skaner clientini qayta yuklaydi."""
+    try:
+        target = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato.", show_alert=True)
+        return
+    await callback.answer("Yuklanmoqda...")
+    try:
+        import scanner_manager
+
+        ok = await scanner_manager.restart_user_client(target)
+        err = scanner_manager.scan_diagnostics(target).get("start_error", "")
+    except Exception:
+        logger.exception("Foydalanuvchi skanerini qayta yuklash")
+        ok, err = False, "ichki xato"
+    if ok:
+        await callback.answer("✅ Skaner qayta yuklandi", show_alert=True)
+    else:
+        await callback.answer(
+            f"❌ Yuklanmadi: {err or 'nomaʼlum sabab'}", show_alert=True
+        )
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("ublock:"))
@@ -2601,6 +2768,18 @@ async def main():
         )
     init_db()
     logger.info("Boshqaruv boti ishga tushdi...")
+
+    # MUHIM: sessiya manageri shu yerda ham ishga tushadi. Servis
+    # to'g'ridan-to'g'ri bot.py bilan ko'tarilsa, ilgari sync loop umuman
+    # ishlamasdi — natijada hech bir sessiya yuklanmay, xabar kelmasdi.
+    try:
+        import scanner_manager
+
+        scanner_manager.start_background()
+        await scanner_manager.sync_now()
+    except Exception:
+        logger.exception("Sessiya managerini ishga tushirish")
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 

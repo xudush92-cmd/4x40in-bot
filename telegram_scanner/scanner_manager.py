@@ -197,6 +197,8 @@ def _has_sticker(message) -> bool:
 _seen_events: dict[int, int] = {}          # owner -> nechta guruh xabari
 _seen_private: dict[int, int] = {}         # owner -> nechta lichka xabari
 _last_event: dict[int, tuple] = {}         # owner -> (vaqt, chat_id, matn)
+_start_error: dict[int, str] = {}          # owner -> oxirgi start xatosi
+_last_sync_ts: int = 0                     # sync loop oxirgi ishlagan vaqt
 
 
 def _note_event(owner_id: int, private: bool, chat_id, text: str) -> None:
@@ -215,6 +217,8 @@ def scan_diagnostics(owner_id: int) -> dict:
     last = _last_event.get(owner_id)
     return {
         "client": client is not None,
+        "start_error": _start_error.get(owner_id, ""),
+        "last_sync": _last_sync_ts,
         "connected": bool(client is not None and client.is_connected()),
         "events": _seen_events.get(owner_id, 0),
         "private": _seen_private.get(owner_id, 0),
@@ -364,14 +368,23 @@ async def start_user_client(owner_id: int) -> bool:
         return True
     row = get_user_full(owner_id)
     if not row:
+        _start_error[owner_id] = "foydalanuvchi bazada yo'q"
         return False
     # row: ... 8=session_enc, 10=awaiting
     session_enc, awaiting = row[8], row[10]
-    if not session_enc or awaiting:
+    if not session_enc:
+        _start_error[owner_id] = "sessiya saqlanmagan (login qilinmagan)"
+        return False
+    if awaiting:
+        _start_error[owner_id] = "login tasdiq kutmoqda"
         return False
     session_str = decrypt_session(session_enc)
     if not session_str:
         # SESSION_ENCRYPTION_KEY o'zgargan yoki yozuv buzilgan
+        _start_error[owner_id] = (
+            "sessiya shifrini ochib bo'lmadi (SESSION_ENCRYPTION_KEY "
+            "o'zgargan bo'lishi mumkin) — qayta login kerak"
+        )
         set_session_status(owner_id, "invalid")
         await _notify_session_problem(owner_id, invalid=True)
         return False
@@ -389,7 +402,8 @@ async def start_user_client(owner_id: int) -> bool:
             await client.disconnect()
             await _notify_session_problem(owner_id, invalid=True)
             return False
-    except Exception:
+    except Exception as exc:
+        _start_error[owner_id] = f"Telegramga ulanmadi: {type(exc).__name__}"
         logger.warning("Sessiya start xato owner=%s", owner_id, exc_info=True)
         try:
             await client.disconnect()
@@ -401,11 +415,31 @@ async def start_user_client(owner_id: int) -> bool:
         return False
     _make_handler(owner_id, client)
     _clients[owner_id] = client
+    _start_error.pop(owner_id, None)
     set_session_status(owner_id, "active")
     _last_session_notice.pop(owner_id, None)
     logger.info("[SESSION] owner=%s client ishga tushdi", owner_id)
     asyncio.create_task(_resolve_owner_groups(owner_id, client))
     return True
+
+
+async def sync_now() -> None:
+    """Sync loopsiz darhol barcha sessiyalarni ko'tarishga urinish."""
+    for row in get_all_users_full():
+        uid, blocked, session_enc, awaiting = row[0], row[3], row[8], row[10]
+        if not session_enc or awaiting or blocked:
+            continue
+        if uid != ADMIN_ID and not is_subscription_active(uid):
+            continue
+        if uid not in _clients:
+            await start_user_client(uid)
+
+
+async def restart_user_client(owner_id: int) -> bool:
+    """Clientni to'xtatib qayta ko'taradi (qo'lda tuzatish tugmasi)."""
+    await stop_user_client(owner_id)
+    _clients.pop(owner_id, None)
+    return await start_user_client(owner_id)
 
 
 async def stop_user_client(owner_id: int, revoke: bool = False) -> None:
@@ -425,6 +459,7 @@ async def stop_user_client(owner_id: int, revoke: bool = False) -> None:
 
 
 async def _sync_loop():
+    global _last_sync_ts
     while True:
         try:
             online = set(_clients)
@@ -461,8 +496,9 @@ async def _sync_loop():
                     continue
                 # Har bir onlayn clientda egasining pending guruhlarini tekshirish
                 await _resolve_owner_groups(uid, client)
+            _last_sync_ts = int(time.time())
             from database import set_setting as _ss
-            _ss("userbot_last_seen", int(time.time()))
+            _ss("userbot_last_seen", _last_sync_ts)
         except Exception:
             logger.exception("Sync loop xato")
         await asyncio.sleep(60)
@@ -494,9 +530,28 @@ async def _expiry_warning_loop(bot_send=send_to_bot_api):
         await asyncio.sleep(3600)
 
 
-async def run():
-    """Barcha sessiyalar managerini ishga tushiradi (main.py dan)."""
+_background_started = False
+
+
+def start_background() -> None:
+    """Sync loop va ogohlantirish loopini ishga tushiradi (bir marta).
+
+    MUHIM: bu funksiya bot.py dan ham chaqiriladi. Ilgari u faqat
+    main.py orqali ishga tushardi — servis to'g'ridan-to'g'ri bot.py
+    bilan ko'tarilsa, sync loop umuman ishlamay, hech bir sessiya
+    yuklanmasdi va xabar kelmasdi.
+    """
+    global _background_started
+    if _background_started:
+        return
+    _background_started = True
     logger.info("Sessiya manageri ishga tushdi...")
     _tasks.append(asyncio.create_task(_sync_loop()))
     _tasks.append(asyncio.create_task(_expiry_warning_loop()))
-    await asyncio.gather(*_tasks)
+
+
+async def run():
+    """Barcha sessiyalar managerini ishga tushiradi (main.py dan)."""
+    start_background()
+    if _tasks:
+        await asyncio.gather(*_tasks)
