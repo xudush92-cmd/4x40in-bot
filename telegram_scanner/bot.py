@@ -86,8 +86,6 @@ from login_manager import (
 from session_crypto import decrypt_session, encrypt_session
 from matcher import (
     _MAX_PHRASE_WORDS,
-    find_match,
-    match_keywords,
     parse_key_words,
     split_entries,
 )
@@ -943,6 +941,50 @@ async def user_scanner_toggle(message: types.Message, state: FSMContext):
     await message.answer(text, parse_mode="HTML", reply_markup=user_menu_for(uid))
 
 
+# --- Skaner testi: to'liq zanjir hisoboti (test == real skaner) ---
+_STATUS_ICON = {"ok": "✅", "fail": "❌", "skip": "⏭", "info": "ℹ️"}
+_ORDINAL = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+
+
+def scan_test_report(uid: int, text: str) -> str:
+    """Namuna xabarni HAQIQIY skaner zanjiridan o'tkazib, hisobot beradi.
+
+    filters.evaluate() — real skaner ishlatadigan aynan o'sha funksiya,
+    shuning uchun bu yerda "o'tdi" degan xabar haqiqatda ham o'tadi.
+    """
+    from filters import evaluate
+
+    verdict = evaluate(uid, text, check_group=False)
+    lines = ["🧪 <b>Skaner testi</b>", ""]
+    if verdict.ok:
+        lines.append("🎯 <b>NATIJA: xabar KELADI</b>")
+    else:
+        lines.append(f"❌ <b>NATIJA: xabar KELMAYDI</b>")
+        lines.append(f"Sabab: <b>{html.escape(verdict.detail, quote=False)}</b>")
+    lines.append("")
+
+    for index, stage in enumerate(verdict.stages):
+        if index >= len(_ORDINAL):
+            break
+        icon = _STATUS_ICON.get(stage.status, "•")
+        lines.append(
+            f"{_ORDINAL[index]} {icon} <b>{html.escape(stage.title, quote=False)}</b>: "
+            f"{html.escape(stage.text, quote=False)}"
+        )
+
+    lines.append("")
+    if verdict.ok:
+        lines.append(
+            "Shu xabar guruhga kelsa, bildirishnoma aynan sizga keladi."
+        )
+    else:
+        lines.append(
+            "Bu xabar guruhga kelsa ham bildirishnoma kelmaydi — "
+            "sabab yuqorida ko'rsatilgan."
+        )
+    return "\n".join(lines)
+
+
 def _user_scan_status_text(uid: int) -> str:
     groups = get_user_groups(uid)
     ok = sum(1 for g in groups if g[6] == "ok")
@@ -995,20 +1037,8 @@ async def user_scan_test_check(message: types.Message, state: FSMContext):
         return
     await state.clear()
     uid = message.from_user.id
-    keywords = get_keywords()
-    required = get_user_match_count(uid)
-    result = match_keywords(message.text or "", keywords, required)
-    verdict = (
-        "🎯 <b>Xabar berilardi</b> — shart bajarildi."
-        if result.matched_count >= required and required > 0
-        else "❌ <b>Xabar berilmasdi</b> — shart bajarilmadi."
-    )
-    extra = ""
-    if not get_user_scanner_enabled(uid):
-        extra = "\n⚠️ Sizning umumiy skaneringiz ⏸ oʻchirilgan."
     await message.answer(
-        f"🔍 Topilgan kalitlar: <b>{result.matched_count}</b> ta "
-        f"(shart: {required} ta)\n{verdict}{extra}",
+        scan_test_report(uid, message.text or ""),
         parse_mode="HTML",
         reply_markup=user_menu_for(uid),
     )
@@ -2217,30 +2247,13 @@ async def scan_test_check(message: types.Message, state: FSMContext):
         await state.clear()
         return
     await state.clear()
-    keywords = get_keywords()
-    required = get_match_count()
-    result = match_keywords(message.text or "", keywords, required)
-    found = find_match(message.text or "", keywords, required)
-
-    lines = [
-        f"🔍 Topilgan kalitlar: <b>{result.matched_count}</b> ta "
-        f"(shart: {required} ta)",
-    ]
-    if result.matched_words:
-        lines.append(f"✅ {html.escape(', '.join(result.matched_words))}")
-    if found:
-        lines.append(
-            "\n🎯 <b>Natija: skaner bu xabarga XABAR BERARDI</b> — "
-            "agar guruh faol bo'lsa, bildirishnoma aynan shu chatga keladi."
-        )
-    else:
-        lines.append(
-            "\n❌ <b>Natija: xabar BERILMASDI</b> — kalitlar soni shartga "
-            "yetmadi. Kalit qo'shing yoki 🔔 shartni kamaytiring."
-        )
-    if get_setting("is_active") != "1":
-        lines.append("⚠️ Bundan tashqari tizim ⏸ to'xtatilgan — avval ▶️ yoqing.")
-    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
+    # Admin ham xuddi foydalanuvchi kabi HAQIQIY zanjirdan o'tkazadi:
+    # shu bilan "nega xabar kelmadi" ni o'z ko'zi bilan ko'radi.
+    await message.answer(
+        scan_test_report(message.from_user.id, message.text or ""),
+        parse_mode="HTML",
+        reply_markup=main_menu(),
+    )
 
 
 @dp.message(AdminFilter(), F.text == BTN_TOGGLE)

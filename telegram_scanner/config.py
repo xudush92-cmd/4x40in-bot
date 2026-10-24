@@ -48,8 +48,8 @@ ADMIN_ID = _get_int("ADMIN_ID")
 # tushirilishidan qat'iy nazar bot va userbot bitta bazani ko'radi)
 DB_NAME = os.getenv("SCANNER_DB_PATH") or str(BASE_DIR / "scanner.db")
 
-# Telethon sessiya fayli ham shu papkada saqlanadi
-SESSION_NAME = os.getenv("SESSION_NAME") or str(BASE_DIR / "userbot_session")
+# Diqqat: markaziy "userbot_session" fayli ishlatilmaydi — har bir
+# foydalanuvchi sessiyasi bazada shifrlangan holda saqlanadi.
 
 
 def missing_settings() -> list[str]:

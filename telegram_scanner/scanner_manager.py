@@ -6,7 +6,6 @@ xabar topilsa FAQAT egasiga boradi. Kalitlar va shart — adminniki (global).
 """
 import asyncio
 import datetime
-import html
 import logging
 import time
 
@@ -17,16 +16,7 @@ from telethon.tl.types import Channel, Chat
 from config import ADMIN_ID, API_HASH, API_ID
 from database import (
     get_all_users_full,
-    get_client_words,
-    get_keywords,
-    get_stop_words,
-    get_match_count,
-    get_notification_recipients,  # noqa: F401 (eski moslik)
-    get_owner_active_chat_ids,
     get_pending_user_groups,
-    get_user_match_count,
-    get_user_scanner_enabled,
-    get_setting,
     get_user_full,
     increment_counter,
     increment_user_counter,
@@ -38,15 +28,9 @@ from database import (
     set_user_last_found,
 )
 from login_manager import revoke_session
-from matcher import (
-    contains_emoji,
-    find_client_words,
-    find_match,
-    find_stop_words,
-    match_keywords,
-)
+from filters import evaluate, summary_line
 from session_crypto import decrypt_session
-from userbot import (
+from notifier import (
     build_message_link,
     build_notification_text,
     find_phone_text,
@@ -139,63 +123,26 @@ def _make_handler(owner_id: int, client: TelegramClient):
         is_sticker = _has_sticker(getattr(event, "message", None))
         if not event.raw_text and not is_sticker:
             return
-        # Har bir o'tkazib yuborish sababi logga yoziladi — Replit
-        # loglaridan "nega xabar kelmadi" ni darhol ko'rish mumkin.
-        # 1. Tizim (admin) to'xtatganmi?
-        if get_setting("is_active") != "1":
-            logger.info("[SCAN] skip owner=%s: tizim admin tomonidan off", owner_id)
-            return
-        # 2. Egasi: bloklangan/tarifi tugagan bo'lsa — xabar yo'q
-        if not is_subscription_active(owner_id):
-            logger.info("[SCAN] skip owner=%s chat=%s: tarif faol emas/blok", owner_id, event.chat_id)
-            return
-        # 2b. Foydalanuvchining UMUMIY Stop/Start tugmasi (bitta, menyuda)
-        if not get_user_scanner_enabled(owner_id):
-            logger.info("[SCAN] skip owner=%s chat=%s: foydalanuvchi Stop bosgan", owner_id, event.chat_id)
-            return
-        # 3. Faqat EGASINING faol guruhlari
-        if event.chat_id not in get_owner_active_chat_ids(owner_id):
-            logger.info("[SCAN] skip owner=%s chat=%s: guruh egasiniki emas/ulanmagan", owner_id, event.chat_id)
-            return
-        # 4. 1-FILTR: emoji/stiker — mijoz izlayotgan haydovchi belgisi.
-        # Mijozlar emoji/stiker ishlatmaydi, shuning uchun bunday xabar
-        # matnidagi so'zlardan qat'i nazar bloklanadi.
-        if is_sticker or contains_emoji(event.raw_text):
+        # Barcha filtrlar BITTA joyda — filters.evaluate(). Test ham
+        # aynan shu funksiyani chaqiradi, shuning uchun test aytgan
+        # natija bilan real skaner natijasi hech qachon farq qilmaydi.
+        verdict = evaluate(
+            owner_id,
+            event.raw_text or "",
+            is_sticker=is_sticker,
+            chat_id=event.chat_id,
+        )
+        if not verdict.ok:
+            # O'tkazib yuborish sababi logga yoziladi: [SCAN] skip ...
             logger.info(
-                "[SCAN] skip owner=%s chat=%s: DRIVER emoji/sticker",
-                owner_id, event.chat_id,
+                "[SCAN] skip owner=%s chat=%s: %s",
+                owner_id, event.chat_id, summary_line(verdict),
             )
             return
-        # 5. 2-FILTR: stop-so'zlar — haydovchi e'loni bo'lsa darhol blok
-        stop_found = find_stop_words(event.raw_text, get_stop_words())
-        if stop_found:
-            logger.info(
-                "[SCAN] skip owner=%s chat=%s: DRIVER stop=%s",
-                owner_id, event.chat_id, ", ".join(stop_found),
-            )
-            return
-        # 6. Kalitlar ADMIN bazasidan (phrases jadvali), shart — EGASINIKI
-        keywords = get_keywords()
-        required = get_user_match_count(owner_id)
-        if not keywords:
-            logger.info("[SCAN] skip owner=%s: bazada kalit so'z yo'q (admin kiritmagan)", owner_id)
-            return
-        result = match_keywords(event.raw_text, keywords, required)
         logger.info(
             "[SCAN] owner=%s chat=%s topildi=%s/%s",
-            owner_id, event.chat_id, result.matched_count, required,
+            owner_id, event.chat_id, len(verdict.matched), verdict.required,
         )
-        match = find_match(event.raw_text, keywords, required)
-        if not match:
-            return
-        # 7. 3-FILTR: mijoz so'zi — mijoz niyati bo'lmasa xabar yo'q
-        client_found = find_client_words(event.raw_text, get_client_words())
-        if not client_found:
-            logger.info(
-                "[SCAN] skip owner=%s chat=%s: mijoz so'zi topilmadi",
-                owner_id, event.chat_id,
-            )
-            return
 
         sender = await event.get_sender()
         sender_name, username, user_id = "Noma'lum", "Yo'q", getattr(sender, "id", None)
@@ -218,8 +165,8 @@ def _make_handler(owner_id: int, client: TelegramClient):
             user_id=user_id,
             phone=phone,
             raw_text=event.raw_text,
-            matched_words=match.matched_words,
-            required_count=match.required_count,
+            matched_words=verdict.matched,
+            required_count=verdict.required,
             message_link=message_link,
         )
         rows = []
@@ -242,6 +189,44 @@ def _make_handler(owner_id: int, client: TelegramClient):
     return _handler
 
 
+# Sessiya uzilganda foydalanuvchiga bir marta xabar berish uchun.
+# Kalit — user_id, qiymat — oxirgi xabar yuborilgan vaqt (time.time()).
+_NOTIFY_COOLDOWN = 6 * 3600  # 6 soat
+_last_session_notice: dict[int, float] = {}
+
+
+async def _notify_session_problem(owner_id: int, *, invalid: bool) -> None:
+    """Sessiya bilan muammo bo'lsa egasiga aytadi (6 soatda bir marta).
+
+    Foydalanuvchi sababini bilmasa "skaner ishlamayapti" deb o'ylaydi:
+    xabar jimgina yo'qoladi. Shuning uchun aniq sabab va yechim yoziladi.
+    """
+    now = time.time()
+    if now - _last_session_notice.get(owner_id, 0) < _NOTIFY_COOLDOWN:
+        return
+    _last_session_notice[owner_id] = now
+    if invalid:
+        text = (
+            "⚠️ <b>Telegram sessiyangiz uzilgan.</b>\n\n"
+            "Akkauntdan chiqilgan yoki sessiya bekor qilingan, shu sababli "
+            "guruhlaringiz kuzatilmayapti va xabar kelmaydi.\n\n"
+            "🔑 <b>Login</b> tugmasi orqali qayta kiring — sessiya "
+            "tasdiqlangach skaner yana ishlaydi."
+        )
+    else:
+        text = (
+            "⚠️ <b>Akkauntga ulanishda xato.</b>\n\n"
+            "Server Telegramga ulanmoqda, lekin sessiya hozircha "
+            "ko'tarilmadi. Skaner vaqtincha ishlamasligi mumkin.\n"
+            "Muammo davom etsa 🔑 <b>Login</b> dan qayta kiring."
+        )
+    try:
+        await send_to_bot_api(text, chat_id=owner_id)
+    except Exception:
+        logger.warning("Sessiya ogohlantirishi yuborilmadi owner=%s", owner_id)
+    logger.warning("[SESSION] ogohlantirish yuborildi owner=%s invalid=%s", owner_id, invalid)
+
+
 async def start_user_client(owner_id: int) -> bool:
     if owner_id in _clients:
         return True
@@ -254,7 +239,9 @@ async def start_user_client(owner_id: int) -> bool:
         return False
     session_str = decrypt_session(session_enc)
     if not session_str:
+        # SESSION_ENCRYPTION_KEY o'zgargan yoki yozuv buzilgan
         set_session_status(owner_id, "invalid")
+        await _notify_session_problem(owner_id, invalid=True)
         return False
     client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
     try:
@@ -262,11 +249,13 @@ async def start_user_client(owner_id: int) -> bool:
         if not await client.is_user_authorized():
             set_session_status(owner_id, "invalid")
             await client.disconnect()
+            await _notify_session_problem(owner_id, invalid=True)
             return False
         me = await client.get_me()
         if not me or me.id != owner_id:
             set_session_status(owner_id, "invalid")
             await client.disconnect()
+            await _notify_session_problem(owner_id, invalid=True)
             return False
     except Exception:
         logger.warning("Sessiya start xato owner=%s", owner_id, exc_info=True)
@@ -274,10 +263,14 @@ async def start_user_client(owner_id: int) -> bool:
             await client.disconnect()
         except Exception:
             pass
+        # Tarmoq/Telegram xatosi — sessiya yaroqsiz bo'lmagan bo'lishi mumkin,
+        # shuning uchun "invalid" deb belgilanmaydi, faqat ogohlantiriladi.
+        await _notify_session_problem(owner_id, invalid=False)
         return False
     _make_handler(owner_id, client)
     _clients[owner_id] = client
     set_session_status(owner_id, "active")
+    _last_session_notice.pop(owner_id, None)
     logger.info("[SESSION] owner=%s client ishga tushdi", owner_id)
     asyncio.create_task(_resolve_owner_groups(owner_id, client))
     return True
@@ -306,14 +299,35 @@ async def _sync_loop():
             should = set()
             for row in get_all_users_full():
                 uid, blocked, session_enc, awaiting = row[0], row[3], row[8], row[10]
-                if session_enc and not awaiting and not blocked and uid != ADMIN_ID:
-                    should.add(uid)
+                # Admin ham o'z akkauntini ulab skanerlashi mumkin: u shu
+                # bilan xatolarni o'z ko'zi bilan ko'radi va tekshiradi.
+                # Tarif esa faqat oddiy foydalanuvchilarga tegishli (pastda).
+                if not session_enc or awaiting or blocked:
+                    continue
+                if uid != ADMIN_ID and not is_subscription_active(uid):
+                    continue
+                should.add(uid)
             for uid in should - online:
                 await start_user_client(uid)
             for uid in online - should:
                 await stop_user_client(uid)
-            # Har bir onlayn clientda egasining pending guruhlarini tekshirish
+            # Ulangan client uzilib qolgan bo'lsa (tarmoq, Telegram) —
+            # qayta ulanishga urinamiz, bo'lmasa egasini ogohlantiramiz.
             for uid, client in list(_clients.items()):
+                try:
+                    if client.is_connected():
+                        continue
+                    logger.warning("[SESSION] owner=%s uzilgan, qayta ulanmoqda", uid)
+                    await client.connect()
+                    if not client.is_connected():
+                        raise ConnectionError("ulanmadi")
+                except Exception:
+                    logger.warning("[SESSION] owner=%s qayta tiklanmadi", uid)
+                    _clients.pop(uid, None)
+                    set_session_status(uid, "error")
+                    await _notify_session_problem(uid, invalid=False)
+                    continue
+                # Har bir onlayn clientda egasining pending guruhlarini tekshirish
                 await _resolve_owner_groups(uid, client)
             from database import set_setting as _ss
             _ss("userbot_last_seen", int(time.time()))

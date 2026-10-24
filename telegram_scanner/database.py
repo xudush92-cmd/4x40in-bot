@@ -447,19 +447,6 @@ def is_subscription_active(user_id: int) -> bool:
     return (row[4] or 0) > int(time.time())
 
 
-def get_active_subscriber_ids() -> list[int]:
-    """Tarifi faol va bloklanmagan foydalanuvchilar."""
-    import time
-
-    with closing(_connect()) as conn:
-        rows = conn.execute(
-            "SELECT user_id FROM users WHERE is_blocked = 0 "
-            "AND sub_expires_at > ?",
-            (int(time.time()),),
-        ).fetchall()
-    return [row[0] for row in rows]
-
-
 # --- Registratsiya, sessiyalar, foydalanuvchi guruhlari ---
 
 USER_COLUMNS = (
@@ -805,13 +792,9 @@ def set_user_last_found(user_id: int) -> None:
         )
 
 
-def get_notification_recipients(admin_id: int) -> list[int]:
-    """Bildirishnoma oluvchilar: admin + faol obunachilar (takrorsiz)."""
-    recipients = []
-    for uid in [admin_id, *get_active_subscriber_ids()]:
-        if uid and uid not in recipients:
-            recipients.append(uid)
-    return recipients
+# Markaziy rejimdagi "barcha obunachilarga tarqatish" funksiyasi ataylab
+# o'chirilgan: endi topilgan xabar FAQAT guruh egasiga boradi
+# (scanner_manager._make_handler -> send_to_bot_api(chat_id=owner_id)).
 
 
 def increment_counter(key: str, amount: int = 1) -> int:

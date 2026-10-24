@@ -1,8 +1,13 @@
 # Telegram Scanner
 
 Guruhlardagi xabarlarni berilgan iboralar bo'yicha kuzatib, mos kelgan
-mijozlarni adminga yuboradigan tizim: **boshqaruv boti** (aiogram) +
-**userbot** (Telethon).
+mijozlarni **o'sha guruh egasiga** yuboradigan tizim: **boshqaruv boti**
+(aiogram) + **har bir foydalanuvchining shaxsiy sessiyasi** (Telethon).
+
+> ⚠️ Markaziy "userbot" rejimi **yo'q**. Har bir foydalanuvchi o'z Telegram
+> akkaunti bilan ulanadi, faqat o'zi qo'shgan guruhlar kuzatiladi va
+> topilgan xabar faqat shu foydalanuvchiga boradi. Kalit so'zlar, stop-
+> so'zlar va mijoz so'zlari esa hammaga umumiy (faqat admin kiritadi).
 
 ## O'rnatish
 
@@ -18,12 +23,15 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
 - `BOT_TOKEN` — @BotFather dan
 - `ADMIN_ID` — @userinfobot dan olingan shaxsiy ID
 
-## Ishga tushirish (ikkita alohida terminalda)
+## Ishga tushirish
 
 ```bash
-.venv/bin/python bot.py      # boshqaruv boti
-.venv/bin/python userbot.py  # skaner (1-marta telefon + kod so'raydi)
+.venv/bin/python main.py
 ```
+
+`main.py` ikkalasini birga ko'taradi: boshqaruv boti va barcha
+foydalanuvchilar sessiyalari. Alohida terminal kerak emas — foydalanuvchilar
+akkauntlarini botning o'zidagi 🔑 Login orqali ulaydi.
 
 ## Replitda ishga tushirish
 
@@ -38,26 +46,14 @@ cp .env.example .env   # ichini o'z ma'lumotlaringiz bilan to'ldiring
    | `BOT_TOKEN` | @BotFather dan |
    | `ADMIN_ID` | @userinfobot dan (faqat raqam) |
 
-3. **Birinchi marta** Shell (terminal) da userbotni alohida ishga tushirib
-   Telegramga kiring — telefon raqami, kod (va 2FA parol) so'raladi:
-
-   ```bash
-   cd telegram_scanner
-   pip install -r requirements.txt
-   python userbot.py
-   ```
-
-   Kirgach `Ctrl+C` bilan to'xtating — `userbot_session.session` fayli
-   saqlanib qoladi, keyingi safar kod so'ralmaydi.
-   ⚠️ Bu sessiya faylini hech kimga bermang — u akkauntingiz kaliti.
-
-4. Keyin **Run** tugmasini bosing (`.replit` sozlangan) yoki:
+3. **Run** tugmasini bosing (`.replit` sozlangan) yoki:
 
    ```bash
    python main.py
    ```
 
-   `main.py` bot va userbotni bir vaqtda ishlatadi.
+   ⚠️ `SESSION_ENCRYPTION_KEY` ni keyinchalik o'zgartirmang — aks holda
+   saqlangan sessiyalar ochilmay qoladi.
 
 Eslatma: Replit bepul tarifida loyiha "uxlab" qolishi mumkin — bot
 to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
@@ -138,9 +134,9 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
    t.me havola) yoki raqamli ID (`-100...`) dan birini yuboring.
    Skaner faqat shu yerda qo'shilgan guruhlarni tekshiradi —
    akkauntdagi barcha guruhlar avtomatik tortib kelinmaydi.
-   Userbot akkaunti guruhda a'zo bo'lishi shart: userbot 30 soniya
-   ichida tekshirib, "✅ Guruh ulandi" yoki sababi bilan xato xabarini
-   yuboradi. Xato bo'lsa 🔄 Qayta tekshirish tugmasi bor.
+   Akkauntingiz shu guruhda a'zo bo'lishi shart: 30 soniya ichida
+   tekshirilib, "✅ Guruh ulandi" yoki sababi bilan xato xabari keladi.
+   Xato bo'lsa 🔄 Qayta tekshirish tugmasi bor.
 2. **📋 Guruhlarim** da har bir guruhda faqat **🗑 O'chirish** tugmasi
    bor. Stop/Start guruhga alohida EMAS — foydalanuvchi menyusining
    ENG TEPASIDA bitta UMUMIY tugma: yoniq bo'lsa `🔴 ⏸ Stop`,
@@ -156,10 +152,10 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
    foydalanuvchi menyudagi **🔔 Xabar sharti** dan O'Z shartini
    alohida belgilashi mumkin — bu faqat o'ziga ta'sir qiladi.
    Kalit so'zlarning o'zi esa umumiy (faqat admin kiritadi).
-5. **🧪 Skaner testi** tugmasi diagnostika uchun: tizim/userbot/guruhlar
-   holatini ko'rsatadi va namuna xabarni kalitlarga tekshirib beradi.
-   Bildirishnomalar faqat Secrets dagi `ADMIN_ID` ga — shu bot bilan
-   bo'lgan shaxsiy chatga keladi, boshqa joyga yuborilmaydi.
+5. **🧪 Skaner testi** tugmasi diagnostika uchun: tizim, sessiya va
+   guruhlar holatini ko'rsatadi va namuna xabarni tekshirib beradi.
+   Bildirishnoma esa faqat o'sha guruh **egasiga** keladi — boshqa
+   foydalanuvchilarga hech qachon yuborilmaydi.
    Replit logida `[SCAN]` yozuvlari qaysi bosqichda to'xtaganini,
    `[NOTIFY]` yozuvlari yuborilganini ko'rsatadi.
 6. Mos xabar topilsa, bot adminga mijoz ismi, ID, telefoni, topilgan
