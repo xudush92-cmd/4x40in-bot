@@ -436,16 +436,31 @@ async def begin_login(message: types.Message, state: FSMContext, user_id: int | 
         )
         return
     if row and row[8]:
-        # Admin uchun boshqaruv menyusi qaytariladi — aks holda akkaunt
-        # holatini ko'rgan admin oddiy foydalanuvchi menyusiga tushib
-        # qolardi (kalitlar/stop/foydalanuvchilar tugmalari yo'qolardi).
-        await message.answer(
-            "✅ Akkauntingiz allaqachon ulangan.\n\n"
-            + account_status_text(uid),
-            parse_mode="HTML",
-            reply_markup=menu_for(uid),
-        )
-        return
+        if session_broken(uid):
+            # Telegram sessiyani bekor qilgan: eski yozuvni tozalab, yangi
+            # login boshlaymiz. Aks holda "allaqachon ulangan" deb qolib,
+            # qayta ulashning iloji bo'lmasdi.
+            clear_session(uid)
+            await message.answer(
+                "♻️ Eski sessiya bekor qilingan — uni tozaladim, endi "
+                "qaytadan ulanamiz."
+            )
+            row = get_user_full(uid)
+        else:
+            # Tirik sessiya: tasodifan almashtirib yubormaslik uchun
+            # tasdiq so'raymiz.
+            await message.answer(
+                "✅ Akkauntingiz allaqachon ulangan.\n\n"
+                + account_status_text(uid),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="🔄 Boshqa akkaunt bilan qayta ulash",
+                        callback_data="relogin:1",
+                    )
+                ]]),
+            )
+            return
     await login_cleanup(uid)
     if row and row[6] and row[7]:
         # Ism/telefon bor — darhol kod so'raymiz
@@ -845,6 +860,21 @@ async def admin_scanner_toggle(callback: types.CallbackQuery):
 async def sess_in_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await begin_login(callback.message, state, user_id=callback.from_user.id)
+
+
+@dp.callback_query(F.data == "relogin:1")
+async def relogin_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Mavjud sessiyani tozalab, yangi login boshlaydi."""
+    uid = callback.from_user.id
+    await callback.answer("Eski sessiya tozalandi")
+    try:
+        import scanner_manager
+
+        await scanner_manager.stop_user_client(uid)
+    except Exception:
+        logger.exception("Eski clientni to'xtatish (relogin)")
+    clear_session(uid)
+    await begin_login(callback.message, state, user_id=uid)
 
 
 # --- Foydalanuvchi: o'z guruhlari ---
