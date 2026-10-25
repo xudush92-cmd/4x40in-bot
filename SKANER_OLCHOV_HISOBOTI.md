@@ -1016,3 +1016,57 @@ Endi ma'lumot yig'iladi. 300–500 yorliq to'plangach:
 
 8 GB RAM / CPU sharoitida kutilgan g'olib — **kichik model**: 1–2 ms,
 ~50 MB, barqaror. LLM (3B) kechikishi 5–12 s va ishonchi past.
+
+## 19. Ro'yxatning zaxira nusxasi: eksport / import
+
+Ro'yxat faqat `scanner.db` ichida edi — baza buzilsa yoki noldan
+tozalashdan keyin 65 ta yozuv yo'qolar edi. Endi `🔑 Kalit so'zlar`
+menyusida ikki tugma bor:
+
+```
+📤 Nusxa (eksport)   📥 Import
+```
+
+### 19.1 Eksport
+
+`kalit-sozlar.txt` fayli yuboriladi, har qatorda bitta yozuv:
+
+```
++3 kerak
++2 bormi
+-4 joy bor
+-3 reys
+```
+
+Format `parse_weighted_entries` tushunadigan format bilan **bir xil** —
+ya'ni faylni keyin `📥 Import` orqali qaytarib yuklash mumkin.
+
+### 19.2 Import
+
+Matn yoki `.txt` fayl yuboriladi:
+
+| Holat | Natija |
+|---|---|
+| Baza'da yo'q | **qo'shiladi** |
+| Bor, vazni boshqa | **vazni yangilanadi** |
+| Bor, vazni bir xil | o'tkazib yuboriladi |
+| Boshqa ro'yxatda (masalan stop-so'z) | rad etiladi, sabab ko'rsatiladi |
+
+Hisobot: qo'shildi / yangilandi / o'tkazildi / rad etildi + o'zgargan
+vaznlar ro'yxati (`kerak: +3 → +4`) + ro'yxatdagi jami son.
+
+### 19.3 Kod
+
+| Fayl | Nima |
+|---|---|
+| `database.py` | `export_phrases_text()`, `import_phrases(pairs)` |
+| `bot.py` | `📤 Nusxa (eksport)` (`wexport`), `📥 Import` (`wimport`), `ImportWords` holati + fayl o'qish |
+
+### 19.4 Testlar
+
+`test_export.py` — **8 test**: format (`+3 kerak`, `-4 joy bor`), fayl
+yuborilishi, **aylanma yo'l** (eksport → import → hech narsa o'zgarmaydi),
+yangi qo'shish + vazn yangilash, bo'sh ro'yxat, matn orqali import,
+bo'sh matn rad etilishi, menyudagi tugmalar.
+
+Jami repo testlari: 59 + 40 + 20 + 23 + **8** = **150**.

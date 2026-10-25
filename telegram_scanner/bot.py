@@ -9,6 +9,7 @@ from aiogram.filters import BaseFilter, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BufferedInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -26,6 +27,8 @@ from database import (
     clear_session,
     count_user_groups,
     delete_phrase,
+    export_phrases_text,
+    import_phrases,
     keyword_reject_reason,
     delete_user_completely,
     delete_user_group,
@@ -167,6 +170,10 @@ class SetCount(StatesGroup):
 
 class AddGroup(StatesGroup):
     waiting_group = State()  # guruh manzili yoki ID kutilmoqda
+
+
+class ImportWords(StatesGroup):
+    waiting_text = State()   # eksport matni qaytarib yuboriladi
 
 
 class ScanTest(StatesGroup):
@@ -1661,6 +1668,112 @@ async def help_user(message: types.Message, state: FSMContext):
 
 
 
+# --- Admin: ro'yxatni eksport / import (zaxira nusxa) ---
+
+EXPORT_HINT = (
+    "📤 <b>Nusxa olindi</b>\n\n"
+    "Faylni saqlab qo'ying — baza buzilsa yoki tozalashdan keyin "
+    "📥 Import bilan qaytarib yuklaysiz.\n\n"
+    "Har qatorda bitta yozuv: <code>+3 kerak</code>, <code>-4 joy bor</code>."
+)
+
+
+@dp.callback_query(AdminFilter(), F.data == "wexport")
+async def words_export(callback: types.CallbackQuery):
+    text = export_phrases_text()
+    if not text:
+        await callback.answer("Ro'yxat bo'sh.", show_alert=True)
+        return
+    data = text.encode("utf-8")
+    await callback.message.answer_document(
+        BufferedInputFile(data, filename="kalit-sozlar.txt"),
+        caption=EXPORT_HINT,
+        parse_mode="HTML",
+    )
+    await callback.answer("Nusxa tayyor")
+
+
+@dp.callback_query(AdminFilter(), F.data == "wimport")
+async def words_import_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ImportWords.waiting_text)
+    await callback.message.answer(
+        "📥 <b>Import</b>\n\n"
+        "Eksport faylidagi matnni shu yerga yuboring (faylni ham, matnni "
+        "ham). Format: har qatorda bitta yozuv —\n"
+        "<code>+3 kerak\n-4 joy bor</code>\n\n"
+        "• Mavjud yozuvning vazni <b>yangilanadi</b>\n"
+        "• Yangi yozuv <b>qo'shiladi</b>\n"
+        "• Bir xil so'zning ikkinchi yozuvi tashlanadi\n\n"
+        "Bekor qilish: /cancel",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[_close_button()]]),
+    )
+    await callback.answer()
+
+
+def _import_report(result: dict) -> str:
+    lines = ["📥 <b>Import natijasi</b>", ""]
+    lines.append(f"➕ Qo'shildi: <b>{len(result['added'])}</b> ta")
+    lines.append(f"♻️ Yangilandi: <b>{len(result['updated'])}</b> ta")
+    lines.append(f"⏭ O'tkazildi: <b>{len(result['skipped'])}</b> ta")
+    if result["invalid"]:
+        lines.append(f"⚠️ Rad etildi: <b>{len(result['invalid'])}</b> ta")
+    if result["updated"]:
+        lines += ["", "<b>Vazni o'zgarganlar:</b>"]
+        for word, old, new in result["updated"][:15]:
+            lines.append(f"  • {html.escape(word, quote=False)}: {old:+g} → {new:+g}")
+        if len(result["updated"]) > 15:
+            lines.append(f"  … (+{len(result['updated']) - 15})")
+    if result["invalid"]:
+        lines += ["", "<b>Rad etilganlar:</b>"]
+        for word, reason in result["invalid"][:10]:
+            lines.append(f"  • {html.escape(word, quote=False)} — {reason}")
+    lines.append("")
+    lines.append(f"🔑 Ro'yxatda jami: <b>{len(get_keywords())}</b> ta")
+    return "\n".join(lines)
+
+
+@dp.message(AdminFilter(), StateFilter(ImportWords.waiting_text))
+async def words_import_apply(message: types.Message, state: FSMContext):
+    """Import matnini (yoki faylni) qabul qiladi."""
+    raw = (message.text or message.caption or "").strip()
+    if message.document:
+        try:
+            file = await message.bot.get_file(message.document.file_id)
+            stream = await message.bot.download_file(file.file_path)
+            raw = stream.read().decode("utf-8", "replace").strip()
+        except Exception:
+            logger.exception("Import faylini o'qishda xato")
+            await message.answer("⚠️ Faylni o'qib bo'lmadi. Matn sifatida yuboring.")
+            return
+    if not raw:
+        await message.answer(
+            "⚠️ Bo'sh. Matn yoki .txt fayl yuboring.",
+            reply_markup=main_menu(),
+        )
+        return
+    if raw in MENU_BUTTONS | _LEGACY_BUTTONS:
+        await state.clear()
+        return
+    pairs = parse_weighted_entries(raw)
+    if not pairs:
+        await message.answer(
+            "⚠️ Birorta yozuv topilmadi. Format: <code>+3 kerak</code>",
+            parse_mode="HTML",
+        )
+        return
+    await state.clear()
+    result = import_phrases(pairs)
+    logger.info(
+        "[IMPORT] qo'shildi=%s yangilandi=%s o'tkazildi=%s rad=%s",
+        len(result["added"]), len(result["updated"]),
+        len(result["skipped"]), len(result["invalid"]),
+    )
+    await message.answer(
+        _import_report(result), parse_mode="HTML", reply_markup=main_menu()
+    )
+
+
 # --- Admin: KALIT SO'ZLAR (yagona ro'yxat) ---
 @dp.message(AdminFilter(), F.text.in_({BTN_WORDS, BTN_ADD, BTN_PHRASES, BTN_STOPWORDS}))
 async def words_menu(message: types.Message, state: FSMContext):
@@ -1676,6 +1789,10 @@ async def words_menu(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ So'z qo'shish", callback_data="wadd")],
         [InlineKeyboardButton(text="📋 To'liq ro'yxat", callback_data="wlist")],
+        [
+            InlineKeyboardButton(text="📤 Nusxa (eksport)", callback_data="wexport"),
+            InlineKeyboardButton(text="📥 Import", callback_data="wimport"),
+        ],
         [
             InlineKeyboardButton(
                 text="⚖️ Rejim" if get_match_mode() == "count" else "🔢 Rejim",

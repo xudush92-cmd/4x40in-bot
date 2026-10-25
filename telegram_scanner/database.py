@@ -1074,3 +1074,54 @@ def purge_review_items(days: int = 90) -> int:
             "DELETE FROM review_items WHERE created_at < ?", (limit,)
         )
         return cur.rowcount
+
+# --- Ro'yxatni eksport / import (zaxira nusxa) ---
+
+def export_phrases_text() -> str:
+    """Ro'yxatni qayta yuklash mumkin bo'lgan matn ko'rinishida qaytaradi.
+
+    Har qatorda bitta yozuv: ``+3 kerak`` / ``-4 joy bor``. Bu formatni
+    ``AddPhrase`` ham, ``import_phrases`` ham tushunadi — ya'ni nusxa
+    bazaga qaytariladi.
+    """
+    lines = []
+    for _pid, word, weight, _strict in get_phrases_full():
+        lines.append(f"{weight:+g} {word}")
+    return "\n".join(lines)
+
+
+def import_phrases(pairs) -> dict:
+    """``[(yozuv, vazn), ...]`` ni bazaga qo'llaydi.
+
+    Mavjud yozuvning vazni yangilanadi, yangisi qo'shiladi. Qaytaradi:
+    ``{"added": [...], "updated": [...], "skipped": [...], "invalid": [...]}``.
+    """
+    added, updated, skipped, invalid = [], [], [], []
+    for word, weight in pairs:
+        cleaned = display_entry(word)
+        if not cleaned:
+            continue
+        pid = word_id_by_text(cleaned)
+        if pid is None:
+            added_ok, conflicts = add_keyword_checked(cleaned, weight=weight)
+            if added_ok:
+                added.append((cleaned, float(weight)))
+            elif conflicts:
+                invalid.append((cleaned, "boshqa ro'yxatda"))
+            else:
+                skipped.append((cleaned, "takror"))
+            continue
+        row = get_phrase(pid)
+        old = float(row[2]) if row else 0.0
+        new = max(-10.0, min(10.0, float(weight)))
+        if abs(old - new) < 0.001:
+            skipped.append((cleaned, "o'zgarmagan"))
+        else:
+            update_phrase(pid, weight=new)
+            updated.append((cleaned, old, new))
+    return {
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "invalid": invalid,
+    }
