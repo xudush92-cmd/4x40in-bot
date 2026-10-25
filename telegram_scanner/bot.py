@@ -210,6 +210,14 @@ def main_menu(admin: bool = True) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
+CLOSE_BUTTON_TEXT = "❌ Yopish"
+
+
+def _close_button() -> InlineKeyboardButton:
+    """Har bir inline menyuni yopish tugmasi (xabarni o'chiradi)."""
+    return InlineKeyboardButton(text=CLOSE_BUTTON_TEXT, callback_data="close")
+
+
 def admin_panel_keyboard() -> list:
     """🛠 Admin panel: foydalanuvchilar, arizalar, kalitlar, statistika."""
     return [
@@ -438,6 +446,21 @@ async def back_to_main_menu(message: types.Message, state: FSMContext):
         "🏠 Asosiy menyu",
         reply_markup=menu_for(message.from_user.id),
     )
+
+@dp.callback_query(F.data == "close")
+async def close_inline_menu(callback: types.CallbackQuery, state: FSMContext):
+    """❌ Yopish — inline menyu va uning klaviaturasi o'chiriladi."""
+    await state.clear()
+    try:
+        await callback.message.delete()
+    except Exception:
+        # Juda eski xabarni Telegram o'chirishga ruxsat bermasligi mumkin.
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    await callback.answer("Yopildi")
+
 
 # DIQQAT: global admin filtri YO'Q — oddiy foydalanuvchilar ham botni
 # ishlatadi. Har bir admin handlerida alohida AdminFilter() turadi.
@@ -1093,6 +1116,7 @@ def _user_group_keyboard(row) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Qayta tekshirish", callback_data=f"ugrecheck:{gid}"),
             InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"ugdel:{gid}"),
         ])
+    rows.append([_close_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1442,7 +1466,7 @@ def _user_count_keyboard() -> InlineKeyboardMarkup:
         )
         for n in (1, 2, 3, 4, 5)
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    return InlineKeyboardMarkup(inline_keyboard=[buttons, [_close_button()]])
 
 
 # Bundan past chegara amalda "hamma xabar mijoz" degani.
@@ -1469,6 +1493,7 @@ def _user_threshold_keyboard(uid: int) -> InlineKeyboardMarkup:
             text="↩️ Admin standartiga qaytish",
             callback_data="useth:0",
         )])
+    rows.append([_close_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1500,8 +1525,7 @@ async def user_ask_match_count(message: types.Message, state: FSMContext):
             f"🔔 <b>Xabar chegarasi</b>\n\n"
             f"{note}\n\n"
             f"{_threshold_advice(uid)}\n\n"
-            "Bu faqat <b>sizga</b> ta'sir qiladi.\n\n"
-            "Bekor qilish: /cancel",
+            "Bu faqat <b>sizga</b> ta'sir qiladi.",
             parse_mode="HTML",
             reply_markup=_user_threshold_keyboard(uid),
         )
@@ -1511,8 +1535,7 @@ async def user_ask_match_count(message: types.Message, state: FSMContext):
         f"<b>{get_user_match_count(uid)}</b> ta kalit so'z topilsa "
         "sizga xabar keladi.\n\n"
         "Yangi sonni tugmadan tanlang yoki raqam yozib yuboring "
-        "(masalan: 2). Bu faqat <b>sizga</b> ta'sir qiladi.\n\n"
-        "Bekor qilish: /cancel",
+        "(masalan: 2). Bu faqat <b>sizga</b> ta'sir qiladi.",
         parse_mode="HTML",
         reply_markup=_user_count_keyboard(),
     )
@@ -1655,6 +1678,7 @@ async def words_menu(message: types.Message, state: FSMContext):
             ),
             InlineKeyboardButton(text="🎯 Chegara", callback_data="wthr"),
         ],
+        [_close_button()],
     ])
     await message.answer(
         f"🔑 <b>Kalit so'zlar — {total} ta</b>\n\n"
@@ -1791,19 +1815,36 @@ def _count_keyboard() -> InlineKeyboardMarkup:
         )
         for n in (1, 2, 3, 4, 5)
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    return InlineKeyboardMarkup(inline_keyboard=[buttons, [_close_button()]])
 
 
 @dp.message(AdminFilter(), F.text == BTN_COUNT)
 async def ask_match_count(message: types.Message, state: FSMContext):
+    await state.clear()
+    if get_match_mode() == "weight":
+        # Ball rejimida "nechta kalit" sharti ishlamaydi — chegara muhim.
+        await message.answer(
+            "🎯 <b>Xabar chegarasi (hammaga)</b>\n\n"
+            f"Hozirgi umumiy chegara: <b>{get_score_threshold():g}</b>. "
+            "Xabarning balli shu qiymatdan katta yoki teng bo'lsa xabar "
+            "beriladi.\n\n"
+            "Bu — o'z chegarasini belgilamagan foydalanuvchilar uchun "
+            "standart qiymat; har bir foydalanuvchi o'zinikini tanlashi "
+            "mumkin.\n\n"
+            "ℹ️ Rejim hozir <b>ball</b> — so'zlar vazni yig'iladi. "
+            "«Nechta kalit» sharti kerak bo'lsa: 🔑 Kalit so'zlar → "
+            "⚖️/🔢 tugmasi.",
+            parse_mode="HTML",
+            reply_markup=_threshold_kb(),
+        )
+        return
     await state.set_state(SetCount.waiting_count)
     await message.answer(
         f"Hozirgi UMUMIY (standart) shart: xabarda kamida <b>{get_match_count()}</b> ta "
         "kalit so'z topilsa xabar beriladi. Bu — o'z shartini "
         "belgilamagan foydalanuvchilar uchun standart qiymat.\n\n"
         "Yangi sonni tugmadan tanlang yoki o'zingiz raqam yozib yuboring "
-        "(masalan: 6). Kalitlar nechta bo'lishidan qat'iy nazar, shu son ishlatiladi.\n\n"
-        "Bekor qilish: /cancel",
+        "(masalan: 6). Kalitlar nechta bo'lishidan qat'iy nazar, shu son ishlatiladi.",
         parse_mode="HTML",
         reply_markup=_count_keyboard(),
     )
@@ -1907,7 +1948,7 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
             InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
                     text="➕ So'z qo'shish", callback_data="wadd")
-            ]]),
+            ], [_close_button()]]),
         )
     pages = max(1, (total + WORDS_PER_PAGE - 1) // WORDS_PER_PAGE)
     page = max(0, min(page, pages - 1))
@@ -1941,6 +1982,7 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
         InlineKeyboardButton(
             text="🎯 Chegara", callback_data="wthr",
         ),
+        _close_button(),
     ])
     text = (
         f"📋 <b>Kalit so'zlar — {total} ta</b>\n"
@@ -2075,6 +2117,7 @@ def _word_card_kb(row, page: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"wdel:{pid}:{page}"),
+            _close_button(),
             InlineKeyboardButton(text="◀️ Ro'yxat", callback_data=f"wpage:{page}"),
         ],
     ]
@@ -2246,7 +2289,10 @@ def _threshold_kb() -> InlineKeyboardMarkup:
             chunk = []
     if chunk:
         rows.append(chunk)
-    rows.append([InlineKeyboardButton(text="◀️ Ro'yxat", callback_data="wpage:0")])
+    rows.append([
+        InlineKeyboardButton(text="◀️ Ro'yxat", callback_data="wpage:0"),
+        _close_button(),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -2466,7 +2512,10 @@ def _dialogs_keyboard(dialogs, added_ids) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(text=label, callback_data=f"gadd:{chat_id}")
         ])
-    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    if not rows:
+        return None
+    rows.append([_close_button()])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @dp.message(F.text == BTN_SCAN_GROUPS)
@@ -2701,7 +2750,8 @@ def _user_keyboard(uid: int, blocked: int, with_back: bool = True) -> InlineKeyb
     ]
     if with_back:
         rows.append([
-            InlineKeyboardButton(text="⬅️ Orqaga", callback_data="uback")
+            InlineKeyboardButton(text="⬅️ Orqaga", callback_data="uback"),
+            _close_button(),
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2723,6 +2773,7 @@ def _users_list_keyboard(users) -> InlineKeyboardMarkup:
         name = _short_text(row[6] or row[1] or "Nomsiz", 30)
         rows.append([InlineKeyboardButton(
             text=f"{icon} {name}", callback_data=f"ucard:{uid}")])
+    rows.append([_close_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -3194,6 +3245,7 @@ def _word_stats_kb(min_total: int = STATS_MIN_TOTAL) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🔄 Yangilash", callback_data=f"wstats:{min_total}"),
         InlineKeyboardButton(text="◀️ Statistika", callback_data="wstback"),
     ])
+    rows.append([_close_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -3297,8 +3349,9 @@ def _admin_stats_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             text="🔍 So'zlar tahlili (fikr-mulohaza)",
             callback_data="wstats",
-        )
-    ]])
+        )],
+        [_close_button()],
+    ])
 
 
 @dp.message(AdminFilter(), F.text == BTN_STATS)

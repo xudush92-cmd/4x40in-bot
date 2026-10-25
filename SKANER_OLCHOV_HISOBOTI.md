@@ -869,3 +869,51 @@ UI 31 + oqim 18 + feedback-UI 11 + chegara-UI **16** + tahlil-UI 23 =
 
 Korpus regressiyasi: mijoz 44/45, haydovchi 0/30, aloqasiz 2/20 —
 tuzatishlardan oldingi bilan **bir xil**.
+
+## 17. Menyularni yopish tugmasi + admin «Xabar sharti» rejimga moslashdi
+
+### 17.1 «❌ Yopish» tugmasi
+
+Skrinshotdagi shikoyat: inline menyu ochiladi, lekin uni yopish tugmasi yo'q
+— faqat `/cancel` yozish kerak edi. Endi **har bir inline menyuda**
+`❌ Yopish` bor:
+
+| Menyu | Tugma |
+|---|---|
+| 🔔 Xabar sharti (admin, hisob rejimi) | 1…5 + ❌ Yopish |
+| 🔔 Xabar sharti (foydalanuvchi, ikkala rejim) | sonlar/chegaralar + ❌ Yopish |
+| 🎯 Ball chegarasi (admin) | qiymatlar + ◀️ Ro'yxat + ❌ Yopish |
+| 🔑 Kalit so'zlar menyusi va 📋 to'liq ro'yxat | … + ❌ Yopish |
+| So'z kartochkasi | 🗑 · ◀️ Ro'yxat · ❌ Yopish |
+| Guruh kartochkasi, guruhlar ro'yxati | … + ❌ Yopish |
+| 👥 Foydalanuvchilar ro'yxati va kartochkasi | ⬅️ Orqaga + ❌ Yopish |
+| 📊 Statistika, 🔍 So'zlar tahlili | … + ❌ Yopish |
+
+Xatti-harakat (`close_inline_menu`): xabar **o'chiriladi** va FSM holati
+tozalanadi (shu bilan «matn kutilmoqda» rejimi ham yopiladi). Xabar juda
+eski bo'lib Telegram o'chirishga ruxsat bermasa — klaviatura olib tashlanadi.
+
+### 17.2 Admin «Xabar sharti» — rejimga qarab
+
+**Bug:** admin menyusi rejimni hisobga olmasdi. Ball rejimida ham
+«kamida N ta kalit so'z» va 1…5 tugmalari chiqardi (skrinshot aynan shu).
+Faqat foydalanuvchi tomonida shox bor edi.
+
+**Endi:**
+
+| Rejim | Admin ko'radi | Foydalanuvchi ko'radi |
+|---|---|---|
+| 🔢 hisob | «kamida N ta kalit» + 1…5 + ❌ Yopish | o'z soni (1…5) + ❌ Yopish |
+| ⚖️ ball | «umumiy chegara N» + qiymatlar + ❌ Yopish | o'z chegarasi (0.5…4.0, ✅ joriy) + ↩️ admin standarti + ❌ Yopish |
+
+Ball rejimida «Nechta kalit» sozlamasi umuman ishlatilmaydi — shuning uchun
+admin menyusida FSM holati ham o'rnatilmaydi.
+
+### 17.3 Testlar
+
+| Test | Soni | Nima |
+|---|---|---|
+| `/tmp/t2/close.py` (yangi) | 21 | har bir menyuda tugma borligi, yopish xabarni o'chiradi + holatni tozalaydi, o'chirish imkoni bo'lmasa klaviatura olinadi, admin ball rejimida chegara menyusi |
+
+Jami: **239 tekshiruv** (matcher 59, weights 40, feedback 20, UI 31, oqim 18,
+feedback-UI 11, chegara-UI 16, tahlil-UI 23, yopish-UI 21).
