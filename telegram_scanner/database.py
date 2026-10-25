@@ -16,6 +16,7 @@ def init_db() -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS phrases (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             text TEXT UNIQUE)""")
+        _migrate_phrase_columns(conn)
         _migrate_old_sets(conn)
         # Eski "groups" jadvali ishlatilmaydi (guruhlar user_groups da,
         # har biri egasi bilan). Qolib ketgan bo'lsa — olib tashlaymiz.
@@ -62,6 +63,32 @@ def init_db() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('match_count', '2')"
         )
+        # Filtr rejimi:
+        #   'count'  — nechta kalit topildi (eski xatti-harakat);
+        #   'weight' — vaznlar yig'indisi (har so'zga +/− ball).
+        # Standart 'count' — mavjud ro'yxatlar o'zini tutishini o'zgartirmaydi.
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('match_mode', 'count')"
+        )
+        # Vaznli rejim chegarasi (ball yig'indisi shundan katta bo'lsa o'tadi).
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) "
+            "VALUES ('score_threshold', '1.75')"
+        )
+
+
+def _migrate_phrase_columns(conn) -> None:
+    """Kalit so'zlarga vazn va qat'iylik ustunlarini qo'shadi.
+
+    ``weight`` — so'zning ball qiymati: musbat (mijoz belgisi) yoki manfiy
+    (haydovchi belgisi). ``strict`` — 1 bo'lsa so'zning o'zagi ham
+    ishlatilmaydi, faqat aniq yozuv (imlo xatosiga mos kelmaydi).
+    """
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(phrases)")]
+    if "weight" not in columns:
+        conn.execute("ALTER TABLE phrases ADD COLUMN weight REAL DEFAULT 1.0")
+    if "strict" not in columns:
+        conn.execute("ALTER TABLE phrases ADD COLUMN strict INTEGER DEFAULT 0")
 
 
 def _migrate_user_columns(conn) -> None:
@@ -155,9 +182,16 @@ def keyword_reject_reason(word: str) -> str | None:
         return f"xato shakl — to'g'risi «{fix}»"
     if len(canonical) < 3 and canonical not in _SHORT_OK:
         return "juda qisqa so'z (kamida 3 harf)"
+    # Qo'shimcha tekshiruvi faqat BIR SO'ZLI yozuvlar uchun. Ibora
+    # (``joy bor``, ``kim olib ketadi``) o'zak+ qo'shimcha emas, shuning
+    # uchun unga bu qoida qo'llanmaydi.
+    if " " in canonical:
+        return None
     for known in get_keywords():
         known_canonical = canonical_entry(known)
         if not known_canonical or known_canonical == canonical:
+            continue
+        if " " in known_canonical:
             continue
         # Qo'shimchali shakl: o'zak + 1..5 harf qo'shimcha
         if (
@@ -172,12 +206,17 @@ def keyword_reject_reason(word: str) -> str | None:
     return None
 
 
-def add_keyword_checked(word: str) -> tuple[bool, list[str]]:
+def add_keyword_checked(
+    word: str, weight: float = 1.0, strict: int = 0
+) -> tuple[bool, list[str]]:
     """Kalit qo'shadi: (qo'shildimi, qaysi ro'yxatlarda borligi).
 
     Takroriylik lotin/kirill va katta-kichik harf farqini hisobga
     olmasdan tekshiriladi: ``ТОШКЕНТ`` bilan ``toshkent`` bitta kalit.
     Ro'yxatga HAR DOIM lotin (kanonik) shakl yoziladi.
+
+    ``weight`` — ball qiymati (manfiy bo'lsa haydovchi belgisi),
+    ``strict`` — 1 bo'lsa o'zak bo'yicha ham moslashtirilmaydi.
     """
     cleaned = display_entry(word)
     if not cleaned:
@@ -185,10 +224,12 @@ def add_keyword_checked(word: str) -> tuple[bool, list[str]]:
     conflicts = find_lists_for_entry(cleaned)
     if conflicts:
         return False, conflicts
+    weight = max(-10.0, min(10.0, float(weight)))
     with closing(_connect()) as conn, conn:
         try:
             conn.execute(
-                "INSERT INTO phrases (text) VALUES (?)", (cleaned,)
+                "INSERT INTO phrases (text, weight, strict) VALUES (?, ?, ?)",
+                (cleaned, weight, 1 if strict else 0),
             )
         except sqlite3.IntegrityError:
             return False, find_lists_for_entry(cleaned)
@@ -211,6 +252,100 @@ def get_all_phrases_with_id() -> list[tuple[int, str]]:
         return conn.execute(
             "SELECT id, text FROM phrases ORDER BY id"
         ).fetchall()
+
+
+def get_phrases_full() -> list[tuple[int, str, float, int]]:
+    """Ro'yxat to'liq: ``(id, so'z, vazn, qatiylik)``.
+
+    Musbat vazn — mijoz belgisi, manfiy — haydovchi belgisi.
+    """
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT id, text, weight, strict FROM phrases ORDER BY id"
+        ).fetchall()
+    return [
+        (r[0], r[1], float(r[2] if r[2] is not None else 1.0), int(r[3] or 0))
+        for r in rows
+    ]
+
+
+def get_keywords_weighted() -> list[tuple[str, float, int]]:
+    """Skaner uchun: ``[(so'z, vazn, qatiylik), ...]``."""
+    return [(text, weight, strict) for _id, text, weight, strict in get_phrases_full()]
+
+
+def update_phrase(
+    phrase_id: int,
+    weight: float | None = None,
+    strict: int | None = None,
+) -> bool:
+    """So'zning vaznini/qatiyligini o'zgartiradi. Topilmasa False."""
+    sets, params = [], []
+    if weight is not None:
+        # Chegara: tasodifiy katta qiymat butun filtrni buzmasin.
+        weight = max(-10.0, min(10.0, float(weight)))
+        sets.append("weight = ?")
+        params.append(weight)
+    if strict is not None:
+        sets.append("strict = ?")
+        params.append(1 if strict else 0)
+    if not sets:
+        return False
+    params.append(phrase_id)
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            f"UPDATE phrases SET {', '.join(sets)} WHERE id = ?", params
+        )
+        return cur.rowcount > 0
+
+
+def get_phrase(phrase_id: int):
+    """``(id, so'z, vazn, qatiylik)`` yoki None."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT id, text, weight, strict FROM phrases WHERE id = ?",
+            (phrase_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return (row[0], row[1], float(row[2] if row[2] is not None else 1.0),
+            int(row[3] or 0))
+
+
+# --- Filtr rejimi va chegarasi ---
+
+MATCH_MODES = ("count", "weight")
+
+
+def get_match_mode() -> str:
+    """``count`` — nechta kalit; ``weight`` — ballar yig'indisi."""
+    value = (get_setting("match_mode") or "count").strip().lower()
+    return value if value in MATCH_MODES else "count"
+
+
+def set_match_mode(mode: str) -> str:
+    mode = (mode or "").strip().lower()
+    if mode not in MATCH_MODES:
+        raise ValueError(f"noma'lum rejim: {mode}")
+    set_setting("match_mode", mode)
+    return mode
+
+
+# Vaznli rejimda ruxsat etilgan chegaralar (botdan tanlanadi)
+SCORE_THRESHOLDS = (0.5, 1.0, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0)
+
+
+def get_score_threshold() -> float:
+    try:
+        return float(get_setting("score_threshold") or 1.75)
+    except (TypeError, ValueError):
+        return 1.75
+
+
+def set_score_threshold(value: float) -> float:
+    value = max(-10.0, min(10.0, float(value)))
+    set_setting("score_threshold", value)
+    return value
 
 
 def get_match_count() -> int:

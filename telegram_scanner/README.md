@@ -122,6 +122,26 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   shakl («mang'ud» → «mang'it»), 3 harfdan qisqa so'z va
   qo'shimchali shakl («toshkentga» — o'zak «toshkent» bor) rad
   etiladi. Ro'yxatga har doim lotin shakli yoziladi.
+- **Vazn (ball) — ixtiyoriy, lekin tavsiya etiladi**: har bir kalit
+  so'zning **vazni** bor. Musbat vazn — *mijoz belgisi* (`kerak` +3),
+  manfiy vazn — *haydovchi belgisi* (`joy bor` −4). Ikki rejim bor:
+  **🔢 hisob** (nechta kalit topildi — standart) va **⚖️ ball**
+  (vaznlar yig'indisi ≥ chegara). Rejim va chegara 🔑 Kalit so'zlar
+  sahifasidagi `⚖️ Rejim` / `🎯 Chegara` tugmalaridan boshqariladi.
+- **Vaznni kiritishda yozish**: so'z oldiga `+3` yoki `-4` qo'yiladi.
+  Musbat vaznda bir necha so'z — har biri alohida yozuv; manfiy vaznda
+  bir necha so'z — **ibora** (`-4 joy bor`). Ibora musbatda ham kerak
+  bo'lsa: `+2: kim bor` yoki `+2 "kim bor"`.
+- **Vaznni keyin o'zgartirish**: 📋 To'liq ro'yxat da so'zni bosing —
+  kartochka ochiladi: ➖0.5/➕0.5, tayyor qiymatlar (Mijoz 3/2/1,
+  Neytral 0, Haydovchi −1/−3/−4), 🔒 qat'iylik va 🗑 o'chirish.
+  Ro'yxatda har so'z oldida vazni ko'rinadi (`➕3 kerak`, `➖4 joy bor`).
+- **Nega manfiy yozuv qat'iy qidiriladi**: manfiy yozuv faqat aniq
+  so'z yoki o'zak bo'yicha topiladi (imlo xatosi/prefiks yaqinligi
+  ishlatilmaydi). Aks holda `xizmat` manfiysi «menga yuk tashish
+  **xizmati** kerak» (mijoz) xabarini ham o'chirardi. Shu sababli
+  manfiy ro'yxatga **umumiy so'z emas, haydovchi shakli** yoziladi:
+  `xizmat ko'rsatamiz`, `qo'ng'iroq qiling`, `har kuni`, `reys`.
 - **Ko'p so'zni bir martada kiritish**: bitta xabarda bir nechta
   so'z yuboriladi — probil, vergul yoki yangi qator bilan
   ajratiladi; har biri alohida kalit bo'ladi. Ro'yxat 20 tadan

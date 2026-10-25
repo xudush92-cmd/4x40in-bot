@@ -26,14 +26,17 @@ from dataclasses import dataclass, field
 from config import ADMIN_ID
 from database import (
     get_keywords,
+    get_keywords_weighted,
     get_match_count,
+    get_match_mode,
     get_owner_active_chat_ids,
+    get_score_threshold,
     get_setting,
     get_user_match_count,
     get_user,
     get_user_scanner_enabled,
 )
-from matcher import contains_emoji, match_keywords
+from matcher import contains_emoji, match_keywords, score_text
 
 # Bosqich nomlari — testda shu tartibda ko'rsatiladi
 STAGE_TITLES = [
@@ -68,6 +71,12 @@ class Verdict:
     matched: list[str] = field(default_factory=list)
     required: int = 0
     total_keywords: int = 0
+    # Vaznli rejim ma'lumotlari (matn/ro'yxat uchun)
+    mode: str = "count"
+    score: float = 0.0
+    threshold: float = 0.0
+    positives: dict = field(default_factory=dict)
+    negatives: dict = field(default_factory=dict)
 
 
 def _fmt(words) -> str:
@@ -160,7 +169,12 @@ def evaluate(
         return finish("emoji", "emoji bor — haydovchi belgisi")
     add("emoji", OK, "toza")
 
-    # 6. Kalit so'zlar (yagona ro'yxat)
+    # 6. Kalit so'zlar (yagona ro'yxat) — ikki rejim
+    mode = get_match_mode()
+    verdict.mode = mode
+    if mode == "weight":
+        return _evaluate_weighted(owner_id, text, verdict, stages, add, finish)
+
     keywords = get_keywords()
     required = get_user_match_count(owner_id)
     verdict.required, verdict.total_keywords = required, len(keywords)
@@ -180,6 +194,43 @@ def evaluate(
         f"{result.matched_count} ta: {_fmt(result.matched_words)} (shart: {required})",
     )
 
+    verdict.ok = True
+    verdict.stage = "ok"
+    verdict.detail = "Barcha bosqichlar o'tdi"
+    verdict.stages = stages
+    return verdict
+
+
+def _evaluate_weighted(owner_id, text, verdict, stages, add, finish) -> Verdict:
+    """6-bosqich, vaznli rejim: ball yig'indisi chegaradan o'tadimi.
+
+    Har bir kalit so'zning bazada vazni bor (musbat — mijoz, manfiy —
+    haydovchi). Manfiy yozuvlar qat'iy moslik bilan qidiriladi, shuning
+    uchun "xizmat kerak" (mijoz) kabi xabar "xizmat ko'rsatamiz"
+    (haydovchi) belgisi bilan o'chirilmaydi.
+    """
+    entries = get_keywords_weighted()
+    threshold = get_score_threshold()
+    verdict.threshold = threshold
+    verdict.total_keywords = len(entries)
+    if not entries:
+        return finish("keywords", "ro'yxat bo'sh — admin kalit so'z kiritmagan")
+    result = score_text(text, entries, threshold)
+    verdict.score = result.score
+    verdict.positives = dict(result.positives)
+    verdict.negatives = dict(result.negatives)
+    verdict.matched = list(result.positives) + list(result.negatives)
+
+    plus = ", ".join(f"+{w} {n}" for n, w in result.positives.items())
+    minus = ", ".join(f"{w} {n}" for n, w in result.negatives.items())
+    detail = f"ball {result.score:g} (chegara {threshold:g})"
+    if plus or minus:
+        detail += f": {plus}{('; ' if plus and minus else '')}{minus}"
+    if result.emoji_penalty:
+        detail += f" (emoji −{result.emoji_penalty:g})"
+    if not result.is_match:
+        return finish("keywords", detail)
+    add("keywords", OK, detail)
     verdict.ok = True
     verdict.stage = "ok"
     verdict.detail = "Barcha bosqichlar o'tdi"

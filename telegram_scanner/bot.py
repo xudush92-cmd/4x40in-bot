@@ -18,6 +18,7 @@ from aiogram.types import (
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
 from database import (
     MAX_USER_GROUPS,
+    SCORE_THRESHOLDS,
     add_keyword_checked,
     add_user_group,
     approve_pending_session,
@@ -30,6 +31,14 @@ from database import (
     delete_user_group,
     get_all_phrases_with_id,
     get_all_user_groups,
+    get_phrase,
+    get_phrases_full,
+    get_keywords_weighted,
+    get_match_mode,
+    set_match_mode,
+    get_score_threshold,
+    set_score_threshold,
+    update_phrase,
     get_all_users,
     get_all_users_full,
     get_counter,
@@ -72,7 +81,9 @@ from login_manager import (
 )
 from session_crypto import decrypt_session, encrypt_session
 from matcher import (
+    canonical_entry,
     parse_key_words,
+    parse_weighted_entries,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -1523,18 +1534,35 @@ async def words_menu(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ So'z qo'shish", callback_data="wadd")],
         [InlineKeyboardButton(text="📋 To'liq ro'yxat", callback_data="wlist")],
+        [
+            InlineKeyboardButton(
+                text="⚖️ Rejim" if get_match_mode() == "count" else "🔢 Rejim",
+                callback_data="wmode",
+            ),
+            InlineKeyboardButton(text="🎯 Chegara", callback_data="wthr"),
+        ],
     ])
     await message.answer(
         f"🔑 <b>Kalit so'zlar — {total} ta</b>\n\n"
         f"{preview_text}\n\n"
-        "Xabar o'tishi uchun xabarda kamida "
-        f"<b>{get_match_count()}</b> ta kalit topilishi kerak "
-        "(shartni 🔔 Xabar sharti dan o'zgartirasiz).\n\n"
+        f"{_mode_line()}\n\n"
+        "ℹ️ Har so'zning vazni bor: ➕ (mijoz belgisi) yoki ➖ "
+        "(haydovchi belgisi). Vaznni 📋 To'liq ro'yxat dan so'zni "
+        "bosib o'zgartirasiz.\n\n"
         "ℹ️ Emoji yoki stikerli xabarlar avtomatik tashlanadi — "
         "bu haydovchi e'lonlari uchun yetarli.",
         parse_mode="HTML",
         reply_markup=kb,
     )
+
+
+def get_word_id(word: str) -> int | None:
+    """So'zning bazadagi id'si (yo'q bo'lsa None)."""
+    canonical = canonical_entry(word)
+    for pid, text, _w, _s in get_phrases_full():
+        if canonical_entry(text) == canonical:
+            return pid
+    return None
 
 
 @dp.callback_query(AdminFilter(), F.data == "wadd")
@@ -1546,8 +1574,23 @@ async def words_add_start(callback: types.CallbackQuery, state: FSMContext):
         "• Har bir so'z alohida kalit bo'ladi\n"
         "• Probel, vergul yoki yangi qator bilan ajrating\n"
         "• Faqat o'zak yozing (qo'shimchasiz), lotin harflarida\n"
-        "• Takror so'z o'zi tashlab yuboriladi\n\n"
-        "Masalan: <code>toshkent xorazm urganch odam yuk pochta</code>\n\n"
+        "• Takror so'z o'zi tashlab yuboriladi\n"
+        "• Vaznni so'z oldiga yozasiz: <code>+3 kerak</code>, "
+        "<code>-3 reys</code>. Vazn yozilmasa — <b>+1</b>\n"
+        "• <b>Musbat</b> = mijoz belgisi, <b>manfiy</b> = haydovchi belgisi\n"
+        "• Musbat vaznda bir necha so'z — har biri alohida yozuv\n"
+        "• Manfiy vaznda bir necha so'z — <b>ibora</b> "
+        "(<code>-4 joy bor</code> «joy bor» bo'lib qidiriladi)\n"
+        "• Ibora kerak bo'lsa musbatda ham: <code>+2: kim bor</code>\n\n"
+        "Masalan:\n"
+        "<code>+3 kerak kerek izl qidir\n"
+        "+2.5 bormi\n"
+        "+2: kim bor\n"
+        "-4 joy bor\n"
+        "-3 reys\n"
+        "-3.5 qo'ng'iroq qiling</code>\n\n"
+        "Vaznni keyin 📋 To'liq ro'yxat dan so'zni bosib ham "
+        "o'zgartirasiz.\n\n"
         "Bekor qilish: /cancel",
         parse_mode="HTML",
     )
@@ -1566,29 +1609,45 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    words = parse_key_words(message.text or "")
-    if not words:
+    parsed = parse_weighted_entries(message.text or "")
+    if not parsed:
         await message.answer("⚠️ Kamida bitta so'z yozing.")
         return  # holatda qolamiz — qayta yozishi mumkin
 
     await state.clear()
-    added, conflicts, rejects = [], [], []
-    for word in words:
+    added, updated, conflicts, rejects = [], [], [], []
+    for word, weight in parsed:
         reason = keyword_reject_reason(word)
         if reason:
             rejects.append((word, reason))
             continue
-        is_added, where = add_keyword_checked(word)
+        is_added, where = add_keyword_checked(word, weight=weight)
         if is_added:
-            added.append(word)
+            added.append((word, weight))
+            continue
+        # So'z allaqachon bor: vazn berilgan bo'lsa — yangilaymiz.
+        existing = get_word_id(word)
+        if existing is not None and weight != 1.0:
+            update_phrase(existing, weight=weight)
+            updated.append((word, weight))
         else:
             conflicts.append((word, where))
 
     parts = []
     if added:
+        shown = ", ".join(
+            w if weight == 1.0 else f"{w} ({weight:+g})"
+            for w, weight in added
+        )
         parts.append(
             f"✅ Qo'shildi ({len(added)} ta): "
-            f"<b>{html.escape(', '.join(added), quote=False)}</b>"
+            f"<b>{html.escape(shown, quote=False)}</b>"
+        )
+    if updated:
+        shown = ", ".join(f"{w} ({weight:+g})" for w, weight in updated)
+        parts.append(
+            f"⚖️ Vazni yangilandi ({len(updated)} ta): "
+            f"<b>{html.escape(shown, quote=False)}</b>"
         )
     for word, where in conflicts:
         where_text = ", ".join(where) if where else "bazada"
@@ -1689,13 +1748,43 @@ async def set_count_message(message: types.Message, state: FSMContext):
 WORDS_PER_PAGE = 20
 
 
+def _weight_badge(weight: float, strict: int = 0) -> str:
+    """Tugma oldidagi belgi: ``➕3`` (mijoz) / ``➖4`` (haydovchi)."""
+    sign = "➕" if weight > 0 else "➖"
+    value = abs(weight)
+    shown = f"{value:g}"
+    return f"{sign}{shown}" + ("🔒" if strict else "")
+
+
+def _weight_word(weight: float) -> str:
+    if weight > 0:
+        return "mijoz belgisi"
+    if weight < 0:
+        return "haydovchi belgisi"
+    return "hisobga olinmaydi"
+
+
+def _mode_line() -> str:
+    mode = get_match_mode()
+    if mode == "weight":
+        return (
+            "⚖️ <b>Rejim: ball</b> — har so'zning vazni yig'iladi, "
+            f"chegara <b>{get_score_threshold():g}</b>."
+        )
+    return (
+        f"🔢 <b>Rejim: hisob</b> — kamida <b>{get_match_count()}</b> ta "
+        "kalit topilishi kerak."
+    )
+
+
 def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
-    """Ro'yxatning bitta sahifasi: matn + o'chirish tugmalari.
+    """Ro'yxatning bitta sahifasi: matn + so'z kartochkalari.
 
     Ro'yxat sahifalarga bo'linadi, chunki Telegram bitta xabarga cheklangan
     sondagi tugma sig'diradi (112 kalitda hammasi ko'rinmay qolardi).
+    Har bir tugmada so'zning vazni ko'rinadi; bosilsa kartochka ochiladi.
     """
-    phrases = get_all_phrases_with_id()
+    phrases = get_phrases_full()
     total = len(phrases)
     if not phrases:
         return (
@@ -1712,10 +1801,10 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
     chunk = phrases[start:start + WORDS_PER_PAGE]
     rows = [
         [InlineKeyboardButton(
-            text=f"🗑 {html.escape(t[:40], quote=False)}",
-            callback_data=f"del:{p_id}:{page}",
+            text=f"{_weight_badge(w, st)} {html.escape(t[:36], quote=False)}",
+            callback_data=f"wcard:{p_id}:{page}",
         )]
-        for p_id, t in chunk
+        for p_id, t, w, st in chunk
     ]
     if pages > 1:
         nav = []
@@ -1730,10 +1819,21 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
         rows.append(nav)
     rows.append([InlineKeyboardButton(
         text="➕ So'z qo'shish", callback_data="wadd")])
+    rows.append([
+        InlineKeyboardButton(
+            text="⚖️ Rejim" if get_match_mode() == "count" else "🔢 Rejim",
+            callback_data="wmode",
+        ),
+        InlineKeyboardButton(
+            text="🎯 Chegara", callback_data="wthr",
+        ),
+    ])
     text = (
         f"📋 <b>Kalit so'zlar — {total} ta</b>\n"
-        f"Sahifa {page + 1}/{pages}. O'chirish uchun so'zning "
-        "tugmasini bosing — ro'yxat ochiq qoladi."
+        f"Sahifa {page + 1}/{pages}.\n\n"
+        f"{_mode_line()}\n\n"
+        "ℹ️ ➕3 = mijoz belgisi, ➖4 = haydovchi belgisi. "
+        "So'zni bosib vaznini o'zgartirasiz."
     )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1785,6 +1885,257 @@ async def delete_phrase_callback(callback: types.CallbackQuery):
     delete_phrase(p_id)
     await _edit_words_page(callback.message, page)
     await callback.answer(f"🗑 {name} o'chirildi" if name else "🗑 O'chirildi")
+
+
+# --- So'z kartochkasi: vaznni shu yerdan boshqarish ---
+
+WEIGHT_PRESETS = (
+    ("Mijoz ⭐️3", 3.0),
+    ("Mijoz 2", 2.0),
+    ("Mijoz 1", 1.0),
+    ("Neytral 0", 0.0),
+    ("Haydovchi −1", -1.0),
+    ("Haydovchi −3", -3.0),
+    ("Haydovchi −4", -4.0),
+)
+
+
+def _word_card_text(row) -> str:
+    _pid, word, weight, strict = row
+    esc = html.escape(word, quote=False)
+    if weight > 0:
+        verdict = "Bu so'z topilsa — xabar <b>mijozniki</b> bo'lish ehtimoli oshadi."
+    elif weight < 0:
+        verdict = ("Bu so'z topilsa — xabar <b>haydovchiniki</b> bo'lish "
+                   "ehtimoli oshadi (ball kamayadi).")
+    else:
+        verdict = "Vazn 0 — so'z hisobga olinmaydi."
+    strict_line = (
+        "🔒 Qat'iy: faqat aniq yozuv (o'zak va imlo xatosi hisobga olinmaydi)."
+        if strict else
+        "🔓 O'zak bo'yicha ham topiladi (``kerak`` ~ ``kerakmi``)."
+    )
+    return (
+        f"⚖️ <b>{esc}</b>\n\n"
+        f"Vazn: <b>{weight:+g}</b> — {_weight_word(weight)}\n"
+        f"{strict_line}\n\n"
+        f"{verdict}\n\n"
+        f"{_mode_line()}"
+    )
+
+
+def _word_card_kb(row, page: int) -> InlineKeyboardMarkup:
+    pid, _word, weight, strict = row
+    rows = [
+        [
+            InlineKeyboardButton(text="➖0.5", callback_data=f"wadj:{pid}:-0.5:{page}"),
+            InlineKeyboardButton(text=f"{weight:+g}", callback_data="wnav"),
+            InlineKeyboardButton(text="➕0.5", callback_data=f"wadj:{pid}:0.5:{page}"),
+        ],
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"wval:{pid}:{value:g}:{page}",
+            )
+            for label, value in WEIGHT_PRESETS[:2]
+        ],
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"wval:{pid}:{value:g}:{page}",
+            )
+            for label, value in WEIGHT_PRESETS[2:5]
+        ],
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"wval:{pid}:{value:g}:{page}",
+            )
+            for label, value in WEIGHT_PRESETS[5:]
+        ],
+        [
+            InlineKeyboardButton(
+                text=("🔓 Qat'iylikni o'chirish" if strict else "🔒 Qat'iy qilish"),
+                callback_data=f"wtog:{pid}:{page}",
+            )
+        ],
+        [
+            InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"wdel:{pid}:{page}"),
+            InlineKeyboardButton(text="◀️ Ro'yxat", callback_data=f"wpage:{page}"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show_word_card(callback: types.CallbackQuery, pid: int, page: int,
+                          note: str = "") -> None:
+    row = get_phrase(pid)
+    if not row:
+        await callback.answer("So'z topilmadi (o'chirilgan).", show_alert=True)
+        return
+    text = _word_card_text(row)
+    if note:
+        text = f"{note}\n\n{text}"
+    try:
+        await callback.message.edit_text(
+            text, parse_mode="HTML", reply_markup=_word_card_kb(row, page)
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wcard:"))
+async def word_card_callback(callback: types.CallbackQuery):
+    parts = callback.data.split(":")
+    try:
+        pid, page = int(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    await _show_word_card(callback, pid, page)
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wadj:"))
+async def word_weight_adjust(callback: types.CallbackQuery):
+    parts = callback.data.split(":")
+    try:
+        pid, delta, page = int(parts[1]), float(parts[2]), int(parts[3])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = get_phrase(pid)
+    if not row:
+        await callback.answer("So'z topilmadi.", show_alert=True)
+        return
+    new_weight = round(max(-10.0, min(10.0, row[2] + delta)), 2)
+    if new_weight == 0:
+        new_weight = 0.5 if delta > 0 else -0.5
+    update_phrase(pid, weight=new_weight)
+    await _show_word_card(callback, pid, page, note=f"⚖️ {new_weight:+g}")
+    await callback.answer(f"Vazn: {new_weight:+g}")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wval:"))
+async def word_weight_set(callback: types.CallbackQuery):
+    parts = callback.data.split(":")
+    try:
+        pid, value, page = int(parts[1]), float(parts[2]), int(parts[3])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    update_phrase(pid, weight=value)
+    await _show_word_card(callback, pid, page, note=f"⚖️ {value:+g}")
+    await callback.answer(f"Vazn: {value:+g}")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wtog:"))
+async def word_strict_toggle(callback: types.CallbackQuery):
+    parts = callback.data.split(":")
+    try:
+        pid, page = int(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = get_phrase(pid)
+    if not row:
+        await callback.answer("So'z topilmadi.", show_alert=True)
+        return
+    update_phrase(pid, strict=0 if row[3] else 1)
+    note = "🔓 Qat'iylik o'chirildi" if row[3] else "🔒 Qat'iy rejim yoqildi"
+    await _show_word_card(callback, pid, page, note=note)
+    await callback.answer(note)
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wdel:"))
+async def word_card_delete(callback: types.CallbackQuery):
+    parts = callback.data.split(":")
+    try:
+        pid, page = int(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = get_phrase(pid)
+    delete_phrase(pid)
+    # Ro'yxat O'SHA xabarda qaytadi (yopilib qolmaydi).
+    await _edit_words_page(callback.message, page)
+    await callback.answer(
+        f"🗑 {row[1]} o'chirildi" if row else "🗑 O'chirildi"
+    )
+
+
+@dp.callback_query(AdminFilter(), F.data == "wmode")
+async def words_mode_toggle(callback: types.CallbackQuery):
+    """Hisob (nechta kalit) va ball (vaznlar) rejimini almashtiradi."""
+    new_mode = "weight" if get_match_mode() == "count" else "count"
+    set_match_mode(new_mode)
+    await _edit_words_page(callback.message, 0)
+    if new_mode == "weight":
+        await callback.answer(
+            "⚖️ Ball rejimi: so'zlar vazni yig'iladi", show_alert=True
+        )
+    else:
+        await callback.answer(
+            "🔢 Hisob rejimi: nechta kalit topilishi hisoblanadi", show_alert=True
+        )
+
+
+def _threshold_kb() -> InlineKeyboardMarkup:
+    rows, chunk = [], []
+    for value in SCORE_THRESHOLDS:
+        mark = " ✅" if abs(value - get_score_threshold()) < 0.001 else ""
+        chunk.append(InlineKeyboardButton(
+            text=f"{value:g}{mark}", callback_data=f"wth:{value:g}"
+        ))
+        if len(chunk) == 4:
+            rows.append(chunk)
+            chunk = []
+    if chunk:
+        rows.append(chunk)
+    rows.append([InlineKeyboardButton(text="◀️ Ro'yxat", callback_data="wpage:0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(AdminFilter(), F.data == "wthr")
+async def words_threshold_menu(callback: types.CallbackQuery):
+    try:
+        await callback.message.edit_text(
+            "🎯 <b>Ball chegarasi</b>\n\n"
+            "Xabarning balli shu qiymatdan <b>katta yoki teng</b> bo'lsa "
+            "o'tadi.\n\n"
+            "• past chegara (0.5–1.0) — ko'proq xabar, ko'proq shovqin\n"
+            "• yuqori chegara (2.5–4.0) — kamroq xabar, yuqori aniqlik\n\n"
+            f"Hozir: <b>{get_score_threshold():g}</b> "
+            f"(rejim: {get_match_mode()})",
+            parse_mode="HTML",
+            reply_markup=_threshold_kb(),
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wth:"))
+async def words_threshold_set(callback: types.CallbackQuery):
+    try:
+        value = float(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato qiymat.", show_alert=True)
+        return
+    set_score_threshold(value)
+    try:
+        await callback.message.edit_text(
+            "🎯 <b>Ball chegarasi</b>\n\n"
+            f"Yangi chegara: <b>{value:g}</b>\n\n"
+            "Rejim «ball» bo'lsa shu qiymat ishlatiladi "
+            "(rejimni 🔑 Kalit so'zlar sahifasidagi ⚖️ tugmasi bilan "
+            "almashtirasiz).",
+            parse_mode="HTML",
+            reply_markup=_threshold_kb(),
+        )
+    except Exception:
+        pass
+    await callback.answer(f"Chegara: {value:g}")
 
 
 def normalize_group_input(text: str) -> str | None:

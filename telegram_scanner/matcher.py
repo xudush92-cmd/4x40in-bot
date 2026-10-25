@@ -486,13 +486,136 @@ def find_stop_words(message_text: str, stop_words) -> list[str]:
     return _find_entries(message_text, stop_words, strict_question=True)
 
 
-def find_client_words(message_text: str, client_words) -> list[str]:
+def find_client_words(message_text, client_words) -> list[str]:
     """Xabardagi mijozga xos so'zlar/iboralar (topilmasa bo'sh).
 
-    Bu yerda so'roq shakli qat'iy emas: "bormi" yozuvi "бор" so'zi
-    bilan ham mos keladi — mijoz xabarini o'tkazib yubormaslik muhim.
+    So'roq shakli qat'iy ajratiladi: ``bormi`` yozuvi xabardagi oddiy
+    ``bor`` so'zi bilan tenglashtirilmaydi (haydovchining "2 joy bor"
+    e'loni mijoz savoli deb hisoblanmasin).
     """
-    return _find_entries(message_text, client_words, strict_question=False)
+    return _find_entries(message_text, client_words, strict_question=True)
+
+
+# --- Vaznli hisoblash (score) ---
+# Har bir kalit so'zning bazada vazni bor: musbat — mijoz belgisi,
+# manfiy — haydovchi belgisi. Xabar ball yig'indisi bo'yicha baholanadi.
+#
+# Ikki xil moslik ishlatiladi:
+#   * musbat yozuv — odatdagi moslik (o'zak, shakl, imlo xatosi);
+#     so'roq shakli qat'iy, chunki ``bormi`` mijoz belgisi.
+#   * manfiy yozuv — QAT'IY moslik: faqat aniq so'z yoki o'zak.
+#     Imlo xatosi/prefiks bo'yicha yaqinlik ishlatilmaydi, aks holda
+#     "xizmat" kabi manfiy so'z "xizmat kerak" (mijoz) xabarini ham
+#     o'chirib qo'yardi.
+_NEG_FUZZY_MIN = 4  # manfiy yozuv o'zak bo'lib xizmat qilishi uchun
+
+
+def _find_entries_strict(message_text: str, entries) -> list[str]:
+    """Manfiy yozuvlar uchun qat'iy qidiruv (imlo xatosi hisobga olinmaydi).
+
+    Bitta so'zli yozuv: xabar so'zi unga teng yoki undan boshlanadi
+    (``reys`` ~ ``reyslar``), lekin ``tashaymiz`` ~ ``tashaydi`` kabi
+    boshqa shakl mos kelmaydi. Ko'p so'zli yozuv (ibora): yonma-yon
+    aynan teng bo'lishi kerak.
+    """
+    entries = list(entries or ())
+    if not entries:
+        return []
+    message_tokens = normalize_tokens(message_text)
+    if not message_tokens:
+        return []
+    found: list[str] = []
+    for entry in entries:
+        entry_tokens = normalize_tokens(entry)
+        if not entry_tokens:
+            continue
+        if len(entry_tokens) == 1:
+            key = entry_tokens[0]
+            for token in message_tokens:
+                if token == key:
+                    found.append(entry)
+                    break
+                if len(key) < _NEG_FUZZY_MIN or len(token) < _NEG_FUZZY_MIN:
+                    continue
+                # Oldinga: qo'shimcha har qanday uzunlikda bo'lishi mumkin
+                # (``reys`` ~ ``reyslar``, ``xizmat`` ~ ``xizmatimiz``).
+                if token.startswith(key):
+                    found.append(entry)
+                    break
+                # Orqaga: xabar so'zi kalitning o'zagi bo'lsa, faqat qisqa
+                # qoldiq (1-2 harf) — aks holda ``tashaymiz`` kaliti
+                # ``tashaydi`` bilan aralashardi.
+                if key.startswith(token) and len(key) - len(token) <= 2:
+                    found.append(entry)
+                    break
+        else:
+            size = len(entry_tokens)
+            for start in range(len(message_tokens) - size + 1):
+                if message_tokens[start:start + size] == entry_tokens:
+                    found.append(entry)
+                    break
+    return found
+
+
+@dataclass
+class ScoreResult:
+    score: float = 0.0
+    threshold: float = 1.75
+    positives: dict[str, float] = field(default_factory=dict)
+    negatives: dict[str, float] = field(default_factory=dict)
+    emoji_penalty: float = 0.0
+
+    @property
+    def is_match(self) -> bool:
+        return self.score >= self.threshold
+
+    @property
+    def total(self) -> float:
+        return self.score
+
+
+def score_text(
+    message_text: str,
+    entries,
+    threshold: float = 1.75,
+    emoji_penalty: float = 0.0,
+) -> ScoreResult:
+    """Xabarning ballini hisoblaydi.
+
+    ``entries`` — ``[(so'z, vazn), ...]`` yoki
+    ``[(so'z, vazn, qatiylik), ...]``. Nol vaznli yozuvlar tashlab
+    yuboriladi. Musbat yozuvlar odatdagi, manfiy yozuvlar qat'iy
+    moslik bilan qidiriladi.
+    """
+    result = ScoreResult(threshold=float(threshold))
+    pos_entries: dict[str, float] = {}
+    neg_entries: dict[str, float] = {}
+    for row in entries or ():
+        word = row[0]
+        try:
+            weight = float(row[1])
+        except (TypeError, ValueError):
+            continue
+        if not word or weight == 0:
+            continue
+        if weight > 0:
+            pos_entries[word] = weight
+        else:
+            neg_entries[word] = weight
+
+    if pos_entries:
+        for word in _find_entries(message_text, list(pos_entries), True):
+            result.positives[word] = pos_entries[word]
+    if neg_entries:
+        for word in _find_entries_strict(message_text, list(neg_entries)):
+            result.negatives[word] = neg_entries[word]
+
+    score = sum(result.positives.values()) + sum(result.negatives.values())
+    if emoji_penalty and contains_emoji(message_text):
+        result.emoji_penalty = float(emoji_penalty)
+        score -= result.emoji_penalty
+    result.score = score
+    return result
 
 
 _EMOJI_RE = re.compile(
@@ -507,6 +630,70 @@ def contains_emoji(text: str | None) -> bool:
     emoji bo'lmasligi kutiladi. Shuning uchun emoji alohida belgidir.
     """
     return bool(text and _EMOJI_RE.search(text))
+
+
+_WEIGHT_PREFIX_RE = re.compile(r"^\s*([+-]\d+(?:\.\d+)?)\s*(:)?\s*(.+)$")
+_NEXT_WEIGHT_SPLIT = re.compile(r"\s+(?=[+-]\d+(?:\.\d+)?\s*:?\s*\S)")
+
+
+def parse_weighted_entries(text: str) -> list[tuple[str, float]]:
+    """Admin kiritgan matnni ``(yozuv, vazn)`` juftlariga ajratadi.
+
+    Qoidalar:
+
+    * vazn yozilmasa — standart **+1** (mijoz belgisi);
+    * ``+3 kerak kerek`` — musbat vazn + bir necha so'z = **har biri
+      alohida yozuv** (mijoz kalitlari odatda yakka so'z bo'ladi);
+    * ``-4 har kuni`` — manfiy vazn + bir necha so'z = **ibora**
+      (haydovchi belgisi aniq bo'lishi kerak);
+    * ``-4: joy bor`` yoki ``-4 "joy bor"`` — har qanday holatda ibora;
+    * ``-3 reys +2 yukim`` — bir qatorda bir nechta vaznli yozuv;
+    * ``+2.5 bormi, kerak`` — vergul bo'lsa, har so'z alohida yozuv.
+
+    Musbat vazn — mijoz belgisi, manfiy — haydovchi belgisi.
+    """
+    out: list[tuple[str, float]] = []
+    for line in (text or "").splitlines():
+        for piece in _NEXT_WEIGHT_SPLIT.split(line.strip()):
+            piece = piece.strip()
+            if not piece:
+                continue
+            match = _WEIGHT_PREFIX_RE.match(piece)
+            if not match:
+                for word in parse_key_words(piece):
+                    out.append((word, 1.0))
+                continue
+            try:
+                weight = float(match.group(1))
+            except ValueError:
+                weight = 1.0
+            colon = bool(match.group(2))
+            rest = match.group(3).strip()
+            if not rest:
+                continue
+            if rest[:1] in ("\"", "'") and rest[-1:] == rest[:1]:
+                rest = rest[1:-1].strip()
+                colon = True
+            if "," in rest or ";" in rest:
+                for word in parse_key_words(rest):
+                    out.append((word, weight))
+                continue
+            tokens = parse_key_words(rest)
+            if not tokens:
+                continue
+            # Ibora: ochiq belgi (``:``/qo'shtirnoq) yoki manfiy vazn +
+            # bir necha so'z. Aks holda har so'z alohida yozuv bo'ladi.
+            if colon or (weight < 0 and len(tokens) > 1):
+                entry = display_entry(rest)
+                if entry:
+                    out.append((entry, weight))
+                continue
+            for word in tokens:
+                out.append((word, weight))
+    merged: dict[str, float] = {}
+    for entry, weight in out:
+        merged[entry] = weight
+    return list(merged.items())
 
 
 def display_entry(text: str | None) -> str:

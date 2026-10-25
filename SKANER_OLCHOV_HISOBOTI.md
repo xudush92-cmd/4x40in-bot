@@ -308,3 +308,129 @@ python3 -m py_compile *.py       # sintaksis
 B1 — baza ustunlari (`weight`, `strict`) + `score()` + regressiya testi.
 A dan farqi: bu yerda **model** o'zgaradi, shuning uchun alohida commit va
 alohida o'lchov talab qilinadi.
+
+---
+
+## 11. B QADAMI BAJARILDI — vaznli model (baza + filtr + bot UI)
+
+**Sana:** 2026-10-25 · **Fayllar:** `database.py`, `matcher.py`, `filters.py`,
+`bot.py`, yangi `test_weights.py`
+**Testlar:** `test_matcher` 52 + `test_weights` **30** + UI/oqim 49 = **131**
+
+### 11.1 Savolga javob: vazn qanday beriladi — bot orqali
+
+Uch yo'l bor, **kodda tayyor ro'yxat yo'q** — hammasi admin qo'lida:
+
+**1) Kiritishda matn bilan** (eng tez, 56 so'z bir xabarda):
+
+```
++3 kerak kerek
++3 izl qidir
++3 jo'nat jonat jull jiber yubor
++2 qancha
++1.5 necha
++1 ketadi
++2.5 bormi
++2: kim bor
++3: kim olib ketadi
+-4 joy bor
+-3 reys
+-3: har kuni
+-3.5 tashaymiz
+-3.5: qo'ng'iroq qiling
+-3 ishga
+```
+
+Qoidalar:
+
+| Yozuv | Natija |
+|---|---|
+| `kerak` | bitta yozuv, vazn **+1** |
+| `+3 kerak kerek` | ikki yozuv, har biri +3 (musbatda bo'linadi) |
+| `-4 joy bor` | **bitta ibora** «joy bor», −4 (manfiyda birlashadi) |
+| `-4: joy bor` / `-4 "joy bor"` | har qanday holatda ibora |
+| `-3 reys +2 yukim` | ikki yozuv, har xil vazn |
+| `+2.5 bormi, kerak` | vergul → ikki yozuv, +2.5 |
+
+**2) Kartochkadan** — 📋 To'liq ro'yxat → so'zni bosing:
+➖0.5 / ➕0.5, tayyor qiymatlar (Mijoz 3/2/1, Neytral 0, Haydovchi −1/−3/−4),
+🔒 qat'iylik, 🗑 o'chirish. Ro'yxatda har so'z oldida vazni:
+`➕3 kerak`, `➖4 joy bor`, `🔒` = qat'iy.
+
+**3) Rejim va chegara** — 🔑 Kalit so'zlar sahifasidagi tugmalar:
+`⚖️ Rejim` (hisob ⇄ ball), `🎯 Chegara` (0.5 … 4.0, ✅ joriy qiymatda).
+
+### 11.2 Baza o'zgarishlari (migratsiya avtomatik)
+
+```sql
+ALTER TABLE phrases ADD COLUMN weight REAL    DEFAULT 1.0;  -- +mijoz / −haydovchi
+ALTER TABLE phrases ADD COLUMN strict INTEGER DEFAULT 0;    -- 1 = aniq yozuv
+INSERT settings: match_mode = 'count'        -- 'count' | 'weight'
+INSERT settings: score_threshold = 1.75
+```
+
+Eski baza avtomatik yangilanadi: mavjud so'zlar `weight=1.0`, rejim
+`count` bo'lib qoladi — **xatti-harakat o'zgarmaydi** (test bilan
+tekshirilgan). `reset_db.py` ishlatish shart emas.
+
+### 11.3 Filtr zanjiri
+
+1–4 bosqich (tizim / tarif / Stop-Start / guruh) **o'zgarmadi**.
+5-bosqich emoji — hozircha qat'iy blok (vaznga o'tkazish keyingi qadam).
+6-bosqich endi rejimga qarab:
+
+* `count` — `matched_count >= match_count` (eski mantiq);
+* `weight` — `score >= score_threshold`, bunda:
+
+| Tur | Qidiruv | Nega |
+|---|---|---|
+| Musbat yozuv | odatdagi moslik + so'roq qat'iy | `kerak` ~ `kerakmi`, `bormi` ≠ `bor` |
+| Manfiy yozuv | **qat'iy**: aniq so'z yoki o'zak | imlo xatosi/prefiks yaqinligi manfiy so'zni mijozga tegizmasin |
+| Emoji | hozircha blok (5-bosqich) | keyingi qadamda −1.5 vazn |
+
+### 11.4 O'lchov (haqiqiy kod, 45/30/20 korpus)
+
+Vaznlar **botdagi kabi matn bilan** kiritildi, keyin `filters.evaluate()`
+chaqirildi:
+
+| Variant | Mijoz | Haydovchi o'tdi | Aloqasiz o'tdi |
+|---|---|---|---|
+| Hisob rejimi, 12 so'z, shart=1 | 38/45 | 1/30 | 3/20 |
+| Ball, 12 musbat, chegara 0.5 | 36/45 | 1/30 | 2/20 |
+| Ball, + niyat iboralari (21 yozuv), 1.75 | 39/45 | 0/30 | 1/20 |
+| **Ball, to'liq tavsiya (56 yozuv), 1.75** | **44/45** | **0/30** | **1/20** |
+| Ball, to'liq tavsiya (56), 2.5 | 40/45 | 0/30 | 0/20 |
+
+Qo'shimcha: avval qabul qilingan yagona xato
+(`yuk bor kishi kerak bolsa qo'ng'iroq qiling`) ham endi **bloklanadi** —
+`qo'ng'iroq qiling` manfiysi (3+ −3.5) uni o'chiradi.
+
+### 11.5 Test tugmasi endi ballni ko'rsatadi
+
+```
+❌ TO'XTAYDI: bugun toshkent xorazm 2 joy bor tel 90 123 45 67
+   ball=-4/1.75  musbat={}  manfiy={'joy bor': -4.0}
+
+✅ O'TADI: menga bugun bitta mashina kerak iltimos
+   ball=4/1.75  musbat={'kerak': 3.0, 'iltimos': 1.0}  manfiy={}
+```
+
+Ya'ni «nega bu xabar keldi / nega kelmadi» degan savolga aniq javob bor.
+
+### 11.6 Testlar
+
+| Fayl | Soni | Nima tekshiriladi |
+|---|---|---|
+| `test_matcher.py` | 52 | moslik, alifbo, shakl, so'roq, qisqa so'z |
+| `test_weights.py` | 30 | sxema/migratsiya, vazn chegarasi, qat'iy manfiy, rejim, filtr zanjiri, kiritish parseri |
+| UI test (vaqtinchalik) | 31 | kartochka, vazn tugmalari, rejim, chegara, o'chirish |
+| Oqim testi (vaqtinchalik) | 18 | matn bilan kiritish → ro'yxat → rejim → real filtr |
+
+### 11.7 Keyingi qadam (B3 va undan keyin)
+
+1. **Emoji** — 5-bosqichni qat'iy blokdan `−1.5` vaznga o'tkazish.
+2. **Per-user chegara** — har foydalanuvchi o'z chegarasini tanlashi.
+3. **Feedback** — bildirishnomada «✅ Foydali / ❌ Keraksiz» tugmasi:
+   bosilganda so'z vazni avtomatik moslashadi (eng katta foyda).
+4. **So'rovnoma** (`SOROVNOMA_SKANER.md`) — real misollar bilan vaznlarni
+   aniqlashtirish.
