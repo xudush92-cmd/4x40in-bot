@@ -122,8 +122,13 @@ def build_notification_text(
     matched_words,
     required_count: int,
     message_link: str | None,
+    match_mode: str = "count",
+    score: float | None = None,
+    score_threshold: float | None = None,
+    positive_weights: dict | None = None,
+    negative_weights: dict | None = None,
 ) -> str:
-    """Bildirishnoma matni — skrinshotdagi ko'rinishda."""
+    """Bildirishnoma matni — rejimga mos ball/shart bilan."""
     sep = "━━━━━━━━━━━━━━━"
     esc = html.escape
 
@@ -155,11 +160,29 @@ def build_notification_text(
         sep,
         f"✅ <b>Topilgan kalitlar ({len(matched_words)} ta):</b> "
         f"{esc(', '.join(matched_words))}",
-        f"🔔 <b>Shart:</b> kamida {required_count} ta — bajarildi",
+    ]
+    if match_mode == "weight":
+        score_value = float(score or 0.0)
+        threshold_value = float(score_threshold or 0.0)
+        lines.append(
+            f"⚖️ <b>Ball:</b> {score_value:g} / {threshold_value:g} — o'tdi"
+        )
+        details = []
+        for word, weight in (positive_weights or {}).items():
+            details.append(f"+{float(weight):g} {esc(str(word))}")
+        for word, weight in (negative_weights or {}).items():
+            details.append(f"{float(weight):g} {esc(str(word))}")
+        if details:
+            lines.append("🔎 <b>Mosgan vaznlar:</b> " + ", ".join(details))
+    else:
+        lines.append(
+            f"🔔 <b>Shart:</b> kamida {int(required_count)} ta — bajarildi"
+        )
+    lines.extend([
         sep,
         profile_line,
         "✍️ (Lichkasiga xabar yozish uchun ushbu xabarga «Reply / Javob» qiling)",
-    ]
+    ])
     if message_link:
         lines.append(
             f'🔗 <a href="{esc(message_link, quote=True)}">'

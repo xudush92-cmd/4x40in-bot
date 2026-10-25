@@ -1802,3 +1802,23 @@ qilmang; yangi format deploy qilingandan keyin yangi nusxa oling.
 Matcher 59 + weights 53 + feedback 23 + review 44 + export 8 + diag 27
 = **214 test — OK**. Merge hamda replace importida ijobiy ko'p so'zli
 iboralar saqlanishi regressiya testi bilan tekshirildi.
+
+---
+
+## 34. Bildirishnomada «kamida 0 ta» ko'rinishi
+
+Admin yuborgan amaldagi bildirishnoma matnida vazn rejimida
+`🔔 Shart: kamida 0 ta — bajarildi` chiqqan. Bu **skoring xatosi emas**:
+`Verdict.required` vazn rejimida ishlatilmaydi va default 0 bo'lib qoladi;
+bildirishnoma formatlagichi esa count rejimidagi matnni qo'llagan.
+
+Tuzatish: vazn rejimida endi `⚖️ Ball: X / chegara — o'tdi` va mos
+musbat/manfiy vaznlar ko'rsatiladi. Count rejimida esa eski `kamida N ta`
+sharti qoladi. Notification builder-ru testlar ikkala rejimni qoplaydi.
+
+Pasted alertda `bor`, `toshkentga` mos kalit sifatida ko'rsatilgan,
+lekin yuborilgan avvalgi eksportda bu ikkitasi alohida kalit sifatida
+ko'rinmadi. Ishlayotgan baza eksportdan keyin o'zgargan bo'lishi mumkin;
+keyingi deploydan so'ng yangi eksport bilan mosligini solishtirish kerak.
+
+Testlar: 59 + 53 + 23 + 44 + 8 + 27 + 3 = **217 test — OK**.

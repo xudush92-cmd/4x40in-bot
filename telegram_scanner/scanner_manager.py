@@ -418,6 +418,11 @@ def _make_handler(owner_id: int, client: TelegramClient):
             matched_words=verdict.matched,
             required_count=verdict.required,
             message_link=message_link,
+            match_mode=verdict.mode,
+            score=verdict.score,
+            score_threshold=verdict.threshold,
+            positive_weights=verdict.positives,
+            negative_weights=verdict.negatives,
         )
         rows = []
         if user_id is not None:
