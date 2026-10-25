@@ -434,3 +434,102 @@ Ya'ni «nega bu xabar keldi / nega kelmadi» degan savolga aniq javob bor.
    bosilganda so'z vazni avtomatik moslashadi (eng katta foyda).
 4. **So'rovnoma** (`SOROVNOMA_SKANER.md`) — real misollar bilan vaznlarni
    aniqlashtirish.
+
+---
+
+## 12. SOLISHTIRMA: vaznli model qanchalik yaxshi?
+
+**Savol:** «vazn berish oldingi variantlarga qaraganda qanchalik yaxshi?»
+**Javob qisqa:** mexanizm o'zi hech narsani yaxshilamaydi — **foyda
+kontentdan** (niyat iboralari + manfiy yozuvlar) keladi, vazn esa ularni
+**bitta tizimda** ifodalash imkonini beradi.
+
+### 12.1 Bir xil 12 so'z: hisob ≈ ball
+
+| Rejim | Mijoz | Haydovchi o'tdi | Aloqasiz o'tdi | F1 |
+|---|---|---|---|---|
+| Hisob (12 so'z, shart=1) | 38/45 (84%) | 1/30 | 3/20 | 0.874 |
+| Ball (12 so'z, chegara 0.5–1.0) | 38/45 (84%) | 1/30 | 3/20 | 0.874 |
+
+Ya'ni **bir xil ro'yxatda vazn hech narsa qo'shmaydi**. Bu kutilgan:
+12 so'zning hammasi musbat, yig'indi ham «bor/yo'q» bilan bir xil.
+
+> Diqqat: bu o'lchov davomida bitta **haqiqiy xato** topildi va tuzatildi —
+> vazn rejimida musbat so'zlar simmetrik so'roq tekshiruvidan o'tib,
+> `ketadi` kaliti `ketadimi`, `kerak` kaliti `kerakmi` shakllarini
+> tutmay qolgan edi (mijoz xabari yo'qolardi). Endi musbat yozuvlarda
+> tekshiruv **assimmetrik**: `bormi` ≠ `bor`, lekin `kerak` = `kerakmi`.
+
+### 12.2 Asosiy farq: kontent + chegara
+
+| Variant | Yozuv | Mijoz | Haydovchi | Aloqasiz | Aniqlik | F1 |
+|---|---|---|---|---|---|---|
+| Hisob, 12 so'z | 12 | 38/45 (84%) | 1/30 | 3/20 | 90% | 0.874 |
+| Ball, 12 musbat | 12 | 38/45 (84%) | 1/30 | 3/20 | 90% | 0.874 |
+| Ball, + niyat iboralari | 21 | 39/45 (87%) | **0/30** | 1/20 | 95% | 0.928 |
+| **Ball, to'liq (56), 1.75** | **56** | **44/45 (98%)** | **0/30 (0%)** | 2/20 | **96%** | **0.967** |
+| Ball, to'liq (56), 2.5 | 56 | 40/45 (89%) | 0/30 | **0/20** | **100%** | 0.930 |
+
+**F1: 0.874 → 0.967 (+11%)**. Mijoz qamrovi **84% → 98%**, haydovchi
+o'tishi **1 → 0**.
+
+### 12.3 Chegara — yangi imkoniyat (oldin yo'q edi)
+
+| Chegara | Mijoz | Haydovchi | Aloqasiz |
+|---|---|---|---|
+| 0.5–1.0 | 45/45 (100%) | 0/30 | 4/20 |
+| **1.75–2.0** | **44/45 (98%)** | **0/30** | **2/20** |
+| 2.5 | 40/45 (89%) | 0/30 | 1/20 |
+| 3.0 | 39/45 (87%) | 0/30 | 1/20 |
+| 3.5–4.0 | 25–27/45 (56–60%) | 0/30 | 0/20 |
+
+Oldin faqat «nechta kalit» bor edi va u **sakraydi** (1 → 2 → 3 orasida
+katta farq). Endi bitta raqam bilan **aniqlik ⇄ to'liqlik** almashinadi:
+foydalanuvchi o'zi tanlaydi (ko'proq mijoz kerakmi yoki kamroq shovqin).
+
+### 12.4 Nima uchun farq shunchalik katta
+
+| Sabab | Hisob rejimida | Ball rejimida |
+|---|---|---|
+| Manfiy (haydovchi) belgisi | **umuman ifodalab bo'lmaydi** | `-4 joy bor`, `-3 reys` |
+| Bitta so'zning ta'siri | hammasi teng (1 ta) | `kerak` = 3, `iltimos` = 1 |
+| Niyat iboralari (`kim bor`, `ketadimi`) | faqat yakka so'z | ibora sifatida |
+| Shovqin bilan kurash | faqat shart sonini oshirish | manfiy + chegara |
+
+### 12.5 Iflos matn (imlo xatosi, kirill, apostrofsiz)
+
+12 ta suniy «iflos» xabar: **hisob 11/12, ball 11/12** — vazn bu yerda
+ustunlik bermaydi, chunki ikkalasi ham bir xil matcher yadrosidan
+foydalanadi. Yagona xato ikkalasida ham bir xil:
+
+* `karak bitta mashina` — `kerak` bilan o'xshashlik 0.80, chegara 0.85.
+
+### 12.6 Halol ogohlantirishlar (muhim)
+
+1. **Korpus kichik va qo'lda tuzilgan** (45/30/20). Raqamlar «in-sample»:
+   manfiy yozuvlar aynan shu 30 e'longa qarab tanlangan — **overfit**
+   xavfi bor. Real hayotda natija pastroq bo'ladi (taxminan 90–95%).
+2. **Narx:** 56 yozuv (12 emas). Lekin bu bir martalik ish — keyin
+   kartochkadan boshqariladi; va vazn berish `+3 kerak` kabi bitta
+   qatorda bo'lgani uchun 2 daqiqa vaqt oladi.
+3. **Qolgan kamchiliklar:**
+   * `admin kerakmi`, `ishga odam kerak` kabi **boshqa domen** `kerak` li
+     xabarlar hali ham o'tadi (`-3 admin`, `-3 ishga` yordam beradi, lekin
+     hammasini qoplamaydi);
+   * emoji hali **qat'iy blok** (5-bosqich) — mijoz `🙏📞` bilan yozsa
+     xabar yo'qoladi;
+   * imlo xatosi (`karak`) topilmaydi.
+4. **Vaznlar qo'lda** — hozircha o'zi o'rganmaydi. Keyingi qadam:
+   bildirishnomadagi «✅ Foydali / ❌ Keraksiz» tugmasi vaznlarni
+   avtomatik moslashtiradi (bu eng katta foyda beradi).
+
+### 12.7 Xulosa jadvali
+
+| Savol | Javob |
+|---|---|
+| Vazn o'zi yaxshimi? | Yo'q — bir xil ro'yxatda natija bir xil |
+| Kontent bilan yaxshimi? | **Ha** — F1 0.874 → 0.967, mijoz 84% → 98% |
+| Nega? | Manfiy belgilarni ifodalash imkoniyati + iboralar + chegara |
+| Narxi? | 56 yozuv (bir martalik), keyin botdan boshqariladi |
+| Tavsiya? | **Rejim: ball, chegara 1.75**, 56 yozuvli ro'yxat bilan |
+| Muqobil? | Aniqlik ustun bo'lsa — chegara **2.5** (100% aniqlik, 89% qamrov) |

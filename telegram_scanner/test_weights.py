@@ -248,6 +248,18 @@ class TestScore(unittest.TestCase):
         r = score_text("2 joy bormi", [("bormi", 2.5)])
         self.assertEqual(r.positives, {"bormi": 2.5})
 
+    def test_base_key_matches_question_form(self):
+        """Teskari yo'nalish ochiq: ``ketadi`` kaliti ``ketadimi`` ni topadi.
+
+        Bu mijoz shakli — yo'qolsa mijoz xabari o'tkazib yuboriladi.
+        """
+        r = score_text("pochta ketadimi Qashqaryoga", [("ketadi", 1.0)])
+        self.assertEqual(r.positives, {"ketadi": 1.0})
+        r = score_text("mashina kerakmi", [("kerak", 3.0)])
+        self.assertEqual(r.positives, {"kerak": 3.0})
+        r = score_text("mashina kerak", [("kerakmi", 2.0)])
+        self.assertEqual(r.positives, {})
+
 
 class TestFilterChain(unittest.TestCase):
     """filters.evaluate() — real skaner zanjiri."""

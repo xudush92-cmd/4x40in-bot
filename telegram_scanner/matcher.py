@@ -209,11 +209,16 @@ def _word_matches(
     key_word: str,
     message_word: str,
     strict_question: bool = False,
+    question_key_only: bool = False,
 ) -> bool:
     """Bitta yozuv xabardagi so'zga mosmi (shakl va alifbo o'zgarishlari bilan)."""
     for kv in _fold_variants(key_word):
         for mv in _fold_variants(message_word):
-            if _word_matches_single(kv, mv, strict_question=strict_question):
+            if _word_matches_single(
+                kv, mv,
+                strict_question=strict_question,
+                question_key_only=question_key_only,
+            ):
                 return True
     return False
 
@@ -222,11 +227,20 @@ def _word_matches_single(
     key_word: str,
     message_word: str,
     strict_question: bool = False,
+    question_key_only: bool = False,
 ) -> bool:
     """Bitta alifbo (allaqachon buklangan) ichida moslik.
 
-    ``strict_question`` — so'roq qo'shimchasini qat'iy ajratish. Stop-so'zlar
-    uchun yoqiladi: "жой бор" yozuvi "жой борми" savolini bloklamaydi.
+    So'roq qo'shimchasi ikki xil boshqariladi:
+
+    * ``strict_question=True`` — **simmetrik**: so'roq shakli umuman
+      boshqa shakl bilan tenglashtirilmaydi. Stop-so'zlar uchun kerak:
+      "жой бор" (e'lon) "жой борми?" (savol) ni bloklamasin.
+    * ``question_key_only=True`` — **assimmetrik**: kalit so'roq shaklida
+      yozilgan bo'lsa (``bormi``), u faqat so'roq shaklidagi so'zga mos
+      keladi. Teskari yo'nalish ochiq: ``kerak`` kaliti ``kerakmi`` ni,
+      ``ketadi`` kaliti ``ketadimi`` ni topaveradi (mijoz shakli
+      yo'qolmasin).
     """
     if strict_question and _is_question_form(key_word) != _is_question_form(
         message_word
@@ -235,12 +249,9 @@ def _word_matches_single(
     if key_word == message_word:
         return True
 
-    # So'roq shakli ASSIMMETRIK tekshiriladi: kalit so'roq shaklida yozilgan
-    # bo'lsa (``bormi``), u faqat so'roq shaklidagi so'zga mos keladi.
-    # Aks holda ``bormi`` kaliti haydovchining "2 joy bor" e'lonini tutib
-    # oladi. Teskari yo'nalish ochiq qoladi: ``kerak`` kaliti ``kerakmi``
-    # savolini ham topaveradi (mijoz shakli yo'qolmasin).
-    if _is_question_form(key_word) and not _is_question_form(message_word):
+    if question_key_only and _is_question_form(key_word) and not _is_question_form(
+        message_word
+    ):
         return False
 
     # Fe'l shaxsi: "olamiz" ~ "olaman" mos, "olamiz" ~ "olasiz" emas.
@@ -423,6 +434,7 @@ def _phrase_matches(
     entry_tokens,
     message_tokens,
     strict_question: bool = False,
+    question_key_only: bool = False,
 ) -> bool:
     """Ibora (yonma-yon so'zlar) xabarda topildimi."""
     size = len(entry_tokens)
@@ -431,7 +443,11 @@ def _phrase_matches(
     for start in range(len(message_tokens) - size + 1):
         window = message_tokens[start:start + size]
         if all(
-            _word_matches(e, m, strict_question=strict_question)
+            _word_matches(
+                e, m,
+                strict_question=strict_question,
+                question_key_only=question_key_only,
+            )
             for e, m in zip(entry_tokens, window)
         ):
             return True
@@ -442,6 +458,7 @@ def _find_entries(
     message_text: str,
     entries,
     strict_question: bool = False,
+    question_key_only: bool = False,
 ) -> list[str]:
     entries = tuple(entries or ())
     if not entries:
@@ -460,7 +477,9 @@ def _find_entries(
             if len(entry_tokens) != 1:
                 continue
             if _word_matches(
-                entry_tokens[0], token, strict_question=strict_question
+                entry_tokens[0], token,
+                strict_question=strict_question,
+                question_key_only=question_key_only,
             ):
                 found.add(idx)
     for idx in phrases:
@@ -470,7 +489,9 @@ def _find_entries(
         if not entry_tokens:
             continue
         if _phrase_matches(
-            entry_tokens, message_tokens, strict_question=strict_question
+            entry_tokens, message_tokens,
+            strict_question=strict_question,
+            question_key_only=question_key_only,
         ):
             found.add(idx)
     return [entries[i] for i in sorted(found)]
@@ -493,7 +514,7 @@ def find_client_words(message_text, client_words) -> list[str]:
     ``bor`` so'zi bilan tenglashtirilmaydi (haydovchining "2 joy bor"
     e'loni mijoz savoli deb hisoblanmasin).
     """
-    return _find_entries(message_text, client_words, strict_question=True)
+    return _find_entries(message_text, client_words, question_key_only=True)
 
 
 # --- Vaznli hisoblash (score) ---
@@ -604,7 +625,9 @@ def score_text(
             neg_entries[word] = weight
 
     if pos_entries:
-        for word in _find_entries(message_text, list(pos_entries), True):
+        for word in _find_entries(
+            message_text, list(pos_entries), question_key_only=True
+        ):
             result.positives[word] = pos_entries[word]
     if neg_entries:
         for word in _find_entries_strict(message_text, list(neg_entries)):
