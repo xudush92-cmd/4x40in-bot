@@ -385,6 +385,15 @@ def account_status_text(user_id: int) -> str:
     )
 
 
+def system_on_keyboard():
+    """Tizim to'xtatilgan bo'lsa — bir bosishda yoqish tugmasi."""
+    if get_setting("is_active") == "1":
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="▶️ Tizimni yoqish", callback_data="sys:on"),
+    ]])
+
+
 def current_status_text() -> str:
     """Menyudagi qisqa holat + to'xtatilgan bo'lsa ogohlantirish."""
     text = (
@@ -458,6 +467,24 @@ dp = Dispatcher()
 dp.message.outer_middleware(PrivateChatOnlyMiddleware())
 dp.callback_query.outer_middleware(PrivateChatOnlyMiddleware())
 dp.message.outer_middleware(MenuEscapeMiddleware())
+
+
+@dp.callback_query(AdminFilter(), F.data == "sys:on")
+async def system_on_callback(callback: types.CallbackQuery):
+    """Inline «▶️ Tizimni yoqish» — o'chirgichni bir bosishda yoqadi."""
+    set_setting("is_active", "1")
+    logger.info("[SYSTEM] admin tomonidan yoqildi (%s)", callback.from_user.id)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(
+            "▶️ <b>Tizim yoqildi</b> — endi skanerlari yoniq guruhlar "
+            "ishlaydi.\n\n" + current_status_text(),
+            parse_mode="HTML",
+            reply_markup=main_menu(admin=True),
+        )
+    except Exception:
+        logger.exception("Tizimni yoqish javobi")
+    await callback.answer("▶️ Tizim yoqildi")
 
 
 @dp.message(AdminFilter(), F.text == BTN_ADMIN_PANEL)
@@ -633,6 +660,15 @@ async def cmd_start(message: types.Message, state: FSMContext):
             parse_mode="HTML",
             reply_markup=main_menu(admin=True),
         )
+        # Tizim to'xtatilgan bo'lsa — bir bosishda yoqish tugmasi.
+        extra = system_on_keyboard()
+        if extra is not None:
+            await message.answer(
+                "⏸ <b>Tizim hozir to'xtatilgan</b> — hech kimga xabar "
+                "berilmayapti.",
+                parse_mode="HTML",
+                reply_markup=extra,
+            )
         return
 
     if is_new and ADMIN_ID:

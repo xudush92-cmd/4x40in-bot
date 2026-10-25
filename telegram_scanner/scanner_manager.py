@@ -246,6 +246,48 @@ def reset_diagnostics(owner_id: int) -> None:
     _last_event.pop(owner_id, None)
 
 
+# Takrorlanuvchi "skip" loglarini siyraklashtirish: kalit -> oxirgi yozilgan
+# vaqt, hisob. Faqat bir xil sabab uchun.
+_skip_state: dict[tuple, list] = {}
+_SKIP_INTERVAL = 60      # sekund: bir xil sabab shu vaqtda bir marta yoziladi
+_SKIP_STATE_MAX = 2000   # begona chatlar sababli dict cheksiz o'smasin
+
+
+def _log_skip(owner_id: int, chat_id, verdict) -> None:
+    """«skip» sababini logga yozadi, takrorlarni siyraklashtirib.
+
+    Bir xil sabab bir daqiqada bir marta yoziladi va shu oraliqdagi
+    takrorlar soni keyingi yozuvda ko'rsatiladi. Tizim sababida chat ID
+    hisobga olinmaydi; qolgan sabablar chat bo'yicha alohida turadi.
+    """
+    line = summary_line(verdict)
+    stage = getattr(verdict, "stage", "") or ""
+    # «Tizim» sababi barcha chatlarga bir xil — bitta kalit yetadi.
+    # Boshqa sabablar chat bo'yicha alohida ko'rsatiladi.
+    key = (
+        (owner_id, stage, line)
+        if stage == "system"
+        else (owner_id, stage, chat_id, line)
+    )
+    now = time.time()
+    prev = _skip_state.get(key)
+    if prev and now - prev[0] < _SKIP_INTERVAL:
+        prev[1] += 1
+        return
+    extra = ""
+    if prev and prev[1] > 0:
+        extra = f" (+{prev[1]} ta shunga o'xshash xabar)"
+    # Expired keyni oxiriga ko'chiramiz; LRU kabi eski yozuvlarni
+    # chiqarish orqali yangi/noma'lum chatlar sonini cheklaymiz.
+    _skip_state.pop(key, None)
+    if len(_skip_state) >= _SKIP_STATE_MAX:
+        _skip_state.pop(next(iter(_skip_state)))
+    _skip_state[key] = [now, 0]
+    logger.info(
+        "[SCAN] skip owner=%s chat=%s: %s%s", owner_id, chat_id, line, extra
+    )
+
+
 def _queue_watch_card(event, verdict) -> None:
     """👁 Kuzatuv kartasini adminga yuboradi (faqat o'z akkaunti).
 
@@ -331,10 +373,11 @@ def _make_handler(owner_id: int, client: TelegramClient):
             _queue_watch_card(event, verdict)
         if not verdict.ok:
             # O'tkazib yuborish sababi logga yoziladi: [SCAN] skip ...
-            logger.info(
-                "[SCAN] skip owner=%s chat=%s: %s",
-                owner_id, event.chat_id, summary_line(verdict),
-            )
+            # Shu bilan birga: «tizim to'xtatilgan» holati HAR xabar uchun
+            # yozilsa log 2 daqiqada 200 qatorga to'lib ketadi va undan
+            # hech narsa ko'rinmaydi. Shuning uchun bunday takrorlar
+            # daqiqada bir marta, hisob bilan yoziladi.
+            _log_skip(owner_id, event.chat_id, verdict)
             return
         if verdict.mode == "weight":
             # Vazn rejimida "nechta kalit" shart emas — ball va chegara muhim.

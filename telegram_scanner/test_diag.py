@@ -167,6 +167,56 @@ class _Verdict:
         self.negatives = negatives or {}
 
 
+class TestSkipLogThrottle(unittest.TestCase):
+    """Bir xil blok sababi log buferini bosib ketmasin."""
+
+    def setUp(self):
+        import scanner_manager
+
+        self.sm = scanner_manager
+        self.sm._skip_state.clear()
+        self.log = logging.getLogger("scanner_manager")
+        self.handler = logging.Handler()
+        self.records = []
+        self.handler.emit = self.records.append
+        self.log.addHandler(self.handler)
+        self.log.setLevel(logging.INFO)
+        self.real_time = self.sm.time.time
+        self.now = 1000.0
+        self.sm.time.time = lambda: self.now
+
+    def tearDown(self):
+        self.sm.time.time = self.real_time
+        self.sm._skip_state.clear()
+        self.log.removeHandler(self.handler)
+
+    def test_system_skip_is_summarized_once_per_minute(self):
+        verdict = _Verdict(ok=False, stage="system")
+        verdict.detail = "tizim to'xtatilgan"
+        for _ in range(5):
+            self.sm._log_skip(777, -1001, verdict)
+        self.assertEqual(len(self.records), 1)
+        self.now += 61
+        self.sm._log_skip(777, -1001, verdict)
+        self.assertEqual(len(self.records), 2)
+        self.assertIn("+4 ta shunga o'xshash", self.records[-1].getMessage())
+
+    def test_system_skip_groups_share_one_bucket(self):
+        verdict = _Verdict(ok=False, stage="system")
+        verdict.detail = "tizim to'xtatilgan"
+        self.sm._log_skip(777, -1001, verdict)
+        self.sm._log_skip(777, -1002, verdict)
+        self.assertEqual(len(self.records), 1)
+
+    def test_group_skip_is_tracked_per_chat(self):
+        verdict = _Verdict(ok=False, stage="group")
+        verdict.detail = "guruh faol emas"
+        self.sm._log_skip(777, -1001, verdict)
+        self.sm._log_skip(777, -1002, verdict)
+        self.sm._log_skip(777, -1001, verdict)
+        self.assertEqual(len(self.records), 2)
+
+
 class TestWatch(unittest.TestCase):
     def tearDown(self):
         watch.disable()

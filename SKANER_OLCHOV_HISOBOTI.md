@@ -1610,3 +1610,56 @@ faqat haqiqiy telefon raqamlar `[raqam]` bo'ladi.
 Yangi testlar: redakt qatorlarni buzmasligi, texnik ID lar saqlanishi,
 telefon yopilishi, sessiya bir marta ko'tarilishi (uch parallel chaqiruv),
 xato bo'lsa `_starting` tozalanishi, mavjud client qayta ko'tarilmasligi.
+
+---
+
+## 30. Ikkinchi diagnostika: tizim hanuz pauzada
+
+Fayl: `diagnostika-20261025-132530.txt` (185 ta log qatori; 13:23–13:25).
+
+### Holat
+
+Diagnostika sarlavhasi muammoni aniq ko'rsatadi:
+
+```
+tizim: 🔴 TO'XTATILGAN (Tizim tugmasi)
+kalitlar: 74 ta · chegara: 1.75 · rejim: weight
+faol guruhlar: 1 ta · sessiyalar: 1 ta
+kuzatuv: — · ko'rilgan xabar: 66
+```
+
+**Bot yangilangan va ishlayapti, lekin global tizim tugmasi hanuz pauzada.**
+66 ta event kelgan — sessiya onlayn. Shu logda bir xil `event` lar juft
+bo'lib takrorlanmaydi, ikkinchi klient belgisi ko'rinmaydi. 13:25:02 dagi
+uzilishdan keyingi bitta qayta ulanish odatiy reconnect ko'rinishida;
+13:25:02 da bitta `[SESSION] ... client ishga tushdi` yozuvi bor.
+
+Skanerni ishga tushirish uchun admin menyudagi **⏸/▶️ Tizim (hammaga)**
+tugmasini bosing, yoki `/start` dan keyin chiqadigan yangi **▶️ Tizimni
+yoqish** inline tugmasini bosing. Bu faqat global pauzani yechadi; egasi
+va guruhlar uchun alohida yoqilgan holat ham talab qilinadi.
+
+### Guruh ro'yxati
+
+13:25:13 da bitta xabar `group: bu guruh sizning faol guruhlaringiz
+ro'yxatida yo'q` deb to'xtagan. Sarlavhada **faol guruhlar: 1 ta** —
+demak, bot faqat bitta yoqilgan guruhni taniydi. Boshqa guruhni ham
+skanerlash kutilsa, uni **📋 Guruhlarim** bo'limida ro'yxatga qo'shib,
+faol holatga o'tkazing. Logdagi bu guruh to'xtashi global `system`
+tekshiruvidan oldin bo'lishi mumkin; asosiy joriy to'siq baribir qizil
+global holat.
+
+### Qo'shilgan yaxshilashlar
+
+- `/start` dagi admin javobida pauza bo'lsa, alohida **▶️ Tizimni yoqish**
+tugmasi chiqadi; bosilganda global `is_active` yoqiladi va bot holatni
+javob qiladi.
+- Takroriy `skip` sababi har daqiqada bir marta yoziladi; oraliqdagi
+son keyingi yozuvda ko'rsatiladi. `system` sababi barcha chatlar uchun
+bitta hisoblagich, guruh kabi boshqa sabablar chat bo'yicha alohida.
+- Hisoblagich xotirasi 2,000 kalit bilan chegaralangan.
+
+### Tekshiruv
+
+Matcher 59 + weights 53 + feedback 23 + review 36 + export 7 + diag 27
+= **205 test — OK**.
