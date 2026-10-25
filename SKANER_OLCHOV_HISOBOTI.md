@@ -1281,3 +1281,46 @@ butun; eksport iborani saqlaydi; legacy bo'lish bir martagina, vazni bilan).
 
 59 (matcher) + **43** (weights) + 20 (feedback) + 23 (review) + 7 (export)
 = **152 test** — hammasi OK.
+
+---
+
+## 23. O'qitish to'plami (yangi)
+
+`o_qitish/` papkasi:
+
+| Fayl | Nima |
+|---|---|
+| `qitish-matnlari.tsv` | **315 yorliqlangan xabar**: 97 mijoz, 101 haydovchi, 117 boshqa |
+| `baholash.py` | to'plamni joriy 76 yozuvli ro'yxat bilan o'lchaydi |
+| `OQITISH_QOLLANMA.md` | format, yig'ish qoidalari, maxfiylik |
+
+### 23.1 O'lchov (chegara 1.75)
+
+```
+mijoz       97 -> 83 topildi   85.6%
+haydovchi  101 ->  0 o'tdi      0.0%
+boshqa     117 -> 14 o'tdi     12.0%
+```
+
+Haydovchi e'lonlarining **birortasi ham o'tmayapti** (emoji filtri +
+manfiy so'zlar). Mijozning 14 tasi topilmayapti — ularning ko'pchiligida
+umuman kalit so'z yo'q.
+
+### 23.2 Topilgan haqiqiy xatolar (kod darajasida)
+
+| Xabar | Ball | Sabab |
+|---|---|---|
+| `kimda bo'sh joy bor` | **−9.00** | `joy bor` (−4) + `bo'sh joy` (−4) + `bo'sh` (−2.5) — bitta ibora uch marta |
+| `admin bormi` | **+4.50** | `bormi` (+2.5) + `bormikin` (+2) — prefiks mosligi ikki marta |
+| `bo'sh joy bor` | −10.50 | yuqoridagi bilan bir xil |
+| `mashina kerak, qo'ng'iroq qiling` | 0.50 | `qo'ng'iroq qiling` (−3.5) mijozi ham aytadi |
+| `bugun kechqurun chiqamiz, mashina kerak` | 1.50 | `chiqamiz` (−2.5) mijozi ham aytadi |
+
+Birinchi ikkitasi — **bir-birini qoplaydigan mosliklar qo'shilib ketishi**.
+Tuzatish: bir xil matn bo'lagiga tushgan yozuvlardan faqat **eng uzuni**
+(eng aniq iborasi) hisoblansin. Bu `matcher.score_text` ga tegadi —
+ruxsat so'raladi.
+
+### 23.3 Testlar
+
+O'zgarish yo'q: 152 test OK. `baholash.py` — alohida vosita, botga ta'sir qilmaydi.
