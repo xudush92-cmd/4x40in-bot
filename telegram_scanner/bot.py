@@ -31,8 +31,10 @@ from database import (
     delete_user_group,
     get_all_phrases_with_id,
     get_all_user_groups,
+    get_lead_review as db_get_lead_review,
     get_phrase,
     get_phrases_full,
+    get_feedback_stats,
     get_keywords_weighted,
     get_match_mode,
     set_match_mode,
@@ -66,6 +68,8 @@ from database import (
     toggle_user_group,
     upsert_user,
 )
+import feedback as fb
+
 from login_manager import (
     LoginError,
     check_session,
@@ -2064,6 +2068,46 @@ async def word_card_delete(callback: types.CallbackQuery):
     )
 
 
+@dp.callback_query(F.data.startswith("fb:"))
+async def feedback_callback(callback: types.CallbackQuery):
+    """«✅ Foydali / ❌ Keraksiz» — xabardagi so'zlar vazni moslashadi.
+
+    Ruxsat: bildirishnoma egasi yoki admin. Boshqa foydalanuvchi
+    o'zgartira olmaydi (har kimning ma'lumoti alohida).
+    """
+    parts = callback.data.split(":")
+    try:
+        review_id, useful = int(parts[1]), parts[2] == "1"
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    review = db_get_lead_review(review_id)
+    if not review:
+        await callback.answer("Bildirishnoma topilmadi.", show_alert=True)
+        return
+    _id, owner_id, _words, _verdict = review
+    actor = callback.from_user.id
+    if actor != owner_id and actor != ADMIN_ID:
+        await callback.answer(
+            "Bu bildirishnoma sizga tegishli emas.", show_alert=True
+        )
+        return
+    status, changes = fb.apply_feedback(review_id, useful)
+    text = fb.feedback_text(status, changes, useful)
+    await callback.answer(text[:190], show_alert=(status != "ok"))
+    if status == "ok":
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(
+                f"{text}\n\n"
+                "ℹ️ Vaznlar shu asosda asta-sekin to'g'rilanadi — "
+                "🔑 Kalit so'zlar bo'limida ko'rasiz.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Feedback javobi yuborilmadi")
+
+
 @dp.callback_query(AdminFilter(), F.data == "wmode")
 async def words_mode_toggle(callback: types.CallbackQuery):
     """Hisob (nechta kalit) va ball (vaznlar) rejimini almashtiradi."""
@@ -2945,6 +2989,22 @@ async def broadcast_go(callback: types.CallbackQuery, state: FSMContext):
 
 
 # --- Admin: statistika ---
+def _feedback_stats_line() -> str:
+    """Statistika uchun feedback qatori (foydali / keraksiz ulushi)."""
+    try:
+        stats = get_feedback_stats()
+    except Exception:
+        return ""
+    total = stats.get("useful", 0) + stats.get("useless", 0)
+    if not total:
+        return ""
+    pct = round(100 * stats["useful"] / total)
+    return (
+        f"👍 Fikr-mulohaza: <b>{total}</b> ta baholangan — "
+        f"✅ {stats['useful']} ({pct}%), ❌ {stats['useless']}\n"
+    )
+
+
 @dp.message(AdminFilter(), F.text == BTN_STATS)
 async def show_stats(message: types.Message, state: FSMContext):
     await state.clear()
@@ -2966,8 +3026,9 @@ async def show_stats(message: types.Message, state: FSMContext):
         f"⏰ 3 kun ichida tugaydi: <b>{expiring}</b> ta\n"
         f"⛔ Bloklangan: <b>{blocked_users}</b> ta\n\n"
         f"🚖 Topilgan mijozlar (jami): <b>{get_counter('leads_found')}</b> ta\n"
-        f"📨 Yuborilgan bildirishnomalar: <b>{get_counter('notifications_sent')}</b> ta\n\n"
-        f"🔑 Kalitlar: <b>{len(get_keywords())}</b> ta\n"
+        f"📨 Yuborilgan bildirishnomalar: <b>{get_counter('notifications_sent')}</b> ta\n"
+        + _feedback_stats_line()
+        + f"\n🔑 Kalitlar: <b>{len(get_keywords())}</b> ta\n"
         f"👥 Faol guruhlar: <b>{active_groups}</b> / {len(groups)} ta\n"
         f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ toʻxtatilgan'}",
         parse_mode="HTML",

@@ -136,6 +136,15 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   kartochka ochiladi: ➖0.5/➕0.5, tayyor qiymatlar (Mijoz 3/2/1,
   Neytral 0, Haydovchi −1/−3/−4), 🔒 qat'iylik va 🗑 o'chirish.
   Ro'yxatda har so'z oldida vazni ko'rinadi (`➕3 kerak`, `➖4 joy bor`).
+- **Fikr-mulohaza (o'z-o'zini sozlash)**: har bir bildirishnomada
+  `✅ Foydali` / `❌ Keraksiz` tugmalari bor. Bosilganda o'sha xabarda
+  qatnashgan so'zlarning vazni **avtomatik** moslashadi:
+  ✅ — musbat so'zlar `+0.25`, manfiy so'zlar `0` tomon `+0.25`
+  (ya'ni zaiflashadi); ❌ — faqat musbat so'zlar `−0.25`
+  (manfiyga tegilmaydi — u o'z ishini qildi). Vazn hech qachon `0`
+  bo'lib qolmaydi (belgi saqlanadi), chegarasi `±10`. Bir xabar faqat
+  **bir marta** baholanadi. Ruxsat: bildirishnoma egasi yoki admin.
+  📊 Statistikada `👍 Fikr-mulohaza` qatori ko'rinadi.
 - **Nega manfiy yozuv qat'iy qidiriladi**: manfiy yozuv faqat aniq
   so'z yoki o'zak bo'yicha topiladi (imlo xatosi/prefiks yaqinligi
   ishlatilmaydi). Aks holda `xizmat` manfiysi «menga yuk tashish

@@ -26,6 +26,19 @@ PHONE_REGEX = re.compile(
     r"(\+?998|8)?[\s\-]?\(?\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}\b"
 )
 
+def build_feedback_row(review_id: int) -> list[dict]:
+    """Bildirishnoma uchun «foydali / keraksiz» tugmalari.
+
+    ``review_id`` — ``database.save_lead_review()`` qaytargan id. Tugma
+    bosilganda ``feedback.apply_feedback()`` chaqiriladi va o'sha
+    xabarda qatnashgan so'zlarning vazni moslashadi.
+    """
+    return [
+        {"text": "✅ Foydali", "callback_data": f"fb:{review_id}:1"},
+        {"text": "❌ Keraksiz", "callback_data": f"fb:{review_id}:0"},
+    ]
+
+
 async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
     """Xabarni boshqaruv boti orqali berilgan chatga yuborish.
 

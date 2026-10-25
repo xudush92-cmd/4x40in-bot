@@ -17,6 +17,7 @@ from telethon.tl.types import Channel, Chat
 from config import ADMIN_ID, API_HASH, API_ID
 from database import (
     get_all_users_full,
+    save_lead_review,
     get_owner_active_chat_ids,
     get_pending_user_groups,
     get_user_full,
@@ -33,6 +34,7 @@ from login_manager import revoke_session
 from filters import evaluate, summary_line
 from session_crypto import decrypt_session
 from notifier import (
+    build_feedback_row,
     build_message_link,
     build_notification_text,
     find_phone_text,
@@ -310,6 +312,10 @@ def _make_handler(owner_id: int, client: TelegramClient):
             rows.append([{"text": "💬 Mijozga yozish (Lichka)", "url": f"tg://user?id={user_id}"}])
         if message_link:
             rows.append([{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}])
+        # Fikr-mulohaza: foydalanuvchi bosganda so'zlar vazni moslashadi.
+        review_id = save_lead_review(owner_id, verdict.matched)
+        if review_id:
+            rows.append(build_feedback_row(review_id))
         markup = {"inline_keyboard": rows} if rows else None
 
         # Bildirishnoma FAQAT guruh egasiga yuboriladi (chat_id=owner_id)

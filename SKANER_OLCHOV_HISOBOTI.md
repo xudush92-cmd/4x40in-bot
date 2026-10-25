@@ -533,3 +533,79 @@ foydalanadi. Yagona xato ikkalasida ham bir xil:
 | Narxi? | 56 yozuv (bir martalik), keyin botdan boshqariladi |
 | Tavsiya? | **Rejim: ball, chegara 1.75**, 56 yozuvli ro'yxat bilan |
 | Muqobil? | Aniqlik ustun bo'lsa — chegara **2.5** (100% aniqlik, 89% qamrov) |
+
+---
+
+## 13. C QADAMI BAJARILDI — fikr-mulohaza (`✅ Foydali / ❌ Keraksiz`)
+
+**Sana:** 2026-10-25 · **Fayllar:** yangi `feedback.py`, `database.py`,
+`notifier.py`, `scanner_manager.py`, `bot.py`, yangi `test_feedback.py`
+
+### 13.1 Nima qiladi
+
+Har bir bildirishnomada ikkita tugma:
+
+```
+[💬 Mijozga yozish (Lichka)]
+[↗️ Guruhdagi asl xabarni ochish]
+[✅ Foydali] [❌ Keraksiz]      ← yangi
+```
+
+Foydalanuvchi bosganda **o'sha xabarda qatnashgan so'zlarning vazni**
+avtomatik moslashadi:
+
+| Tugma | Musbat so'z | Manfiy so'z |
+|---|---|---|
+| ✅ Foydali | `+0.25` (kuchayadi) | `+0.25` (0 tomon zaiflashadi) |
+| ❌ Keraksiz | `−0.25` (zaiflashadi) | **tegilmaydi** (o'z ishini qildi) |
+
+Qoidalar:
+
+* vazn hech qachon `0` ga tushmaydi — belgi saqlanadi (`0.25` → `−0.25`);
+* chegara `±10`;
+* bir xabar **bir marta** baholanadi (takror bosish e'tiborsiz);
+* ruxsat: bildirishnoma **egasi** yoki **admin** (boshqasi olmaydi);
+* tugmalar bosilgach o'sha xabardan olib tashlanadi;
+* 📊 Statistikada yangi qator: `👍 Fikr-mulohaza: N ta baholangan — ✅ x (y%), ❌ z`.
+
+### 13.2 Nega bu muhim
+
+12-bo'limdagi asosiy xavf — **overfit**: 56 ta vazn men tuzgan 30 e'longa
+qarab tanlangan. Feedback bu muammoni yo'q qiladi: vaznlar real oqimga
+moslashadi, qo'lda sozlash yoki so'rovnoma shart bo'lmaydi.
+
+Amaliy ta'sir: `❌` bosilgan xabardagi `kerak` kabi so'zlar sekin
+zaiflashadi; `✅` bosilgan xabardagi noyob so'zlar kuchayadi. 10–20 ta
+bosishdan keyin ro'yxat foydalanuvchining o'z guruhlariga moslashadi.
+
+### 13.3 Baza
+
+```sql
+CREATE TABLE lead_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  words TEXT NOT NULL,              -- '|' bilan ajratilgan topilgan so'zlar
+  verdict TEXT DEFAULT '',          -- '' | 'useful' | 'useless'
+  created_at INTEGER DEFAULT 0
+);
+```
+
+Yozuv bildirishnoma yuborilayotganda yaratiladi (`scanner_manager`),
+so'zlar ro'yxati verddiktadan olinadi (musbat + manfiy).
+
+### 13.4 Testlar
+
+| Test | Soni | Nima |
+|---|---|---|
+| `test_feedback.py` | 13 | siljitish chegaralari, ✅/❌ mantiqi, takror bosish, begona foydalanuvchi, noma'lum so'z, statistika, matnlar |
+| UI test (aiogram) | 11 | tugma bosilishi, vazn o'zgarishi, ruxsat, takror, yo'q id, buzuq callback |
+
+Jami loyihada: **52 matcher + 31 vazn + 13 feedback + 31 UI + 18 oqim +
+11 feedback-UI = 156 tekshiruv**.
+
+### 13.5 Ochiq savol
+
+**Qadam 0.25 to'g'rimi?** Kichik qadam — sekin, lekin barqaror.
+Katta qadam (0.5) tezroq moslashadi, lekin bitta xato bosish vaznni
+sezilarli buzadi. Hozircha 0.25; statistikada `❌` ulushi 50% dan oshsa,
+qadamni oshirish kerak bo'ladi.

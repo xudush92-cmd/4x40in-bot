@@ -47,6 +47,15 @@ def init_db() -> None:
                             status TEXT DEFAULT 'pending',
                             last_error TEXT,
                             UNIQUE(owner_user_id, input_value))""")
+        # Bildirishnoma ustidan fikr-mulohaza (feedback): «foydali / keraksiz».
+        # Har bir yuborilgan xabar va unda topilgan so'zlar saqlanadi —
+        # foydalanuvchi tugma bosganda o'sha so'zlarning vazni moslashadi.
+        conn.execute("""CREATE TABLE IF NOT EXISTS lead_reviews (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            owner_user_id INTEGER NOT NULL,
+                            words TEXT NOT NULL,
+                            verdict TEXT DEFAULT '',
+                            created_at INTEGER DEFAULT 0)""")
         # Foydalanuvchi statistikasi hisoblagichlari
         conn.execute("""CREATE TABLE IF NOT EXISTS user_counters (
                             user_id INTEGER NOT NULL,
@@ -310,6 +319,75 @@ def get_phrase(phrase_id: int):
         return None
     return (row[0], row[1], float(row[2] if row[2] is not None else 1.0),
             int(row[3] or 0))
+
+
+# --- Fikr-mulohaza (feedback) ---
+
+def save_lead_review(owner_user_id: int, words) -> int:
+    """Yuborilgan bildirishnoma uchun yozuv yaratadi, id qaytaradi."""
+    import time as _t
+
+    text = "|".join(w for w in (words or []) if w)
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "INSERT INTO lead_reviews (owner_user_id, words, created_at) "
+            "VALUES (?, ?, ?)",
+            (owner_user_id, text, int(_t.time())),
+        )
+        return int(cur.lastrowid)
+
+
+def get_lead_review(review_id: int):
+    """``(id, egasi, so'zlar ro'yxati, verdict)`` yoki None."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT id, owner_user_id, words, verdict FROM lead_reviews "
+            "WHERE id = ?",
+            (review_id,),
+        ).fetchone()
+    if not row:
+        return None
+    words = [w for w in (row[2] or "").split("|") if w]
+    return (row[0], row[1], words, row[3] or "")
+
+
+def set_lead_verdict(review_id: int, verdict: str) -> bool:
+    """Fikrni yozadi. Allaqachon belgilangan bo'lsa False (takror bosish)."""
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE lead_reviews SET verdict = ? "
+            "WHERE id = ? AND (verdict IS NULL OR verdict = '')",
+            (verdict, review_id),
+        )
+        return cur.rowcount > 0
+
+
+def word_id_by_text(word: str) -> int | None:
+    """So'zning bazadagi id'si (kanonik solishtirish bilan)."""
+    target = canonical_entry(word)
+    if not target:
+        return None
+    for pid, text, _w, _s in get_phrases_full():
+        if canonical_entry(text) == target:
+            return pid
+    return None
+
+
+def get_feedback_stats() -> dict:
+    """Statistika: nechta foydali / keraksiz deb belgilangan."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT verdict, COUNT(*) FROM lead_reviews GROUP BY verdict"
+        ).fetchall()
+    out = {"useful": 0, "useless": 0, "pending": 0}
+    for verdict, count in rows:
+        if verdict == "useful":
+            out["useful"] = count
+        elif verdict == "useless":
+            out["useless"] = count
+        else:
+            out["pending"] += count
+    return out
 
 
 # --- Filtr rejimi va chegarasi ---
