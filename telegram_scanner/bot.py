@@ -35,12 +35,14 @@ from database import (
     get_phrase,
     get_phrases_full,
     get_feedback_stats,
+    get_word_feedback_stats,
     get_keywords_weighted,
     get_match_mode,
     set_match_mode,
     get_score_threshold,
     set_score_threshold,
     update_phrase,
+    word_id_by_text,
     get_all_users,
     get_all_users_full,
     get_counter,
@@ -3101,9 +3103,157 @@ def _feedback_stats_line() -> str:
     )
 
 
-@dp.message(AdminFilter(), F.text == BTN_STATS)
-async def show_stats(message: types.Message, state: FSMContext):
-    await state.clear()
+# --- So'zlar tahlili: qaysi so'z ko'p «keraksiz» bo'lyapti ---
+
+# Tahlilda bir so'z kamida shuncha baholangan xabarda qatnashsin.
+STATS_MIN_TOTAL = 2
+# Bir bosishda vaznni qancha o'zgartirish (feedback bilan bir xil).
+STATS_STEP = 0.25
+
+
+def _word_stats_text(min_total: int = STATS_MIN_TOTAL) -> str:
+    """Tahlil matni: noto'g'ri ishlayotgan so'zlar va maslahat."""
+    stats = get_word_feedback_stats(min_total)
+    total = stats["total_reviews"]
+    if not total:
+        return (
+            "🔍 <b>So'zlar tahlili</b>\n\n"
+            "Hozircha baholangan xabar yo'q.\n\n"
+            "Bildirishnomalardagi <b>✅ Foydali</b> / <b>❌ Keraksiz</b> "
+            "tugmalarini bosing — 10–15 ta bosishdan keyin bu yerda "
+            "qaysi so'z noto'g'ri ishlayotgani ko'rinadi."
+        )
+
+    lines = [
+        "🔍 <b>So'zlar tahlili</b>",
+        "",
+        f"Baholangan xabarlar: <b>{total}</b> ta",
+        "",
+    ]
+    bad = stats["useless"][:8]
+    good = stats["useful"][:5]
+
+    if bad:
+        lines.append("❌ <b>Ko'p «keraksiz» bo'lgan so'zlar</b> "
+                     "— vaznni pasaytirish kerak:")
+        for word, useless, count, rate in bad:
+            pid = word_id_by_text(word)
+            weight = get_phrase(pid)[2] if pid else 0.0
+            lines.append(
+                f"  • <b>{html.escape(word, quote=False)}</b> — "
+                f"{useless}/{count} ({rate * 100:.0f}%) · vazn {weight:+g}"
+            )
+    else:
+        lines.append("❌ Hozircha «keraksiz» deb belgilangan so'z yo'q.")
+
+    if good:
+        lines.append("")
+        lines.append("✅ <b>Ko'p «foydali» bo'lgan so'zlar</b> "
+                     "— ishonchli belgilar:")
+        for word, useful, count, rate in good:
+            lines.append(
+                f"  • <b>{html.escape(word, quote=False)}</b> — "
+                f"{useful}/{count} ({rate * 100:.0f}%)"
+            )
+
+    lines += [
+        "",
+        "ℹ️ Quyidagi tugmalar vaznni <b>0.25</b> ga pasaytiradi "
+        "(bir bosish = bir qadam). Kerak bo'lsa qayta bosing.",
+        "ℹ️ Kamida "
+        f"{STATS_MIN_TOTAL} ta xabarda qatnashgan so'zlar ko'rsatiladi — "
+        "bitta tasodifiy bosish statistikani buzmasin.",
+    ]
+    return "\n".join(lines)
+
+
+def _word_stats_kb(min_total: int = STATS_MIN_TOTAL) -> InlineKeyboardMarkup:
+    stats = get_word_feedback_stats(min_total)
+    rows = []
+    for word, _useless, _count, _rate in stats["useless"][:4]:
+        pid = word_id_by_text(word)
+        if pid is None:
+            continue
+        rows.append([InlineKeyboardButton(
+            text=f"➖0.25 {word}"[:40],
+            callback_data=f"wsadj:{pid}:{min_total}",
+        )])
+    rows.append([
+        InlineKeyboardButton(text="🔄 Yangilash", callback_data=f"wstats:{min_total}"),
+        InlineKeyboardButton(text="◀️ Statistika", callback_data="wstback"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wstats"))
+async def word_stats_callback(callback: types.CallbackQuery):
+    """🔍 So'zlar tahlili (statistika sahifasidan ochiladi)."""
+    min_total = STATS_MIN_TOTAL
+    if ":" in callback.data:
+        try:
+            min_total = max(1, int(callback.data.split(":", 1)[1]))
+        except ValueError:
+            min_total = STATS_MIN_TOTAL
+    text = _word_stats_text(min_total)
+    kb = _word_stats_kb(min_total)
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data == "wstback")
+async def word_stats_back(callback: types.CallbackQuery):
+    """◀️ Statistika — asosiy statistika sahifasiga qaytish."""
+    try:
+        await callback.message.edit_text(
+            _admin_stats_text(), parse_mode="HTML",
+            reply_markup=_admin_stats_kb(),
+        )
+    except Exception:
+        await callback.message.answer(
+            _admin_stats_text(), parse_mode="HTML",
+            reply_markup=_admin_stats_kb(),
+        )
+    await callback.answer()
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wsadj:"))
+async def word_stats_adjust(callback: types.CallbackQuery):
+    """Tahlildan turib vaznni pasaytirish (bir bosish = bir qadam)."""
+    parts = callback.data.split(":")
+    try:
+        pid = int(parts[1])
+        min_total = int(parts[2]) if len(parts) > 2 else STATS_MIN_TOTAL
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = get_phrase(pid)
+    if not row:
+        await callback.answer("So'z topilmadi.", show_alert=True)
+        return
+    old = row[2]
+    new = round(old - STATS_STEP, 2)
+    # Musbat vazn 0 dan o'tib ketmasin: kichik manfiy bo'ladi.
+    if old > 0 and new <= 0:
+        new = -STATS_STEP
+    update_phrase(pid, weight=new)
+    logger.info(
+        "[WSTATS] so'z=%s vazn %s -> %s (admin=%s)",
+        row[1], old, new, callback.from_user.id,
+    )
+    text = _word_stats_text(min_total)
+    kb = _word_stats_kb(min_total)
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+    await callback.answer(f"⚖️ {row[1]}: {old:+g} → {new:+g}")
+
+
+def _admin_stats_text() -> str:
+    """Admin statistikasi matni (tugmadan ham, inline «orqaga» dan ham)."""
     users = [u for u in get_all_users() if u[0] != ADMIN_ID]
     active_users = sum(1 for u in users if is_subscription_active(u[0]) and not u[3])
     blocked_users = sum(1 for u in users if u[3])
@@ -3115,7 +3265,7 @@ async def show_stats(message: types.Message, state: FSMContext):
         for u in users
         if u[4] and now < u[4] <= now + 3 * 86400 and not u[3]
     )
-    await message.answer(
+    return (
         "📊 <b>Statistika</b>\n\n"
         f"👥 Foydalanuvchilar: <b>{len(users)}</b> ta\n"
         f"✅ Faol tarif: <b>{active_users}</b> ta\n"
@@ -3126,8 +3276,26 @@ async def show_stats(message: types.Message, state: FSMContext):
         + _feedback_stats_line()
         + f"\n🔑 Kalitlar: <b>{len(get_keywords())}</b> ta\n"
         f"👥 Faol guruhlar: <b>{active_groups}</b> / {len(groups)} ta\n"
-        f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ toʻxtatilgan'}",
+        f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ toʻxtatilgan'}"
+    )
+
+
+def _admin_stats_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="🔍 So'zlar tahlili (fikr-mulohaza)",
+            callback_data="wstats",
+        )
+    ]])
+
+
+@dp.message(AdminFilter(), F.text == BTN_STATS)
+async def show_stats(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        _admin_stats_text(),
         parse_mode="HTML",
+        reply_markup=_admin_stats_kb(),
     )
 
 

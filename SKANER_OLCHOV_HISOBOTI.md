@@ -690,3 +690,85 @@ Turli foydalanuvchilar turli ehtiyoj bilan ishlaydi: dispetcherga ko'proq
 mijoz kerak (past chegara), haydovchiga faqat aniq buyurtma kerak (yuqori
 chegara). Endi har biri o'zi tanlaydi — admin standarti esa yangi
 foydalanuvchilar uchun boshlang'ich qiymat bo'lib qoladi.
+
+## 15. E QADAMI BAJARILDI — so'zlar bo'yicha tahlil (B varianti)
+
+Fikr-mulohaza umumiy raqam beradi («70% foydali»), lekin **qaysi so'z**
+aybdorligini ko'rsatmaydi. E qadami shu bo'shliqni to'ldiradi: `❌ Keraksiz`
+bosilgan xabarlarda qatnashgan so'zlar yig'iladi va ulush bo'yicha saralanadi.
+
+### 15.1 Qayerda ko'rinadi
+
+`📊 Statistika` sahifasida yangi inline tugma:
+
+```
+🔍 So'zlar tahlili (fikr-mulohaza)
+```
+
+Tugma bosilganda (faqat admin):
+
+```
+🔍 So'zlar tahlili
+
+Baholangan xabarlar: 24 ta
+
+❌ Ko'p «keraksiz» bo'lgan so'zlar — vaznni pasaytirish kerak:
+  • kerak — 6/9 (67%) · vazn +3
+  • manzil — 3/4 (75%) · vazn +2
+✅ Ko'p «foydali» bo'lgan so'zlar — ishonchli belgilar:
+  • reys — 8/9 (89%)
+```
+
+Har bir «yomon» so'z ostida tugma turadi — bir bosishda vazn **0.25** ga
+pasayadi (`➖0.25 kerak`). Qayta bosish mumkin. `🔄 Yangilash` qayta hisoblaydi,
+`◀️ Statistika` asosiy sahifaga qaytaradi.
+
+### 15.2 Qoidalar
+
+| Qoida | Qiymat | Sabab |
+|---|---|---|
+| Minimal qatnashish | `STATS_MIN_TOTAL = 2` | bitta tasodifiy bosish statistikani buzmasin |
+| Bir qadam | `STATS_STEP = 0.25` | feedback bilan bir xil (kutilmagan sakrash yo'q) |
+| Musbat vazn | `0` dan o'tmaydi → `−0.25` | `0` = «e'tiborsiz», ya'ni blok ham, ishora ham emas |
+| Bir xabar bir marta | so'z takrori sanalmaydi | `kerak kerak` ≠ ikki barobar |
+| Baholanmagan xabar | hisobga olinmaydi | faqat `✅`/`❌` bosilganlar |
+
+Saralash: **ulush** (`❌ soni / jami`) bo'yicha kamayish tartibida; teng
+ulushda ko'proq qatnashgan so'z yuqorida.
+
+### 15.3 Nega ikkinchi (`✅`) ro'yxat ham bor
+
+`✅` ro'yxati — «bu so'z ishlayapti» degan ishonch. Agar vaznni pasaytirish
+kerak bo'lsa, aynan shu so'zlar **oxirgi navbatda** tegiladi. Ro'yxat 5 ta
+bilan cheklangan — ekran to'lib ketmasin.
+
+### 15.4 Sxema
+
+Yangi jadval **yo'q**: hammasi mavjud `lead_reviews` dan hisoblanadi
+(`words` — JSON ro'yxat, `useful` — 0/1). Shu sababli migratsiya talab
+qilinmaydi va eski fikr-mulohazalar darhol tahlilga tushadi.
+
+```sql
+-- get_word_feedback_stats(min_total)
+SELECT words, useful FROM lead_reviews WHERE useful IS NOT NULL
+```
+
+### 15.5 Testlar
+
+| Test | Soni | Nima |
+|---|---|---|
+| `test_feedback.py` → `TestWordStats` | +7 | bo'sh holat, sanash, ulush, saralash, `min_total`, baholanmagan, takror |
+| So'zlar tahlili UI (aiogram) | 23 | bo'sh holat, matn, `%`, tugmalar, `−0.25`, `0` dan o'tish, `◀️` qaytish, prefiks to'qnashuvi |
+| `test_feedback.py` jami | 20 | 13 + 7 yangi |
+
+Jami: `test_matcher` 52 + `test_weights` 38 + `test_feedback` **20** +
+UI 31 + oqim 18 + feedback-UI 11 + chegara-UI 12 + tahlil-UI 23 =
+**205 tekshiruv**.
+
+### 15.6 Nima uchun bu «avto-vazn» emas
+
+Tahlil **maslahat beradi**, qaror qilmaydi. Sabab: bitta guruhdagi noto'g'ri
+bosish butun tizim vaznini o'zgartirsa, boshqa foydalanuvchilar zarar
+ko'radi — kalitlar esa umumiy (admin). Shuning uchun avtomatik o'zgarish
+yo'q: admin ko'radi, o'zi bosadi. Har bosish jurnalga tushadi (`INFO`),
+ya'ni keyin qaytarish oson.

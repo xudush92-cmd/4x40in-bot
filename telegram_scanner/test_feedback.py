@@ -126,6 +126,69 @@ class TestApplyFeedback(unittest.TestCase):
         self.assertEqual(stats["pending"], 1)
 
 
+class TestWordStats(unittest.TestCase):
+    """So'zlar bo'yicha tahlil (qaysi so'z ko'p «keraksiz» bo'lyapti)."""
+
+    def setUp(self):
+        reset()
+        for word, weight in (("kerak", 3.0), ("reys", -3.0), ("bormi", 2.5)):
+            db.add_keyword_checked(word, weight=weight)
+
+    def _mark(self, words, useful):
+        rid = db.save_lead_review(1, words)
+        fb.apply_feedback(rid, useful)
+
+    def test_empty(self):
+        stats = db.get_word_feedback_stats()
+        self.assertEqual(stats["total_reviews"], 0)
+        self.assertEqual(stats["useless"], [])
+        self.assertEqual(stats["useful"], [])
+
+    def test_counts_and_rates(self):
+        # kerak: 1 foydali, 2 keraksiz
+        self._mark(["kerak"], True)
+        self._mark(["kerak", "reys"], False)
+        self._mark(["kerak"], False)
+        # reys: 1 keraksiz
+        stats = db.get_word_feedback_stats(min_total=1)
+        self.assertEqual(stats["total_reviews"], 3)
+        useless = {w: (u, c) for w, u, c, _r in stats["useless"]}
+        self.assertEqual(useless["kerak"], (2, 3))
+        self.assertEqual(useless["reys"], (1, 1))
+        useful = {w: (u, c) for w, u, c, _r in stats["useful"]}
+        self.assertEqual(useful["kerak"], (1, 3))
+
+    def test_sorted_by_rate(self):
+        self._mark(["reys"], False)          # 100%
+        self._mark(["kerak"], False)
+        self._mark(["kerak"], True)          # 50%
+        stats = db.get_word_feedback_stats(min_total=1)
+        self.assertEqual([w for w, _u, _c, _r in stats["useless"]], ["reys", "kerak"])
+
+    def test_min_total_filters_noise(self):
+        self._mark(["bormi"], False)
+        self.assertEqual(db.get_word_feedback_stats(min_total=2)["useless"], [])
+        self.assertEqual(len(db.get_word_feedback_stats(min_total=1)["useless"]), 1)
+
+    def test_unrated_ignored(self):
+        db.save_lead_review(1, ["kerak"])     # baholanmagan
+        stats = db.get_word_feedback_stats(min_total=1)
+        self.assertEqual(stats["total_reviews"], 0)
+
+    def test_word_repeated_in_one_message_counted_once(self):
+        rid = db.save_lead_review(1, ["kerak", "kerak"])
+        fb.apply_feedback(rid, False)
+        stats = db.get_word_feedback_stats(min_total=1)
+        self.assertEqual(stats["useless"][0][2], 1)
+
+    def test_matches_db_words(self):
+        """Tahlildagi so'zni bazadagi yozuv bilan bog'lash mumkin."""
+        self._mark(["kerak"], False)
+        stats = db.get_word_feedback_stats(min_total=1)
+        word = stats["useless"][0][0]
+        self.assertIsNotNone(db.word_id_by_text(word))
+
+
 class TestTexts(unittest.TestCase):
     def setUp(self):
         reset()

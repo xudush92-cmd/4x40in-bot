@@ -391,6 +391,59 @@ def get_feedback_stats() -> dict:
     return out
 
 
+def get_word_feedback_stats(min_total: int = 2) -> dict:
+    """So'zlar bo'yicha fikr-mulohaza statistikasi.
+
+    Har bir so'z nechta baholangan xabarda qatnashgan va o'sha
+    xabarlar «foydali» yoki «keraksiz» deb belgilanganini hisoblaydi.
+
+    Qaytaradi::
+
+        {
+          "total_reviews": 12,
+          "useless": [(so'z, useless, jami, ulush), ...],   # kamaytirish
+          "useful":  [(so'z, useful, jami, ulush), ...],    # oshirish
+        }
+
+    Ro'yxatlar ulush bo'yicha kamayish tartibida; ``min_total`` dan kam
+    uchragan so'zlar tashlab yuboriladi (bitta bosish statistikani
+    buzmasin).
+    """
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT words, verdict FROM lead_reviews "
+            "WHERE verdict IN ('useful', 'useless')"
+        ).fetchall()
+    counts: dict[str, dict[str, int]] = {}
+    for words_text, verdict in rows:
+        seen = set()
+        for word in (words_text or "").split("|"):
+            word = word.strip()
+            if not word or word in seen:
+                continue
+            seen.add(word)
+            item = counts.setdefault(word, {"useful": 0, "useless": 0})
+            if verdict == "useful":
+                item["useful"] += 1
+            else:
+                item["useless"] += 1
+
+    useless, useful = [], []
+    for word, item in counts.items():
+        total = item["useful"] + item["useless"]
+        if total < max(1, int(min_total)):
+            continue
+        if item["useless"]:
+            useless.append((word, item["useless"], total,
+                            item["useless"] / total))
+        if item["useful"]:
+            useful.append((word, item["useful"], total,
+                           item["useful"] / total))
+    useless.sort(key=lambda r: (-r[3], -r[1], r[0]))
+    useful.sort(key=lambda r: (-r[3], -r[1], r[0]))
+    return {"total_reviews": len(rows), "useless": useless, "useful": useful}
+
+
 # --- Filtr rejimi va chegarasi ---
 
 MATCH_MODES = ("count", "weight")
