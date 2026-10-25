@@ -54,6 +54,9 @@ from database import (
     get_user_group,
     get_user_groups,
     get_user_match_count,
+    get_user_score_threshold,
+    get_own_score_threshold,
+    set_user_score_threshold,
     get_user_scanner_enabled,
     init_db,
     is_subscription_active,
@@ -1378,6 +1381,16 @@ def _user_scan_status_text(uid: int) -> str:
         f"📡 Umumiy skaner: {'🟢 yoniq' if get_user_scanner_enabled(uid) else '🔴 oʻchirilgan — menyu tepasidagi 🟢 ▶️ Start ni bosing'}",
         f"👥 Guruhlaringiz: <b>{len(groups)}</b> ta (ulangan: {ok}, tekshiruvda: {pending}, xato: {errored})",
     ]
+    if get_match_mode() == "weight":
+        own = get_own_score_threshold(uid)
+        lines.append(
+            f"🎯 Ball chegarasi: <b>{get_user_score_threshold(uid):g}</b>"
+            + (" (o'zingizniki)" if own else " (admin standarti)")
+        )
+    else:
+        lines.append(
+            f"🔔 Xabar sharti: kamida <b>{get_user_match_count(uid)}</b> ta kalit"
+        )
     if get_setting("is_active") != "1":
         lines.append("⚠️ Tizim admin tomonidan to'xtatilgan.")
     lines += ["", subscription_text(get_user(uid))]
@@ -1430,10 +1443,63 @@ def _user_count_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
+def _user_threshold_keyboard(uid: int) -> InlineKeyboardMarkup:
+    """Foydalanuvchi uchun chegara tugmalari (ball rejimi)."""
+    current = get_user_score_threshold(uid)
+    own = get_own_score_threshold(uid)
+    rows, chunk = [], []
+    for value in SCORE_THRESHOLDS:
+        mark = " ✅" if abs(value - current) < 0.001 else ""
+        chunk.append(InlineKeyboardButton(
+            text=f"{value:g}{mark}", callback_data=f"useth:{value:g}"
+        ))
+        if len(chunk) == 4:
+            rows.append(chunk)
+            chunk = []
+    if chunk:
+        rows.append(chunk)
+    if own:
+        rows.append([InlineKeyboardButton(
+            text="↩️ Admin standartiga qaytish",
+            callback_data="useth:0",
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _threshold_advice(uid: int) -> str:
+    """Chegara nimani o'zgartirishini oddiy tilda tushuntiradi."""
+    return (
+        "Chegara qancha <b>past</b> bo'lsa — shuncha ko'p xabar keladi "
+        "(lekin keraksizlari ham).\n"
+        "Qancha <b>yuqori</b> bo'lsa — faqat ishonchli xabarlar keladi, "
+        "lekin ba'zi mijozlar o'tkazib yuborilishi mumkin.\n\n"
+        "Maslahat: boshlanishiga <b>1.75</b>, shovqin ko'p bo'lsa "
+        "— <b>2.5</b>."
+    )
+
+
 @dp.message(NotAdminFilter(), F.text == BTN_COUNT)
 async def user_ask_match_count(message: types.Message, state: FSMContext):
     uid = message.from_user.id
     await state.set_state(SetCount.waiting_count)
+    if get_match_mode() == "weight":
+        own = get_own_score_threshold(uid)
+        current = get_user_score_threshold(uid)
+        note = (
+            f"⚙️ O'z chegarangiz: <b>{current:g}</b>"
+            if own else
+            f"⚙️ Hozir admin standarti: <b>{current:g}</b>"
+        )
+        await message.answer(
+            f"🔔 <b>Xabar chegarasi</b>\n\n"
+            f"{note}\n\n"
+            f"{_threshold_advice(uid)}\n\n"
+            "Bu faqat <b>sizga</b> ta'sir qiladi.\n\n"
+            "Bekor qilish: /cancel",
+            parse_mode="HTML",
+            reply_markup=_user_threshold_keyboard(uid),
+        )
+        return
     await message.answer(
         f"🔔 <b>Sizning xabar shartingiz:</b> xabarda kamida "
         f"<b>{get_user_match_count(uid)}</b> ta kalit so'z topilsa "
@@ -1444,6 +1510,36 @@ async def user_ask_match_count(message: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=_user_count_keyboard(),
     )
+
+
+@dp.callback_query(NotAdminFilter(), StateFilter(SetCount.waiting_count),
+                   F.data.startswith("useth:"))
+async def user_set_threshold_callback(callback: types.CallbackQuery,
+                                      state: FSMContext):
+    """Foydalanuvchi o'z ball chegarasini tanlaydi (0 = admin standarti)."""
+    uid = callback.from_user.id
+    try:
+        value = float(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    await state.clear()
+    set_user_score_threshold(uid, value)
+    admin = get_score_threshold()
+    if value:
+        text = (
+            f"✅ Chegarangiz o'rnatildi: <b>{value:g}</b>\n\n"
+            f"Ball shu qiymatdan yuqori bo'lsa xabar keladi. "
+            f"Admin standarti: {admin:g}."
+        )
+    else:
+        text = (
+            f"↩️ Admin standartiga qaytdingiz: <b>{admin:g}</b>"
+        )
+    await callback.message.answer(
+        text, parse_mode="HTML", reply_markup=user_menu_for(uid)
+    )
+    await callback.answer("Saqlandi!")
 
 
 async def _apply_user_match_count(message: types.Message, state: FSMContext,

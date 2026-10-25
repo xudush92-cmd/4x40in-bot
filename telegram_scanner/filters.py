@@ -31,6 +31,7 @@ from database import (
     get_match_mode,
     get_owner_active_chat_ids,
     get_score_threshold,
+    get_user_score_threshold,
     get_setting,
     get_user_match_count,
     get_user,
@@ -75,6 +76,7 @@ class Verdict:
     mode: str = "count"
     score: float = 0.0
     threshold: float = 0.0
+    own_threshold: bool = False
     positives: dict = field(default_factory=dict)
     negatives: dict = field(default_factory=dict)
 
@@ -210,7 +212,11 @@ def _evaluate_weighted(owner_id, text, verdict, stages, add, finish) -> Verdict:
     (haydovchi) belgisi bilan o'chirilmaydi.
     """
     entries = get_keywords_weighted()
-    threshold = get_score_threshold()
+    # Har foydalanuvchi o'z chegarasini tanlashi mumkin; belgilamagan
+    # bo'lsa — adminning umumiy chegarasi ishlatiladi.
+    admin_threshold = get_score_threshold()
+    threshold = get_user_score_threshold(owner_id)
+    verdict.own_threshold = threshold != admin_threshold
     verdict.threshold = threshold
     verdict.total_keywords = len(entries)
     if not entries:

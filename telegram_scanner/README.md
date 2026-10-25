@@ -113,9 +113,12 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   4. Xabar shu foydalanuvchining faol guruhidanmi;
   5. Emoji yoki stiker bormi — haydovchi e'loni, blok;
   6. Kalit so'zlar shartga yetadimi.
-  Emoji bosqichi hech qanday ro'yxat talab qilmaydi: haydovchi
-  e'lonlari deyarli doim emoji bilan bezatiladi, mijoz xabarlarida
-  esa emoji bo'lmaydi.
+  Emoji bosqichi hech qanday ro'yxat talab qilmaydi va **ataylab
+  qat'iy blok**: bu guruhlarda mijoz emoji ishlatmaydi — faqat matn
+  yozadi. Emoji qo'shib yozadigan odam — haydovchi e'loni. Shu sababli
+  emoji 5-bosqichda turadi (kalitlardan oldin): ball qanchalik yuqori
+  bo'lsa ham xabar to'xtaydi. Qaror egasi tomonidan tasdiqlangan
+  (2026-10-25).
 - **Bitta umumiy ro'yxat**: faqat 🔑 Kalit so'zlar bor (admin
   kiritadi). Ro'yxatga yozuv: takror so'z (katta/kichik harf,
   lotin/kirill, tinish belgisi farqi bilan) qo'shilmaydi; xato
@@ -136,6 +139,12 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   kartochka ochiladi: ➖0.5/➕0.5, tayyor qiymatlar (Mijoz 3/2/1,
   Neytral 0, Haydovchi −1/−3/−4), 🔒 qat'iylik va 🗑 o'chirish.
   Ro'yxatda har so'z oldida vazni ko'rinadi (`➕3 kerak`, `➖4 joy bor`).
+- **Per-user chegara**: ball rejimida har foydalanuvchi o'z chegarasini
+  tanlaydi (🔔 Xabar sharti → tugmalar 0.5…4.0, joriy qiymat ✅ bilan).
+  Tanlamagan bo'lsa adminning umumiy chegarasi ishlatiladi; o'zi tanlagan
+  bo'lsa 「↩️ Admin standartiga qaytish」 tugmasi chiqadi. Bu faqat
+  o'ziga ta'sir qiladi — boshqa foydalanuvchilarga va adminga emas.
+  Hisob rejimida esa eski oqim (nechta kalit) saqlanadi.
 - **Fikr-mulohaza (o'z-o'zini sozlash)**: har bir bildirishnomada
   `✅ Foydali` / `❌ Keraksiz` tugmalari bor. Bosilganda o'sha xabarda
   qatnashgan so'zlarning vazni **avtomatik** moslashadi:

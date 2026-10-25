@@ -114,6 +114,7 @@ def _migrate_user_columns(conn) -> None:
         "last_found_at": "INTEGER DEFAULT 0",
         "scanner_enabled": "INTEGER DEFAULT 1",
         "own_match_count": "INTEGER DEFAULT 0",
+        "own_score_threshold": "REAL DEFAULT 0",
     }
     for name, ddl in additions.items():
         if name not in columns:
@@ -623,6 +624,51 @@ def set_user_match_count(user_id: int, value: int) -> int:
     with closing(_connect()) as conn, conn:
         conn.execute(
             "UPDATE users SET own_match_count = ? WHERE user_id = ?",
+            (value, user_id),
+        )
+    return value
+
+
+def get_user_score_threshold(user_id: int) -> float:
+    """Foydalanuvchining O'Z ball chegarasi.
+
+    O'zi belgilamagan bo'lsa (0) — adminning umumiy chegarasi ishlatiladi.
+    Qaytaradi: samarali qiymat (``float``).
+    """
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(own_score_threshold,0) FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    if row and row[0]:
+        try:
+            return float(row[0])
+        except (TypeError, ValueError):
+            pass
+    return get_score_threshold()
+
+
+def get_own_score_threshold(user_id: int) -> float:
+    """Faqat foydalanuvchi o'zi belgilagan qiymat (0 = belgilanmagan)."""
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(own_score_threshold,0) FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    try:
+        return float(row[0]) if row else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_user_score_threshold(user_id: int, value: float) -> float:
+    """Chegarani belgilaydi. ``0`` — admin standartiga qaytish."""
+    value = float(value)
+    if value:
+        value = max(-10.0, min(10.0, value))
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET own_score_threshold = ? WHERE user_id = ?",
             (value, user_id),
         )
     return value

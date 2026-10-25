@@ -149,15 +149,34 @@ qoidasida xabar so'zi kamida **4 harf** bo'lsin.
 
 ---
 
-## 5. Emoji filtri haqida qaror
+## 5. Emoji filtri — TASDIQLANGAN QAT'IY BLOK
 
-O'lchov shuni ko'rsatdi: **emoji qat'iy bloklash shart emas**. D variantida
-emoji jarimasi (−2.5) natijani o'zgartirmadi (44/45, 0/30, 1/20 — o'sha).
+**Qaror (2026-10-25, egasi tomonidan tasdiqlangan):** emoji va stiker —
+**qat'iy blok**, 5-bosqichda, kalit so'zlardan **oldin**. Vaznga
+o'tkazilmaydi va o'chirilmaydi.
 
-**Tavsiya:** emoji qat'iy blokdan **vaznga** o'tsin (`−1.5`), chunki:
-- mijoz ham emoji ishlatadi (`🙏`, `📞`) → hozir bunday xabar butunlay yo'qoladi;
-- haydovchi emojisiz yozsa → hozir o'tib ketadi;
-- vaznli modelda emoji bitta belgi bo'lib qoladi, hukm chiqarmaydi.
+Sabab (egasining domen bilimi): **bu guruhlarda mijoz emoji ishlatmaydi** —
+u shunchaki matn yozadi («mashina kerak», «2 joy kerak»). Emoji qo'shib
+yozadigan odam — haydovchi e'loni. Shuning uchun emoji eng ishonchli va
+eng arzon haydovchi belgisi.
+
+Amaliy natija: ball qanchalik yuqori bo'lsa ham, emoji bosqichi birinchi
+bo'lgani uchun xabar to'xtaydi:
+
+```
+OTADI     [ok]     mashina kerak iltimos
+TO'XTAYDI [emoji]  mashina kerak iltimos 🙏
+TO'XTAYDI [emoji]  🚕 2 joy bor
+TO'XTAYDI [emoji]  kerak ✅✅✅
+```
+
+O'lchovdagi eski kuzatuv (emoji jarimasi −2.5 natijani o'zgartirmagan)
+endi ahamiyatsiz: model o'zgarmaydi, qoida soddaroq va tezroq.
+
+**Yagona xavf:** mijoz tasodifan `🙏` yoki `📞` qo'shsa — o'sha xabar
+yo'qoladi. Egasi bu holatni bu domenda bo'lmaydi deb hisoblaydi. Agar
+keyinchalik shikoyat kelsa, 🧪 Skaner testi `emoji` bosqichini ko'rsatadi
+va qaror qayta ko'rib chiqiladi.
 
 ---
 
@@ -180,7 +199,7 @@ uning yonida). Per-user chegara ham mumkin (`own_threshold`).
 | # | Bosqich | O'zgarish |
 |---|---|---|
 | 1–4 | Tizim / tarif / Stop-Start / guruh | **o'zgarmaydi** |
-| 5 | Emoji | qat'iy blok → **−1.5 vazn** (yoki o'chirish) |
+| 5 | Emoji | **qat'iy blok — tasdiqlangan, o'zgarmaydi** |
 | 6 | Ball yig'indisi | `matched_count >= shart` → `sum(weight) >= chegara` |
 
 ### 6.3 Admin panel
@@ -225,7 +244,7 @@ bajariladi — natija yomonlashsa qaytariladi.
 
 1. **Chegara 1.75** hozirgi korpusda eng yaxshi. Real oqimda ko'proq mijoz
    kerakmi (chegara 1.0) yoki aniqlik (2.5)?
-2. **Emoji vazni** −1.5 to'g'rimi yoki umuman olib tashlansinmi?
+2. ~~Emoji vazni~~ — **hal qilindi:** qat'iy blok (egasi tasdiqladi).
 3. **Domen-manfiy** (ish/ijara/savdo) alohida ro'yxat bo'ladimi yoki umumiy
    manfiy ro'yxat ichida?
 4. Foydalanuvchiga **"bu mijoz / bu haydovchi"** tugmasi qo'shilsinmi
@@ -386,7 +405,7 @@ tekshirilgan). `reset_db.py` ishlatish shart emas.
 |---|---|---|
 | Musbat yozuv | odatdagi moslik + so'roq qat'iy | `kerak` ~ `kerakmi`, `bormi` ≠ `bor` |
 | Manfiy yozuv | **qat'iy**: aniq so'z yoki o'zak | imlo xatosi/prefiks yaqinligi manfiy so'zni mijozga tegizmasin |
-| Emoji | hozircha blok (5-bosqich) | keyingi qadamda −1.5 vazn |
+| Emoji | **qat'iy blok** (5-bosqich, tasdiqlangan) | o'zgarmaydi |
 
 ### 11.4 O'lchov (haqiqiy kod, 45/30/20 korpus)
 
@@ -428,7 +447,7 @@ Ya'ni «nega bu xabar keldi / nega kelmadi» degan savolga aniq javob bor.
 
 ### 11.7 Keyingi qadam (B3 va undan keyin)
 
-1. **Emoji** — 5-bosqichni qat'iy blokdan `−1.5` vaznga o'tkazish.
+1. ~~Emoji~~ — **bekor qilindi:** qat'iy blok tasdiqlangan (egasi qarori).
 2. **Per-user chegara** — har foydalanuvchi o'z chegarasini tanlashi.
 3. **Feedback** — bildirishnomada «✅ Foydali / ❌ Keraksiz» tugmasi:
    bosilganda so'z vazni avtomatik moslashadi (eng katta foyda).
@@ -609,3 +628,65 @@ Jami loyihada: **52 matcher + 31 vazn + 13 feedback + 31 UI + 18 oqim +
 Katta qadam (0.5) tezroq moslashadi, lekin bitta xato bosish vaznni
 sezilarli buzadi. Hozircha 0.25; statistikada `❌` ulushi 50% dan oshsa,
 qadamni oshirish kerak bo'ladi.
+
+---
+
+## 14. D QADAMI BAJARILDI — per-user chegara + emoji qarori
+
+**Sana:** 2026-10-25 · **Fayllar:** `database.py`, `filters.py`, `bot.py`,
+`test_weights.py`, `README.md`
+
+### 14.1 Emoji — yakuniy qaror (hujjat to'g'rilandi)
+
+5-bo'lim qayta yozildi: emoji **qat'iy blok**, tasdiqlangan, o'zgarmaydi.
+Sabab — egasining domen bilimi: mijoz faqat matn yozadi, emoji
+haydovchining belgisi. Kodda o'zgartirish kerak bo'lmadi (allaqachon
+shunday ishlaydi), faqat hujjat va README'dagi «keyingi qadamda vaznga
+o'tkazamiz» degan noto'g'ri reja olib tashlandi.
+
+### 14.2 Per-user chegara
+
+| Nima | Qiymat |
+|---|---|
+| Yangi ustun | `users.own_score_threshold REAL DEFAULT 0` |
+| `0` ma'nosi | «admin standartini ishlat» |
+| Tanlash | 🔔 Xabar sharti → tugmalar `0.5 … 4.0`, joriy qiymat `✅` bilan |
+| Qaytish | o'zi tanlagan bo'lsa `↩️ Admin standartiga qaytish` chiqadi |
+| Ta'sir doirasi | **faqat o'ziga** — boshqa foydalanuvchilarga tegmaydi |
+| Hisob rejimi | eski oqim (nechta kalit) saqlanadi |
+
+Funksiyalar: `get_user_score_threshold()` (samarali qiymat, fallback bilan),
+`get_own_score_threshold()` (faqat o'zi belgilagani, 0 = yo'q),
+`set_user_score_threshold()` (0 = qaytish, `±10` chegarasi).
+
+`filters.evaluate()` endi 6-bosqichda `get_user_score_threshold(owner_id)`
+ishlatadi; `Verdict.own_threshold` bayrog'i test va diagnostikada
+ko'rsatiladi.
+
+### 14.3 🧪 Skaner testi
+
+Holat blokida yangi qator:
+
+```
+🎯 Ball chegarasi: 2.5 (o'zingizniki)      # yoki
+🎯 Ball chegarasi: 1.75 (admin standarti)
+```
+
+Hisob rejimida esa avvalgi `🔔 Xabar sharti: kamida N ta kalit` qatori.
+
+### 14.4 Testlar
+
+| Test | Soni | Nima |
+|---|---|---|
+| `test_weights.py` (yangi blok) | +7 | fallback, override, qaytish, chegaralar, filtrda qo'llanishi, migratsiya |
+| UI test (aiogram) | 12 | menyu matni, tugmalar, tanlash, qaytish tugmasi, hisob rejimi |
+
+Jami: `test_matcher` 52 + `test_weights` **38** + `test_feedback` 13 +
+UI 31 + oqim 18 + feedback-UI 11 + chegara-UI 12 = **175 tekshiruv**.
+
+### 14.5 Nega bu foydali
+
+Turli foydalanuvchilar turli ehtiyoj bilan ishlaydi: dispetcherga ko'proq
+mijoz kerak (past chegara), haydovchiga faqat aniq buyurtma kerak (yuqori
+chegara). Endi har biri o'zi tanlaydi — admin standarti esa yangi
+foydalanuvchilar uchun boshlang'ich qiymat bo'lib qoladi.

@@ -261,6 +261,86 @@ class TestScore(unittest.TestCase):
         self.assertEqual(r.positives, {})
 
 
+class TestUserThreshold(unittest.TestCase):
+    """Per-user chegara: har foydalanuvchi o'zi tanlaydi, admin fallback."""
+
+    def setUp(self):
+        reset_words()
+        with db.closing(db._connect()) as conn, conn:
+            conn.execute("DELETE FROM users")
+            conn.execute("DELETE FROM user_groups")
+        db.upsert_user(ADMIN)
+        db.upsert_user(555)
+        db.set_new_term(555, 30)   # oddiy foydalanuvchiga tarif kerak
+        db.set_setting("is_active", "1")
+        db.set_user_scanner_enabled(ADMIN, True)
+        db.set_user_scanner_enabled(555, True)
+        for uid in (ADMIN, 555):
+            with db.closing(db._connect()) as conn, conn:
+                conn.execute(
+                    "INSERT INTO user_groups "
+                    "(owner_user_id, input_value, chat_id, title, is_active, status) "
+                    "VALUES (?, ?, ?, ?, 1, 'ok')",
+                    (uid, f"@g{uid}", -1001234567890 - uid, "Test"),
+                )
+
+    def test_default_is_admin_value(self):
+        db.set_score_threshold(1.75)
+        self.assertEqual(db.get_user_score_threshold(ADMIN), 1.75)
+        self.assertEqual(db.get_user_score_threshold(555), 1.75)
+        self.assertEqual(db.get_own_score_threshold(555), 0.0)
+
+    def test_own_threshold_overrides(self):
+        db.set_score_threshold(1.75)
+        db.set_user_score_threshold(555, 3.0)
+        self.assertEqual(db.get_user_score_threshold(555), 3.0)
+        # Boshqalarga ta'sir qilmaydi
+        self.assertEqual(db.get_user_score_threshold(ADMIN), 1.75)
+
+    def test_reset_to_admin(self):
+        db.set_score_threshold(2.0)
+        db.set_user_score_threshold(555, 3.0)
+        db.set_user_score_threshold(555, 0)
+        self.assertEqual(db.get_user_score_threshold(555), 2.0)
+        self.assertEqual(db.get_own_score_threshold(555), 0.0)
+
+    def test_fallback_when_user_missing(self):
+        db.set_score_threshold(1.5)
+        self.assertEqual(db.get_user_score_threshold(999999), 1.5)
+
+    def test_clamped(self):
+        db.set_user_score_threshold(555, 99.0)
+        self.assertEqual(db.get_own_score_threshold(555), 10.0)
+        db.set_user_score_threshold(555, -99.0)
+        self.assertEqual(db.get_own_score_threshold(555), -10.0)
+
+    def test_filter_uses_own_threshold(self):
+        import filters
+
+        db.add_keyword_checked("ketadi", weight=1.0)
+        db.set_match_mode("weight")
+        db.set_score_threshold(1.75)
+        text = "ertaga ketadi"
+        # Admin: 1.0 < 1.75 -> o'tmaydi
+        self.assertFalse(filters.evaluate(ADMIN, text, check_group=False).ok)
+        # Foydalanuvchi past chegara tanladi -> o'tadi
+        db.set_user_score_threshold(555, 0.5)
+        v = filters.evaluate(555, text, check_group=False)
+        self.assertTrue(v.ok)
+        self.assertTrue(v.own_threshold)
+        self.assertEqual(v.threshold, 0.5)
+        # Admin hali ham o'z chegarasida
+        v2 = filters.evaluate(ADMIN, text, check_group=False)
+        self.assertFalse(v2.ok)
+        self.assertFalse(v2.own_threshold)
+
+    def test_upgrade_keeps_existing_users(self):
+        """Migratsiya: own_score_threshold ustuni qo'shilganda userlar qoladi."""
+        row = db.get_user_full(555)
+        self.assertIsNotNone(row)
+        self.assertEqual(db.get_own_score_threshold(555), 0.0)
+
+
 class TestFilterChain(unittest.TestCase):
     """filters.evaluate() — real skaner zanjiri."""
 
