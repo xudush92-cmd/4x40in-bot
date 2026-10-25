@@ -1090,16 +1090,26 @@ def set_review_item_label(item_id: int, label: str) -> bool:
 
 
 def review_stats() -> dict:
-    """Navbat statistikasi: jami / kutilayotgan / to'g'ri / noto'g'ri."""
+    """Navbat statistikasi: jami / kutilayotgan / to'g'ri / noto'g'ri / ⚡.
+
+    ``near`` — chegaradan past bo'lgan (ya'ni model o'tkazib yuborgan)
+    xabarlar soni. Ular navbatga faqat ⚡ rejimida tushadi.
+    """
     with closing(_connect()) as conn:
         rows = conn.execute(
             "SELECT COALESCE(label, 'pending') AS st, COUNT(*) FROM review_items"
             " GROUP BY st"
         ).fetchall()
+        near = conn.execute(
+            "SELECT COUNT(*) FROM review_items WHERE score < threshold"
+        ).fetchone()
     data = {key: 0 for key in REVIEW_LABELS + ("pending",)}
     for status, count in rows:
         data[status] = int(count)
-    data["total"] = sum(data.values())
+    data["near"] = int(near[0] or 0) if near else 0
+    data["total"] = sum(
+        data[key] for key in REVIEW_LABELS + ("pending",)
+    )
     return data
 
 

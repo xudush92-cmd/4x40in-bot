@@ -51,6 +51,14 @@ MSG_KEY = "review_msg_id"        # slayd bo'lib turadigan bitta xabar
 
 # Bir xabarni 90 kundan ortiq saqlamaymiz.
 KEEP_DAYS = 90
+
+# ⚡ Chegaraga yaqin xabarlar: ball chegaradan past, lekin shu qiymatdan
+# yuqori bo'lsa navbatga tushadi. Maqsad — model O'TKAZIB YUBORGAN
+# mijozlarni ham ko'rish (aks holda faqat xatolar ko'rinadi).
+NEAR_MIN = 1.0
+# Navbatda shuncha baholanmagan xabar to'plansa, yangi "chegarada"
+# xabarlar qo'shilmaydi (navbat cheksiz o'smasin).
+NEAR_MAX_PENDING = 300
 # Bir vaqtda bitta slayd yangilanadi — poyga bo'lmasin.
 _lock = asyncio.Lock()
 
@@ -120,6 +128,25 @@ async def _api(method: str, payload: dict) -> dict | None:
     return data.get("result")
 
 
+def near_miss(score, threshold) -> bool:
+    """Xabar chegaraga yaqin, lekin o'tmaganmi (⚡)."""
+    try:
+        score_f = float(score)
+        threshold_f = float(threshold)
+    except (TypeError, ValueError):
+        return False
+    if threshold_f <= 0:
+        return False
+    return NEAR_MIN <= score_f < threshold_f
+
+
+def is_near_item(item) -> bool:
+    """Navbatdagi yozuv ⚡ chegarada bo'lganmi (``item`` — DB qatori)."""
+    if not item or len(item) < 4:
+        return False
+    return near_miss(item[2], item[3])
+
+
 # --- Slayd matni va tugmalari ---
 
 def _words_line(words) -> str:
@@ -137,17 +164,30 @@ def slide_text(item) -> str:
         words = []
     stats = review_stats()
     shown = html.escape(str(text or ""), quote=False)
+    near = near_miss(score, threshold)
+    head = (
+        "⚡ <b>Chegarada — o'tmadi</b>"
+        if near
+        else "✅ <b>O'tgan xabar</b>"
+    )
+    question = (
+        "Model buni <b>o'tkazib yubordi</b>. Mijoz xabarimi?"
+        if near
+        else "Bu xabar mijoz xabari deb qabul qilindi. <b>To'g'rimi?</b>"
+    )
     lines = [
         "🔍 <b>Nazorat — baholash</b>",
-        f"<i>Kutilayotgan: {stats['pending']} ta · jami {stats['total']} ta</i>",
+        f"<i>Kutilayotgan: {stats['pending']} ta · jami {stats['total']} ta "
+        f"(⚡ {stats['near']} ta)</i>",
         "",
+        head,
         f"<b>Xabar #{item_id}</b>",
         f"«{shown}»",
         "",
         f"⚖️ Ball: <b>{float(score):g}</b> (chegara {float(threshold):g})",
         f"🔑 So'zlar: {_words_line(words)}",
         "",
-        "Bu xabar mijoz xabari deb qabul qilindi. <b>To'g'rimi?</b>",
+        question,
     ]
     return "\n".join(lines)
 
@@ -171,7 +211,7 @@ def empty_text() -> str:
     return (
         "✅ <b>Navbat bo'sh</b>\n\n"
         f"Jami: {stats['total']} · ✅ {stats['ok']} · ❌ {stats['bad']} · "
-        f"⏭ {stats['skip']}\n\n"
+        f"⏭ {stats['skip']} · ⚡ {stats['near']}\n\n"
         "Yangi xabar kelganda shu xabar o'zi yangilanadi — chat to'lmaydi."
     )
 
@@ -188,6 +228,7 @@ def stats_text() -> str:
         "📊 <b>Nazorat statistikasi</b>\n\n"
         f"{line}\n"
         f"⏭ O'tkazilgan: {stats['skip']}\n"
+        f"⚡ Chegarada (o'tmagan): {stats['near']}\n"
         f"⏳ Kutilayotgan: {stats['pending']}\n"
         f"Jami: {stats['total']}"
     )

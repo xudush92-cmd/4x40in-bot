@@ -262,6 +262,63 @@ class TestNoDuplicates(ReviewTestBase):
         self.assertEqual(review.review_stats()["total"], 2)
 
 
+class TestNearMiss(ReviewTestBase):
+    """⚡ Chegaraga yaqin xabarlar ham navbatga tushadi va belgilanadi."""
+
+    def test_near_miss_range(self):
+        self.assertTrue(review.near_miss(1.0, 1.75))
+        self.assertTrue(review.near_miss(1.5, 1.75))
+        self.assertFalse(review.near_miss(1.75, 1.75))   # o'tdi
+        self.assertFalse(review.near_miss(2.0, 1.75))
+        self.assertFalse(review.near_miss(0.9, 1.75))    # juda past
+        self.assertFalse(review.near_miss(-3.0, 1.75))   # manfiy
+        self.assertFalse(review.near_miss(1.2, 0))       # chegara yo'q
+
+    async def test_near_item_slide_badge(self):
+        await review.enqueue("odam bor pochta bor", 1.5, 1.75, ["odam", "pochta"])
+        slide = review.slide_text(review.get_next_review_item())
+        self.assertIn("Chegarada", slide)
+        self.assertIn("o'tkazib yubordi", slide)
+        self.assertNotIn("qabul qilindi", slide)
+
+    async def test_passed_item_slide_badge(self):
+        await review.enqueue("menga mashina kerak", 4.0, 1.75, ["kerak"])
+        slide = review.slide_text(review.get_next_review_item())
+        self.assertIn("O'tgan xabar", slide)
+        self.assertIn("qabul qilindi", slide)
+
+    async def test_stats_counts_near(self):
+        await review.enqueue("menga mashina kerak", 4.0, 1.75, ["kerak"])
+        await review.enqueue("odam bor", 1.2, 1.75, ["odam"])
+        stats = review.review_stats()
+        self.assertEqual(stats["total"], 2)
+        self.assertEqual(stats["near"], 1)
+        self.assertIn("Chegarada", review.stats_text())
+
+    async def test_queue_helper_enqueues_near_only(self):
+        """_queue_near_miss faqat kerakli holatda navbatga qo'shadi."""
+        import asyncio
+        from scanner_manager import _queue_near_miss
+
+        class Verdict:
+            def __init__(self, score, threshold, mode="weight", stage="keywords"):
+                self.score, self.threshold = score, threshold
+                self.mode, self.stage = mode, stage
+                self.matched = ["odam"]
+
+        class Event:
+            raw_text = "odam bor"
+            chat_id = -1001
+
+        _queue_near_miss(Verdict(1.3, 1.75), Event())          # qo'shiladi
+        _queue_near_miss(Verdict(1.9, 1.75), Event())          # o'tgan — yo'q
+        _queue_near_miss(Verdict(0.5, 1.75), Event())          # juda past
+        _queue_near_miss(Verdict(1.3, 1.75, mode="count"), Event())   # boshqa rejim
+        _queue_near_miss(Verdict(1.3, 1.75, stage="emoji"), Event())  # emoji bosqichi
+        await asyncio.sleep(0.05)
+        self.assertEqual(review.review_stats()["total"], 1)
+
+
 class TestGroupSilence(unittest.TestCase):
     """Guruhda bot jim: menyu, javob, tugma — hech narsa yuborilmaydi."""
 

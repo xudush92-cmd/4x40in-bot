@@ -241,6 +241,38 @@ def reset_diagnostics(owner_id: int) -> None:
     _last_event.pop(owner_id, None)
 
 
+def _queue_near_miss(verdict, event) -> None:
+    """⚡ Chegaraga yaqin xabarni o'qitish navbatiga qo'shadi.
+
+    Faqat **kalit so'z bosqichida** to'xtagan xabar hisobga olinadi:
+    emoji, tarif yoki guruh sababli to'xtaganda ball mazmunli emas.
+    Navbat cheksiz o'smasligi uchun ``NEAR_MAX_PENDING`` tekshiriladi.
+    """
+    try:
+        if getattr(verdict, "mode", None) != "weight":
+            return
+        if getattr(verdict, "stage", None) != "keywords":
+            return
+        score = float(getattr(verdict, "score", 0) or 0)
+        threshold = float(getattr(verdict, "threshold", 0) or 0)
+        if not review.near_miss(score, threshold):
+            return
+        if review.review_stats().get("pending", 0) >= review.NEAR_MAX_PENDING:
+            return
+        text = getattr(event, "raw_text", "") or ""
+        task = asyncio.create_task(review.enqueue(
+            text, score, threshold, getattr(verdict, "matched", None)
+        ))
+        _review_tasks.add(task)
+        task.add_done_callback(_review_tasks.discard)
+        logger.info(
+            "[SCAN] ⚡ chegarada owner=chat=%s ball=%g/%g",
+            getattr(event, "chat_id", None), score, threshold,
+        )
+    except Exception:
+        logger.exception("[SCAN] chegaradagi xabarni navbatga qo'shishda xato")
+
+
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):

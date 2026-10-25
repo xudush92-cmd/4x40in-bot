@@ -1466,3 +1466,36 @@ Yangi testlar: guruh eventi handlerlarga yetib bormasligi, shaxsiy chat
 o'tishi, guruh ID rad etilishi, `/nazorat` guruhda jim qolishi,
 `🎓` tugmasi shaxsiy chatda ochilishi, bir xil matnning takror
 qo'shilmasligi (bo'sh joy va bo'sh matn bilan birga).
+
+---
+
+## 27. ⚡ Chegaraga yaqin xabarlar (B varianti)
+
+### 27.1 Nega kerak
+
+Ilgari navbatga faqat **o'tgan** xabarlar tushardi: admin faqat
+«noto'g'ri o'tganlarni» ko'rardi. Model **o'tkazib yuborgan mijozlar**
+umuman ko'rinmasdi — ya'ni xatoning yarmi yashirin qolardi.
+
+### 27.2 Nima qilindi
+
+| Narsa | Qiymat / xatti-harakat |
+|---|---|
+| Chegara oralig'i | `NEAR_MIN = 1.0` — ball `1.0 ≤ ball < chegara` bo'lsa navbatga tushadi |
+| Faqat qaysi holatda | `mode == "weight"` va to'xtash bosqichi **`keywords`** (emoji/tarif/guruh sababli to'xtaganlar hisobga olinmaydi — ball mazmunli emas) |
+| Navbat chegarasi | `NEAR_MAX_PENDING = 300` — shundan ko'p baholanmagan xabar bo'lsa yangi ⚡ qo'shilmaydi |
+| Slaydda belgisi | `⚡ Chegarada — o'tmadi` + «Model buni o'tkazib yubordi. Mijoz xabarimi?» |
+| Statistika | `⚡ Chegarada (o'tmagan): N` qatori |
+
+Yozuvni ⚡ deb aniqlash uchun yangi ustun kerak emas: ball va chegara
+allaqachon saqlanadi, `score < threshold` bo'lsa — chegarada.
+`✅ To'g'ri` bosilsa o'sha so'zlar kuchayadi (+0.25), ya'ni keyingi safar
+xabar chegaradan o'tadi.
+
+### 27.3 Testlar
+
+59 + 53 + 23 + **36** + 7 = **178 test** — OK.
+
+Yangi 5 test: oraliq chegaralari (1.0 / 1.75 / 0.9 / manfiy / chegara 0),
+⚡ slayd belgisi, o'tgan xabarning belgisi, statistikada `near` soni,
+`_queue_near_miss` faqat `weight` + `keywords` + oraliq holatda qo'shishi.
