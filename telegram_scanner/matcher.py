@@ -18,6 +18,7 @@ Qo'shimcha imkoniyatlar:
     aralashtirilmaydi;
   * so'roq shaklini qat'iy ajratish imkoniyati bor (ixtiyoriy):
     "жой бор" "жой борми" bilan tenglashtirilmaydi;
+  * o'zak va aniqroq kalit bir token uchun mos kelsa, aniqrog'i hisoblanadi;
   * katta ro'yxatlarda ham tez ishlashi uchun prefiks indeksi ishlatiladi.
 """
 
@@ -348,6 +349,82 @@ def _dedup_words(keywords) -> tuple[str, ...]:
     return tuple(dict.fromkeys(normalize_tokens(" ".join(keywords or []))))
 
 
+def _is_prefix_key(shorter: str, longer: str) -> bool:
+    """``shorter`` bir so'zli kalit ``longer`` kalitining o'zagimi?"""
+    short_tokens = normalize_tokens(shorter)
+    long_tokens = normalize_tokens(longer)
+    if len(short_tokens) != 1 or len(long_tokens) != 1:
+        return False
+    for short in _fold_variants(short_tokens[0]):
+        for long in _fold_variants(long_tokens[0]):
+            if len(long) > len(short) and long.startswith(short):
+                return True
+    return False
+
+
+def _token_starts_with_key(token: str, key: str) -> bool:
+    """Xabar tokeni kalitning to'liq, o'ziga xos shaklini o'z ichiga oladimi?"""
+    for token_variant in _fold_variants(token):
+        for key_variant in _fold_variants(key):
+            if len(token_variant) >= len(key_variant) and token_variant.startswith(
+                key_variant
+            ):
+                return True
+    return False
+
+
+def _most_specific_for_token(matched_keys, token: str) -> list[str]:
+    """Bitta token bir nechta o'zakka mos kelsa, aniqrog'ini tanlaydi.
+
+    Avval aynan (alifbo variantlari bilan) mos kelgan kalitlar ustun.
+    Aks holda, token ichida to'liq qatnashgan uzunroq kalit qisqa o'zakni
+    almashtiradi: ``bormo`` uchun ``borm`` tanlanadi, ``bor`` emas.
+    Alohida tokenlarda ikkala kalit ham alohida topilishi mumkin.
+    """
+    matched_keys = list(dict.fromkeys(matched_keys))
+    if not matched_keys:
+        return []
+    exact = [key for key in matched_keys if _same_word(key, token)]
+    if exact:
+        return exact
+    selected = []
+    for key in matched_keys:
+        shadowed = any(
+            _is_prefix_key(key, other) and _token_starts_with_key(token, other)
+            for other in matched_keys
+            if other != key
+        )
+        if not shadowed:
+            selected.append(key)
+    return selected
+
+
+def _find_weighted_single_matches(message_text, positive_entries, negative_entries):
+    """Yakka kalitlarni topib, bitta token uchun eng aniq kalitni qoldiradi."""
+    positive_entries = list(positive_entries)
+    negative_entries = list(negative_entries)
+    message_tokens = normalize_tokens(message_text)
+    found_positive: set[str] = set()
+    found_negative: set[str] = set()
+    for token in message_tokens:
+        matched_positive = [
+            word for word in positive_entries
+            if _word_matches(word, token, question_key_only=True)
+        ]
+        matched_negative = [
+            word for word in negative_entries if _strict_word_match(word, token)
+        ]
+        all_matches = _most_specific_for_token(
+            matched_positive + matched_negative, token
+        )
+        found_positive.update(word for word in all_matches if word in positive_entries)
+        found_negative.update(word for word in all_matches if word in negative_entries)
+    return (
+        [word for word in positive_entries if word in found_positive],
+        [word for word in negative_entries if word in found_negative],
+    )
+
+
 def match_keywords(
     message_text: str,
     keywords,
@@ -376,11 +453,22 @@ def match_keywords(
     exact, prefix, _variants = _build_index(words)
     matched: set[int] = set()
     for token in message_tokens:
-        for idx in _candidate_ids(token, exact, prefix):
-            if idx in matched:
+        token_matches = [
+            idx for idx in _candidate_ids(token, exact, prefix)
+            if _word_matches(words[idx], token)
+        ]
+        selected = _most_specific_for_token(
+            [words[idx] for idx in token_matches], token
+        )
+        selected_set = set(selected)
+        selected_indices = []
+        for idx in token_matches:
+            if words[idx] not in selected_set:
                 continue
-            if _word_matches(words[idx], token):
-                matched.add(idx)
+            if any(_same_word(words[idx], words[known]) for known in selected_indices):
+                continue
+            selected_indices.append(idx)
+        matched.update(selected_indices)
     result.matched_words = [words[i] for i in sorted(matched)]
     return result
 
@@ -749,14 +837,26 @@ def score_text(
         else:
             neg_entries[word] = weight
 
-    if pos_entries:
-        for word in _find_entries(
-            message_text, list(pos_entries), question_key_only=True
-        ):
-            result.positives[word] = pos_entries[word]
-    if neg_entries:
-        for word in _find_entries_strict(message_text, list(neg_entries)):
-            result.negatives[word] = neg_entries[word]
+    pos_single = [word for word in pos_entries if len(normalize_tokens(word)) == 1]
+    neg_single = [word for word in neg_entries if len(normalize_tokens(word)) == 1]
+    matched_pos, matched_neg = _find_weighted_single_matches(
+        message_text, pos_single, neg_single
+    )
+    for word in matched_pos:
+        result.positives[word] = pos_entries[word]
+    for word in matched_neg:
+        result.negatives[word] = neg_entries[word]
+
+    # Iboralar alohida kalit bo'lib qoladi; specificity filtri faqat bitta
+    # token uchun o'zaro qoplanadigan kalitlarga qo'llanadi.
+    pos_phrases = [word for word in pos_entries if len(normalize_tokens(word)) > 1]
+    neg_phrases = [word for word in neg_entries if len(normalize_tokens(word)) > 1]
+    for word in _find_entries(
+        message_text, pos_phrases, question_key_only=True
+    ):
+        result.positives[word] = pos_entries[word]
+    for word in _find_entries_strict(message_text, neg_phrases):
+        result.negatives[word] = neg_entries[word]
 
     # Bitta so'z ro'yxatda ikki xil yozuv bilan tursa (``jo'nat``/``jonat``),
     # xabar ikki marta ball olmasin — kuchlirog'i qoladi.

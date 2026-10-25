@@ -71,6 +71,17 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(table["joy bor"], (-4.0, 0))
         self.assertEqual(table["bormi"], (2.5, 1))
 
+    def test_prefix_related_words_can_be_separate_weighted_keys(self):
+        self.assertIsNone(db.keyword_reject_reason("bor"))
+        db.add_keyword_checked("bor", weight=1.0)
+        self.assertIsNone(db.keyword_reject_reason("borm"))
+        added, conflicts = db.add_keyword_checked("borm", weight=2.0)
+        self.assertTrue(added)
+        self.assertEqual(conflicts, [])
+        table = {word: weight for word, weight, _strict in db.get_keywords_weighted()}
+        self.assertEqual(table["bor"], 1.0)
+        self.assertEqual(table["borm"], 2.0)
+
     def test_update_and_clamp(self):
         db.add_keyword_checked("reys")
         pid = db.get_phrases_full()[0][0]
@@ -184,6 +195,30 @@ class TestWeightedInput(unittest.TestCase):
 
 
 class TestScore(unittest.TestCase):
+    def test_more_specific_key_uses_its_own_weight(self):
+        r = score_text("borm", [("bor", 1.0), ("borm", 2.0)])
+        self.assertEqual(r.positives, {"borm": 2.0})
+        self.assertEqual(r.score, 2.0)
+
+    def test_root_still_matches_when_no_specific_key_is_present(self):
+        r = score_text("bormo", [("bor", 1.0)])
+        self.assertEqual(r.positives, {"bor": 1.0})
+
+    def test_separate_occurrences_count_both_specific_keys(self):
+        r = score_text("bor borm", [("bor", 1.0), ("borm", 2.0)])
+        self.assertEqual(r.positives, {"bor": 1.0, "borm": 2.0})
+        self.assertEqual(r.score, 3.0)
+
+    def test_exact_form_wins_over_reverse_partial_match(self):
+        r = score_text("ketadi", [("ketadi", 1.0), ("ketadimi", 2.0)])
+        self.assertEqual(r.positives, {"ketadi": 1.0})
+
+    def test_specific_negative_wins_over_positive_root(self):
+        r = score_text("kerakmas", [("kerak", 2.0), ("kerakmas", -3.0)])
+        self.assertEqual(r.positives, {})
+        self.assertEqual(r.negatives, {"kerakmas": -3.0})
+        self.assertEqual(r.score, -3.0)
+
     def test_positive_only(self):
         r = score_text("menga mashina kerak", [("kerak", 3.0)])
         self.assertEqual(r.score, 3.0)

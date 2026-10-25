@@ -1822,3 +1822,29 @@ ko'rinmadi. Ishlayotgan baza eksportdan keyin o'zgargan bo'lishi mumkin;
 keyingi deploydan so'ng yangi eksport bilan mosligini solishtirish kerak.
 
 Testlar: 59 + 53 + 23 + 44 + 8 + 27 + 3 = **217 test — OK**.
+
+---
+
+## 35. Mustaqil, o'zakdosh kalitlar va ball ustuvorligi
+
+Admin tanlagan qoida bo'yicha o'zakka o'xshab boshlanadigan mustaqil
+so'zlar (`bor` / `borm` kabi) endi faqat prefiks bo'lgani uchun rad
+etilmaydi; har biri alohida kalit va alohida vazn bilan saqlanadi.
+
+Bitta xabar tokeni bir nechta shunday kalitga mos tushsa, aniq yozilgan
+kalit, yoki token ichida to'liq qatnashgan eng uzun kalit ustun bo'ladi.
+Masalan, `bor +1` va `borm +2` bo'lsa:
+
+- `borm` xabar tokeni → faqat `borm`ning +2 bali;
+- `bormo` → `borm` mavjud bo'lsa `borm`ning bali, u bo'lmasa `bor`ning
+  bali;
+- `bor borm` → ikki alohida token bo'lgani uchun ikkala kalitning balli.
+
+Bu ustuvorlik count rejimida ham qo'llanadi. Ko'p so'zli iboralar
+alohida kalitligicha qoladi. Testlar kalit kiritish, o'zak/aniq kalit
+ustuvorligi, alohida tokenlar, aynan shakl va musbat/manfiy ustuvorlikni
+tekshiradi.
+
+Tekshiruv: matcher 62 + weights 59 + feedback 23 + review 44 + export 8
++ diagnostics 27 + notifier 3 = **226 test — OK**; `compileall` va
+`git diff --check` ham muvaffaqiyatli.

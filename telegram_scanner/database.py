@@ -230,8 +230,9 @@ _BAD_FORMS = {
 def keyword_reject_reason(word: str) -> str | None:
     """So'zni ro'yxatga qabul qilib bo'lmaydigan sabab (None — muammo yo'q).
 
-    Qoidalar: bo'sh so'z, ma'lum xato shakl va qo'shimchali shakl
-    (ro'yxatda o'zak bo'lsa, ``toshkentga`` kabi shakl kerak emas).
+    Qoidalar: bo'sh so'z, ma'lum xato shakl va juda qisqa so'z.
+    O'zakka o'xshash so'zlar alohida kalit bo'lishi mumkin; matcher bitta
+    token uchun aniqroq kalitni tanlab, ballni ikki marta sanamaydi.
     """
     canonical = canonical_entry(word)
     shown = display_entry(word)
@@ -242,27 +243,6 @@ def keyword_reject_reason(word: str) -> str | None:
         return f"xato shakl — to'g'risi «{fix}»"
     if len(canonical) < 3 and canonical not in _SHORT_OK:
         return "juda qisqa so'z (kamida 3 harf)"
-    # Qo'shimcha tekshiruvi faqat BIR SO'ZLI yozuvlar uchun. Ibora
-    # (``joy bor``, ``kim olib ketadi``) o'zak+ qo'shimcha emas, shuning
-    # uchun unga bu qoida qo'llanmaydi.
-    if " " in canonical:
-        return None
-    for known in get_keywords():
-        known_canonical = canonical_entry(known)
-        if not known_canonical or known_canonical == canonical:
-            continue
-        if " " in known_canonical:
-            continue
-        # Qo'shimchali shakl: o'zak + 1..5 harf qo'shimcha
-        if (
-            len(known_canonical) >= 3
-            and canonical.startswith(known_canonical)
-            and 1 <= len(canonical) - len(known_canonical) <= 5
-        ):
-            return (
-                f"qo'shimchali shakl — «{shown}» emas, "
-                f"o'zak «{display_entry(known)}» yetarli"
-            )
     return None
 
 

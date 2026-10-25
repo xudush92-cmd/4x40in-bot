@@ -58,6 +58,20 @@ class TestParsingAndForms(unittest.TestCase):
         r = match_keywords("Toshkentga odamlar bor", KEYWORDS, required_count=2)
         self.assertTrue(r.is_match)
 
+    def test_more_specific_key_wins_for_same_token(self):
+        r = match_keywords("borm", ["bor", "borm"], required_count=1)
+        self.assertEqual(r.matched_words, ["borm"])
+        self.assertEqual(r.matched_count, 1)
+
+    def test_separate_occurrences_can_match_separate_keys(self):
+        r = match_keywords("bor borm", ["bor", "borm"], required_count=2)
+        self.assertEqual(r.matched_words, ["bor", "borm"])
+        self.assertTrue(r.is_match)
+
+    def test_spelling_aliases_count_as_one_keyword(self):
+        r = match_keywords("jonat", ["jo'nat", "jonat"], required_count=1)
+        self.assertEqual(r.matched_count, 1)
+
     def test_word_forms_in_message(self):
         self.assertIsNotNone(
             find_match("Toshkentdan yuklar ketmoqda, mashina bormi", KEYWORDS, required_count=3)
