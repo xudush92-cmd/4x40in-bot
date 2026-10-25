@@ -1034,14 +1034,27 @@ REVIEW_LABELS = ("ok", "bad", "skip")
 
 def add_review_item(text: str, score: float = 0.0, threshold: float = 0.0,
                     words=None) -> int:
-    """Topilgan xabarni nazorat navbatiga qo'shadi (anonim)."""
+    """Topilgan xabarni nazorat navbatiga qo'shadi (anonim).
+
+    Bir xil matn ikkinchi marta qo'shilmaydi: ``0`` qaytadi. Aks holda
+    bir xabar (turli guruhlarda, turli kunlarda takrorlangan bo'lsa)
+    navbatni to'ldirib, adminni behuda band qilardi.
+    """
     import json
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0
     payload = json.dumps(list(words or []), ensure_ascii=False)
     with closing(_connect()) as conn, conn:
+        duplicate = conn.execute(
+            "SELECT 1 FROM review_items WHERE text = ? LIMIT 1", (cleaned,)
+        ).fetchone()
+        if duplicate:
+            return 0
         cur = conn.execute(
             "INSERT INTO review_items (text, score, threshold, words, created_at)"
             " VALUES (?, ?, ?, ?, ?)",
-            (text or "", float(score), float(threshold), payload, int(time.time())),
+            (cleaned, float(score), float(threshold), payload, int(time.time())),
         )
         return int(cur.lastrowid or 0)
 

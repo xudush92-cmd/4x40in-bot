@@ -126,6 +126,7 @@ BTN_HELP = "ℹ️ Yordam"
 BTN_ADMIN_PANEL = "🛠 Admin panel"
 BTN_SCAN_PANEL = "🎛 Skaner paneli"
 BTN_MAIN_MENU = "↩️ Asosiy menyu"
+BTN_REVIEW = "🎓 Nazorat (baholash)"   # o'qitish: bot ichida slayd
 BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
 BTN_SCAN_RESUME = "🟢 ▶️ Start"
 # Eski nomlar yangi bitta bo'limga yo'naltiriladi
@@ -136,7 +137,7 @@ MENU_BUTTONS = {
     BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
-    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU,
+    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_REVIEW,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -232,6 +233,7 @@ def admin_panel_keyboard() -> list:
         [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
         [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
         [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
+        [KeyboardButton(text=BTN_REVIEW)],
         [KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -413,8 +415,36 @@ class MenuEscapeMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+class PrivateChatOnlyMiddleware(BaseMiddleware):
+    """Guruh va kanalda bot JIM.
+
+    Botning ishi — foydalanuvchi bilan **shaxsiy chatda** ishlash. Guruhda
+    u faqat skanerlaydi (skanerlash foydalanuvchining o'z sessiyasi orqali
+    bo'ladi), ya'ni guruhga hech qanday menyu, javob yoki tugma yuborilmaydi.
+    Ilgari ``Tushunmadim`` va menyular guruhga tushib, uni to'ldirardi.
+    """
+
+    @staticmethod
+    def _is_private(event) -> bool:
+        chat = getattr(event, "chat", None)
+        if chat is None:
+            message = getattr(event, "message", None)
+            chat = getattr(message, "chat", None)
+        if chat is None:
+            return True
+        return getattr(chat, "type", "private") == "private"
+
+    async def __call__(self, handler, event, data):
+        if not self._is_private(event):
+            logger.info("[GURUH] xabar e'tiborsiz qoldirildi (bot guruhda jim)")
+            return None
+        return await handler(event, data)
+
+
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher()
+dp.message.outer_middleware(PrivateChatOnlyMiddleware())
+dp.callback_query.outer_middleware(PrivateChatOnlyMiddleware())
 dp.message.outer_middleware(MenuEscapeMiddleware())
 
 
@@ -425,10 +455,10 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
         "🛠 <b>Admin panel</b>\n\n"
         "Kalit so'zlar, xabar sharti, foydalanuvchilar, arizalar, "
         "xabar yuborish va statistika.\n\n"
-        "🎓 <b>O'qitish:</b> bo'sh guruhga botni qo'shing va o'sha guruhda "
-        "<code>/nazorat</code> yozing — topilgan xabarlar shu yerga slayd "
-        "bo'lib tushadi, siz ✅/❌ bilan baholaysiz va faqat shundan keyin "
-        "so'zlar vazni o'zgaradi.",
+        "🎓 <b>O'qitish:</b> «🎓 Nazorat (baholash)» tugmasini bosing — "
+        "bot topgan xabarlar shu chatga bitta slayd bo'lib tushadi, siz "
+        "✅/❌ bilan baholaysiz va faqat shundan keyin so'zlar vazni "
+        "o'zgaradi. Guruh kerak emas.",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=admin_panel_keyboard(), resize_keyboard=True
@@ -3541,13 +3571,13 @@ def _admin_stats_kb() -> InlineKeyboardMarkup:
 
 REVIEW_HELP = (
     "🎓 <b>Nazorat rejimi</b>\n\n"
-    "Topilgan har bir xabar nusxasi shu guruhga tushadi va siz "
-    "<b>✅ / ❌</b> bilan baholaysiz. Faqat shundan keyin so'zlar vazni "
-    "o'zgaradi — boshqa hech kim vaznga ta'sir qilmaydi.\n\n"
-    "Guruhda bitta xabar turadi (slayd), u yangilanib turadi — guruh "
-    "xabarga to'lmaydi.\n\n"
-    "Buyruqlar:\n"
-    "/nazorat — slaydni ochish (shu guruhni nazorat guruhi qilish)\n"
+    "Bot topgan xabarlar shu chatga <b>bitta slayd</b> bo'lib tushadi va "
+    "o'zi yangilanib turadi — chat to'lmaydi. Siz <b>✅ / ❌</b> bilan "
+    "baholaysiz; faqat shundan keyin so'zlar vazni o'zgaradi.\n\n"
+    "Nusxa anonim: matn, ball va ishlagan so'zlar — boshqa hech narsa. "
+    "Boshqa foydalanuvchining xabari hech kimga ko'rinmaydi.\n\n"
+    "Buyruqlar (shu chatda):\n"
+    "/nazorat — slaydni ochish\n"
     "/nazorat_ochir — nazoratni o'chirish\n"
     "/nazorat_stat — statistika"
 )
@@ -3555,23 +3585,34 @@ REVIEW_HELP = (
 
 @dp.message(AdminFilter(), Command("nazorat"))
 async def review_start(message: types.Message, state: FSMContext):
-    """Shu chatni nazorat guruhi qiladi va slaydni ochadi."""
+    """Nazoratni shu (shaxsiy) chatda yoqadi va slaydni ochadi."""
     await state.clear()
     chat = message.chat
-    if chat.type == "private":
-        await message.answer(
-            "⚠️ Bu buyruq <b>guruhda</b> ishlaydi.\n\n"
-            "1. Bo'sh (yopiq) guruh oching va botni qo'shing\n"
-            "2. O'zingizni admin qiling\n"
-            "3. Guruhda /nazorat yozing",
-            parse_mode="HTML",
-        )
+    if chat.type != "private":
+        # Guruhda hech qanday javob yo'q — bot u yerda butunlay jim.
         return
     review.set_review_chat(chat.id)
     await message.answer(
-        f"✅ Bu guruh nazorat guruhi qilib belgilandi.\n\n{REVIEW_HELP}",
+        f"✅ Nazorat shu chatda yoqildi.\n\n{REVIEW_HELP}",
         parse_mode="HTML",
     )
+    await review.refresh(force_new=True)
+
+
+@dp.message(AdminFilter(), F.text == BTN_REVIEW)
+async def open_review_panel(message: types.Message, state: FSMContext):
+    """🎓 Nazorat (baholash) — bot ichida slayd ko'rinishida."""
+    await state.clear()
+    review.set_review_chat(message.chat.id)
+    if not review.review_chat_id():
+        await message.answer(
+            "⚠️ Nazorat faqat adminning shaxsiy chatida ishlaydi.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=admin_panel_keyboard(), resize_keyboard=True
+            ),
+        )
+        return
+    await message.answer(REVIEW_HELP, parse_mode="HTML")
     await review.refresh(force_new=True)
 
 

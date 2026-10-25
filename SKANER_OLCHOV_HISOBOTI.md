@@ -1419,3 +1419,50 @@ Tezlik: bitta xabar ~**2.2 ms** (600 xabar = 1.3 s) — bot uchun muammo emas.
 Yangi 6 test: kirill inkori topilishi, o'tib ketmasligi, `керек` imlo
 varianti, kirill mijoz xabari o'tishi, kirill haydovchi e'loni bloki,
 qisqa so'zda bitta harf qoidasi ishlamasligi.
+
+---
+
+## 26. Guruh olib tashlandi — baholash bot ichida
+
+### 26.1 Muammo (skrinshotlardan)
+
+Bot **guruhda ham** shaxsiy chatdagidek ishlardi: menyu tugmalari bosilganda
+panel guruhga qayta yuborilardi, `Tushunmadim 🙂 Quyidagi menyudan
+foydalaning` esa har qanday matnga javob berardi. 44 ta handlerning
+**birortasida ham** chat turi tekshirilmasdi.
+
+### 26.2 Nima o'zgardi
+
+| Narsa | Avval | Endi |
+|---|---|---|
+| Bot guruhda | menyu, javob, tugmalar | **butunlay jim** (`PrivateChatOnlyMiddleware`) |
+| Baholash (nazorat) | yopiq guruh + `/nazorat` | **bot ichida**, `🎓 Nazorat (baholash)` tugmasi |
+| Slayd qayerga ketadi | istalgan chat ID | **faqat `ADMIN_ID`** — guruh ID rad etiladi |
+| Bir xil xabar navbatda | har safar yangi qator | **takrorlanmaydi** |
+
+Batafsil:
+
+* `PrivateChatOnlyMiddleware` — `dp.message` va `dp.callback_query` uchun
+  outer middleware. Guruh/kanal eventlari handlerlarga **umuman yetib
+  bormaydi** (44 handlerga tegilmadi).
+* `review.review_chat_id()` endi faqat `ADMIN_ID` ni qaytaradi;
+  `set_review_chat()` boshqa ID ni **rad etadi** (log yoziladi). Eski
+  sozlamada guruh ID qolgan bo'lsa — e'tiborsiz qoldiriladi, ya'ni slayd
+  hech qachon guruhga ketmaydi.
+* `🎓 Nazorat (baholash)` — 🛠 Admin panel ichida. Bosilganda slayd shu
+  shaxsiy chatda ochiladi va **o'sha bitta xabar tahrirlanib turadi** —
+  chat to'lmaydi.
+* `database.add_review_item` — bir xil matn (bo'sh joylar hisobsiz)
+  ikkinchi marta qo'shilmaydi, `0` qaytaradi. Slayd faqat yangi xabar
+  kelganda yangilanadi.
+* Nusxa anonim: matn + ball + ishlagan so'zlar. Egasi, ismi, telefoni,
+  guruh nomi **saqlanmaydi**; boshqa foydalanuvchi hech narsa ko'rmaydi.
+
+### 26.3 Testlar
+
+59 + 53 + 23 + **31** + 7 = **173 test** — OK.
+
+Yangi testlar: guruh eventi handlerlarga yetib bormasligi, shaxsiy chat
+o'tishi, guruh ID rad etilishi, `/nazorat` guruhda jim qolishi,
+`🎓` tugmasi shaxsiy chatda ochilishi, bir xil matnning takror
+qo'shilmasligi (bo'sh joy va bo'sh matn bilan birga).

@@ -1,19 +1,23 @@
-"""Nazorat (o'qitish) rejimi — admin yopiq guruhda slayd ko'rinishida baholaydi.
+"""Nazorat (o'qitish) rejimi — admin BOT ICHIDA slayd ko'rinishida baholaydi.
 
 Muammo: vaznli model xato qilsa, buni faqat foydalanuvchi sezadi va u
 umumiy kalitlarni o'zgartirishga haqli emas (kalitlar hammaga umumiy —
 bitta xato bosish boshqalarga zarar qiladi).
 
-Yechim: har topilgan xabar nusxasi adminning **yopiq nazorat guruhiga**
-tushadi. Guruhda BITTA xabar turadi (slayd) va bot uni tahrirlab turadi —
-guruh xabarga to'lib ketmaydi. Admin `✅ To'g'ri / ❌ Noto'g'ri /
-⏭ O'tkazish` ni bosadi va faqat shundan keyin vazn o'zgaradi.
+Yechim: har topilgan xabar nusxasi **adminning botdagi shaxsiy chatiga**
+tushadi. Chatda BITTA xabar turadi (slayd) va bot uni tahrirlab turadi —
+chat xabarga to'lib ketmaydi, eski nusxalar ustiga yangisi yoziladi.
+Admin `✅ To'g'ri / ❌ Noto'g'ri / ⏭ O'tkazish` ni bosadi va faqat
+shundan keyin vazn o'zgaradi.
+
+**Guruh kerak emas**: guruhlar bilan bog'liq hech qanday sozlama yo'q.
+Slayd faqat ``ADMIN_ID`` ga (botning shaxsiy chatiga) yuboriladi.
 
 Maxfiylik:
 
 * nusxada **egasi, ismi, telefoni, guruh nomi saqlanmaydi** — faqat matn,
   ball va qaysi so'zlar ishlagani. Boshqa foydalanuvchi hech narsa
-  ko'rmaydi: nusxa faqat adminning o'z guruhiga boradi.
+  ko'rmaydi.
 * baholanmagan xabar avtomatik ravishda 90 kundan keyin o'chadi
   (``database.purge_review_items``).
 """
@@ -27,7 +31,7 @@ import logging
 import aiohttp
 
 import feedback as fb
-from config import BOT_TOKEN
+from config import ADMIN_ID, BOT_TOKEN
 from database import (
     add_review_item,
     get_next_review_item,
@@ -42,7 +46,7 @@ from database import (
 
 logger = logging.getLogger(__name__)
 
-CHAT_KEY = "review_chat_id"      # yopiq nazorat guruhi
+CHAT_KEY = "review_chat_id"      # adminning shaxsiy chati (bot ichida)
 MSG_KEY = "review_msg_id"        # slayd bo'lib turadigan bitta xabar
 
 # Bir xabarni 90 kundan ortiq saqlamaymiz.
@@ -60,16 +64,32 @@ LABEL_TITLES = {
 # --- Sozlamalar ---
 
 def review_chat_id() -> int | None:
-    """Nazorat guruhi ID (sozlanmagan bo'lsa None)."""
+    """Slayd yuboriladigan chat — faqat adminning shaxsiy chati.
+
+    Guruh/kanal ID saqlanib qolgan bo'lsa (eski sozlama) — e'tiborsiz
+    qoldiriladi: slayd hech qachon guruhga ketmaydi.
+    """
     value = get_setting(CHAT_KEY)
     try:
-        return int(value) if value else None
+        chat_id = int(value) if value else None
     except (TypeError, ValueError):
         return None
+    if not chat_id or not ADMIN_ID or chat_id != int(ADMIN_ID):
+        return None
+    return chat_id
 
 
 def set_review_chat(chat_id: int) -> None:
-    set_setting(CHAT_KEY, str(int(chat_id)))
+    """Nazoratni yoqadi (``ADMIN_ID``) yoki o'chiradi (``0``).
+
+    Boshqa chat ID (masalan guruh) **qabul qilinmaydi** — guruhga
+    yuborilgan slayd boshqa odamlarga ko'rinardi.
+    """
+    chat_id = int(chat_id or 0)
+    if chat_id and (not ADMIN_ID or chat_id != int(ADMIN_ID)):
+        logger.warning("[REVIEW] faqat adminning shaxsiy chati: %s rad etildi", chat_id)
+        return
+    set_setting(CHAT_KEY, str(chat_id) if chat_id else "")
 
 
 def _message_id() -> int | None:
@@ -152,7 +172,7 @@ def empty_text() -> str:
         "✅ <b>Navbat bo'sh</b>\n\n"
         f"Jami: {stats['total']} · ✅ {stats['ok']} · ❌ {stats['bad']} · "
         f"⏭ {stats['skip']}\n\n"
-        "Yangi xabar kelganda shu xabar o'zi yangilanadi — guruh to'lmaydi."
+        "Yangi xabar kelganda shu xabar o'zi yangilanadi — chat to'lmaydi."
     )
 
 

@@ -98,7 +98,7 @@ class ReviewTestBase(unittest.IsolatedAsyncioTestCase):
                     pass
         # Tozalashdan KEYIN: aksariyat testlar uchun guruh allaqachon ulangan.
         review._set_message_id(None)
-        review.set_review_chat(-1001)
+        review.set_review_chat(777)   # ADMIN_ID — shaxsiy chat
         db.set_match_mode("weight")
         db.set_score_threshold(1.75)
         for word, weight in (("kerak", 3.0), ("iltimos", 1.0), ("reys", -3.0)):
@@ -239,22 +239,111 @@ class TestStats(ReviewTestBase):
         self.assertIn("Nazorat statistikasi", review.stats_text())
 
 
-class TestSetup(ReviewTestBase):
-    async def test_group_becomes_review_chat(self):
-        from bot import review_start
-        message = Msg(chat_id=-1001, chat_type="supergroup")
-        await review_start(message, State())
-        self.assertEqual(review.review_chat_id(), -1001)
-        self.assertIn("nazorat guruhi qilib belgilandi", message.texts[-1])
-        self.assertEqual(len(self.sent("sendMessage")), 1)
+class TestNoDuplicates(ReviewTestBase):
+    """Bir xil matn navbatga ikkinchi marta tushmaydi."""
 
-    async def test_private_chat_is_refused(self):
+    async def test_same_text_not_enqueued_twice(self):
+        first = await review.enqueue("menga mashina kerak", 4.0, 1.75, ["kerak"])
+        second = await review.enqueue("menga mashina kerak", 4.0, 1.75, ["kerak"])
+        self.assertNotEqual(first, 0)
+        self.assertEqual(second, 0)
+        self.assertEqual(review.review_stats()["total"], 1)
+
+    async def test_whitespace_ignored(self):
+        await review.enqueue("reys bor", 0.0, 1.75, ["reys"])
+        self.assertEqual(await review.enqueue("  reys bor  ", 0.0, 1.75, ["reys"]), 0)
+
+    async def test_empty_text_ignored(self):
+        self.assertEqual(await review.enqueue("   ", 0.0, 1.75, []), 0)
+
+    async def test_different_texts_both_added(self):
+        await review.enqueue("birinchi xabar", 2.0, 1.75, ["kerak"])
+        await review.enqueue("ikkinchi xabar", 2.0, 1.75, ["kerak"])
+        self.assertEqual(review.review_stats()["total"], 2)
+
+
+class TestGroupSilence(unittest.TestCase):
+    """Guruhda bot jim: menyu, javob, tugma — hech narsa yuborilmaydi."""
+
+    def _middleware(self):
+        from bot import PrivateChatOnlyMiddleware
+        return PrivateChatOnlyMiddleware()
+
+    def test_group_message_dropped(self):
+        import asyncio
+
+        class Chat:
+            type = "supergroup"
+
+        class Event:
+            chat = Chat()
+            text = "📷 Skaner paneli"
+
+        called = []
+
+        async def handler(event, data):
+            called.append(1)
+            return "ok"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            self._middleware()(handler, Event(), {})
+        )
+        self.assertIsNone(result)
+        self.assertEqual(called, [])
+
+    def test_private_message_passes(self):
+        import asyncio
+
+        class Chat:
+            type = "private"
+
+        class Event:
+            chat = Chat()
+            text = "/start"
+
+        async def handler(event, data):
+            return "ok"
+
+        result = asyncio.get_event_loop().run_until_complete(
+            self._middleware()(handler, Event(), {})
+        )
+        self.assertEqual(result, "ok")
+
+
+class TestSetup(ReviewTestBase):
+    async def test_private_chat_becomes_review_chat(self):
         from bot import review_start
         review.set_review_chat(0)
         message = Msg(chat_id=777, chat_type="private")
         await review_start(message, State())
-        self.assertIn("guruhda", message.texts[-1])
+        self.assertEqual(review.review_chat_id(), 777)
+        self.assertIn("Nazorat shu chatda yoqildi", message.texts[-1])
+        self.assertEqual(len(self.sent("sendMessage")), 1)
+
+    async def test_group_is_silent_and_refused(self):
+        """Guruhda nazorat yoqilmaydi va bot jim qoladi."""
+        from bot import review_start
+        review.set_review_chat(0)
+        message = Msg(chat_id=-1001, chat_type="supergroup")
+        await review_start(message, State())
+        self.assertEqual(message.texts, [])
         self.assertFalse(review.review_chat_id())
+
+    def test_group_id_cannot_be_set(self):
+        review.set_review_chat(0)
+        review.set_review_chat(-1001)
+        self.assertFalse(review.review_chat_id())
+
+    def test_review_button_opens_in_private(self):
+        import asyncio
+        from bot import open_review_panel
+        review.set_review_chat(0)
+        message = Msg(chat_id=777, chat_type="private")
+        asyncio.get_event_loop().run_until_complete(
+            open_review_panel(message, State())
+        )
+        self.assertEqual(review.review_chat_id(), 777)
+        self.assertTrue(any("Nazorat rejimi" in t for t in message.texts))
 
     async def test_stop_disables(self):
         from bot import review_stop
