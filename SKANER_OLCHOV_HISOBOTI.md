@@ -917,3 +917,102 @@ admin menyusida FSM holati ham o'rnatilmaydi.
 
 Jami: **239 tekshiruv** (matcher 59, weights 40, feedback 20, UI 31, oqim 18,
 feedback-UI 11, chegara-UI 16, tahlil-UI 23, yopish-UI 21).
+
+## 18. Nazorat rejimi — modelni faqat admin o'qitadi
+
+### 18.1 Muammo
+
+Ilgari **har bir foydalanuvchi** `✅ Foydali / ❌ Keraksiz` bosib, umumiy
+kalit so'zlar vaznini o'zgartira olardi. Kalitlar hammaga umumiy, ya'ni
+bitta xato bosish boshqa foydalanuvchilarning filtriga ta'sir qilardi.
+
+### 18.2 Yechim
+
+```
+foydalanuvchi guruhi → skaner topadi → ① bildirishnoma foydalanuvchiga
+                                    → ② nusxa: adminning YOPIQ guruhi
+                                            ↓
+                                    bitta xabar (slayd)
+                                            ↓
+                          ✅ To'g'ri · ❌ Noto'g'ri · ⏭ O'tkazish
+```
+
+| Kim bosadi | Natija |
+|---|---|
+| **Admin** (`✅`/`❌`) | vazn **haqiqatan** o'zgaradi (±0.25) — yagona o'quv manbasi |
+| Foydalanuvchi (`✅`/`❌`) | faqat **statistika** (`lead_reviews`); vazn o'zgarmaydi |
+
+Foydalanuvchiga javob matni ham o'zgardi: «Fikringiz statistikaga
+yozildi. Kalit so'zlar vaznini faqat bot egasi o'zgartiradi.»
+
+### 18.3 Slayd (guruh to'lmaydi)
+
+Guruhda **bitta** xabar turadi; yangi xabar kelganda bot uni
+`editMessageText` bilan yangilaydi (`review_msg_id` sozlamada saqlanadi).
+Xabar o'chirilgan bo'lsa — yangisi yuboriladi va id yangilanadi.
+
+```
+🔍 Nazorat — baholash
+Kutilayotgan: 12 ta · jami 240 ta
+
+Xabar #37
+«menga bugun bitta mashina kerak iltimos»
+
+⚖️ Ball: 4 (chegara 1.75)
+🔑 So'zlar: kerak, iltimos
+```
+
+Tugmalar: `✅ To'g'ri` · `❌ Noto'g'ri` / `⏭ O'tkazish` · `📊 Statistika`.
+
+### 18.4 Buyruqlar (faqat admin)
+
+| Buyruq | Nima |
+|---|---|
+| `/nazorat` | shu guruhni nazorat guruhi qiladi va slaydni ochadi (lichkada — yo'riqnoma) |
+| `/nazorat_stat` | statistika: ✅/❌/⏭/kutilayotgan |
+| `/nazorat_ochir` | nazoratni o'chiradi (nusxalar kelmaydi) |
+
+### 18.5 Maxfiylik
+
+| Saqlanadi | Saqlanmaydi |
+|---|---|
+| matn, ball, chegara, ishlagan so'zlar, vaqt, yorliq | egasi (user_id), ism, telefon, guruh nomi/ID |
+
+- nusxa faqat adminning o'z guruhiga boradi — boshqa foydalanuvchi ko'rmaydi;
+- o'quv ma'lumoti Git ga tushmaydi;
+- baholanmagan yozuvlar `purge_review_items(90)` bilan o'chiriladi.
+
+### 18.6 Kod
+
+| Fayl | Nima |
+|---|---|
+| `database.py` | `review_items` jadvali + `add_review_item`, `get_next_review_item`, `get_review_item`, `set_review_item_label`, `review_stats`, `purge_review_items` |
+| `review.py` (yangi) | slayd matni/tugmalari, `refresh()`, `enqueue()`, `label()` (vaznni shu yerda o'zgartiradi) |
+| `feedback.py` | `record_vote()` — foydalanuvchi fikri faqat statistika uchun |
+| `scanner_manager.py` | bildirishnoma yuborilgandan keyin `review.enqueue(...)` — **fonda** (`asyncio.create_task`), skanerlash kutmaydi |
+| `bot.py` | `/nazorat*` buyruqlari, `rv:*` callbacklari, foydalanuvchi tugmasi endi vaznga tegmaydi |
+
+### 18.7 Testlar
+
+`test_review.py` (yangi, repo ichida) — **23 test**: jadval va anonimlik
+(egasi/telefon ustuni yo'q), navbat, birinchi slayd, ikkinchi xabar yangi
+xabar emas tahrir, `✅` +0.25, `❌` −0.25 (manfiyga tegilmaydi), `⏭` vazn
+o'zgarmaydi, takror bosish, noto'g'ri yorliq, statistika, `/nazorat`
+guruhda va lichkada, `/nazorat_ochir`, o'chirilgan slayd qayta yuborilishi,
+foydalanuvchi ovozi vaznga ta'sir qilmasligi.
+
+Jami repo testlari: `test_matcher` 59 + `test_weights` 40 +
+`test_feedback` 20 + `test_review` 23 = **142**.
+
+### 18.8 Keyingi qadam (o'qitish)
+
+Endi ma'lumot yig'iladi. 300–500 yorliq to'plangach:
+
+1. 70% o'quv / 30% dev (dev hech qachon o'quvga tushmaydi);
+2. uch variant bir xil dev to'plamda o'lchanadi — qoidalar / kichik model
+   (belgi n-gramma + Naive Bayes) / LLM;
+3. g'olib 1 hafta **soya rejimida** ishlaydi (qaror qabul qilmaydi, faqat
+   logga yoziladi).
+
+8 GB RAM / CPU sharoitida kutilgan g'olib — **kichik model**: 1–2 ms,
+~50 MB, barqaror. LLM (3B) kechikishi 5–12 s va ishonchi past.

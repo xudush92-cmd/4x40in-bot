@@ -74,6 +74,7 @@ from database import (
     upsert_user,
 )
 import feedback as fb
+import review
 
 from login_manager import (
     LoginError,
@@ -416,7 +417,11 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
     await message.answer(
         "🛠 <b>Admin panel</b>\n\n"
         "Kalit so'zlar, xabar sharti, foydalanuvchilar, arizalar, "
-        "xabar yuborish va statistika.",
+        "xabar yuborish va statistika.\n\n"
+        "🎓 <b>O'qitish:</b> bo'sh guruhga botni qo'shing va o'sha guruhda "
+        "<code>/nazorat</code> yozing — topilgan xabarlar shu yerga slayd "
+        "bo'lib tushadi, siz ✅/❌ bilan baholaysiz va faqat shundan keyin "
+        "so'zlar vazni o'zgaradi.",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=admin_panel_keyboard(), resize_keyboard=True
@@ -2245,17 +2250,33 @@ async def feedback_callback(callback: types.CallbackQuery):
             "Bu bildirishnoma sizga tegishli emas.", show_alert=True
         )
         return
-    status, changes = fb.apply_feedback(review_id, useful)
-    text = fb.feedback_text(status, changes, useful)
+    if actor == ADMIN_ID:
+        # Vaznni faqat admin o'zgartiradi (kalitlar hammaga umumiy).
+        status, changes = fb.apply_feedback(review_id, useful)
+        text = fb.feedback_text(status, changes, useful)
+    else:
+        # Foydalanuvchi fikri — faqat statistika uchun.
+        status = fb.record_vote(review_id, useful)
+        changes = []
+        if status == "missing":
+            text = "Bu bildirishnoma topilmadi (baza tozalangan bo'lishi mumkin)."
+        elif status == "done":
+            text = "Bu xabar allaqachon baholangan. Rahmat!"
+        else:
+            text = "👍 Fikringiz statistikaga yozildi. Rahmat!"
     await callback.answer(text[:190], show_alert=(status != "ok"))
     if status == "ok":
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
+            note = (
+                "ℹ️ Vaznlar shu asosda moslashadi — 🔑 Kalit so'zlar "
+                "bo'limida ko'rasiz."
+                if actor == ADMIN_ID else
+                "ℹ️ Fikringiz statistikada hisobga olinadi. Kalit so'zlar "
+                "vaznini faqat bot egasi o'zgartiradi."
+            )
             await callback.message.answer(
-                f"{text}\n\n"
-                "ℹ️ Vaznlar shu asosda asta-sekin to'g'rilanadi — "
-                "🔑 Kalit so'zlar bo'limida ko'rasiz.",
-                parse_mode="HTML",
+                f"{text}\n\n{note}", parse_mode="HTML"
             )
         except Exception:
             logger.exception("Feedback javobi yuborilmadi")
@@ -3352,6 +3373,105 @@ def _admin_stats_kb() -> InlineKeyboardMarkup:
         )],
         [_close_button()],
     ])
+
+
+# --- Nazorat (o'qitish) rejimi: yopiq guruhda slayd bilan baholash ---
+
+REVIEW_HELP = (
+    "🎓 <b>Nazorat rejimi</b>\n\n"
+    "Topilgan har bir xabar nusxasi shu guruhga tushadi va siz "
+    "<b>✅ / ❌</b> bilan baholaysiz. Faqat shundan keyin so'zlar vazni "
+    "o'zgaradi — boshqa hech kim vaznga ta'sir qilmaydi.\n\n"
+    "Guruhda bitta xabar turadi (slayd), u yangilanib turadi — guruh "
+    "xabarga to'lmaydi.\n\n"
+    "Buyruqlar:\n"
+    "/nazorat — slaydni ochish (shu guruhni nazorat guruhi qilish)\n"
+    "/nazorat_ochir — nazoratni o'chirish\n"
+    "/nazorat_stat — statistika"
+)
+
+
+@dp.message(AdminFilter(), Command("nazorat"))
+async def review_start(message: types.Message, state: FSMContext):
+    """Shu chatni nazorat guruhi qiladi va slaydni ochadi."""
+    await state.clear()
+    chat = message.chat
+    if chat.type == "private":
+        await message.answer(
+            "⚠️ Bu buyruq <b>guruhda</b> ishlaydi.\n\n"
+            "1. Bo'sh (yopiq) guruh oching va botni qo'shing\n"
+            "2. O'zingizni admin qiling\n"
+            "3. Guruhda /nazorat yozing",
+            parse_mode="HTML",
+        )
+        return
+    review.set_review_chat(chat.id)
+    await message.answer(
+        f"✅ Bu guruh nazorat guruhi qilib belgilandi.\n\n{REVIEW_HELP}",
+        parse_mode="HTML",
+    )
+    await review.refresh(force_new=True)
+
+
+@dp.message(AdminFilter(), Command("nazorat_ochir"))
+async def review_stop(message: types.Message, state: FSMContext):
+    await state.clear()
+    review.set_review_chat(0)
+    await message.answer("🔕 Nazorat guruhi o'chirildi — nusxalar endi kelmaydi.")
+
+
+@dp.message(AdminFilter(), Command("nazorat_stat"))
+async def review_stats_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(review.stats_text(), parse_mode="HTML")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("rv:"))
+async def review_callback(callback: types.CallbackQuery, state: FSMContext):
+    """✅ To'g'ri / ❌ Noto'g'ri / ⏭ O'tkazish — vazn shu yerda o'zgaradi."""
+    parts = callback.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "stats":
+        await callback.answer("Statistika yangilandi")
+        try:
+            await callback.message.edit_text(
+                review.stats_text(), parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="◀️ Navbatga qaytish", callback_data="rv:back:0"),
+                ]]),
+            )
+        except Exception:
+            pass
+        return
+    if action == "back":
+        await callback.answer()
+        await review.refresh()
+        return
+    try:
+        item_id = int(parts[2])
+    except (IndexError, ValueError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    status, changes, stats = await review.label(item_id, action)
+    if status == "missing":
+        await callback.answer("Bu xabar topilmadi.", show_alert=True)
+    elif status == "done":
+        await callback.answer("Allaqachon baholangan.")
+    elif action == "skip":
+        await callback.answer("O'tkazildi")
+    elif action == "bad":
+        if changes:
+            shown = ", ".join(f"{w} {old:+g}→{new:+g}" for _p, w, old, new in changes[:4])
+            await callback.answer(f"❌ Vazn pasaytirildi: {shown}"[:190], show_alert=True)
+        else:
+            await callback.answer("❌ Belgilandi (vazn o'zgarmadi)")
+    else:
+        if changes:
+            shown = ", ".join(f"{w} {old:+g}→{new:+g}" for _p, w, old, new in changes[:4])
+            await callback.answer(f"✅ Vazn kuchaytirildi: {shown}"[:190], show_alert=True)
+        else:
+            await callback.answer("✅ Belgilandi (vazn o'zgarmadi)")
+    await review.refresh()
 
 
 @dp.message(AdminFilter(), F.text == BTN_STATS)

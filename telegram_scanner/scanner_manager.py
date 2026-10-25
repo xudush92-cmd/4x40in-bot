@@ -33,6 +33,7 @@ from database import (
 from login_manager import revoke_session
 from filters import evaluate, summary_line
 from session_crypto import decrypt_session
+import review
 from notifier import (
     build_feedback_row,
     build_message_link,
@@ -42,6 +43,9 @@ from notifier import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Fonda ketayotgan nazorat yozuvlari (GC yeb qo'ymasin).
+_review_tasks: set = set()
 
 _clients: dict[int, TelegramClient] = {}
 _tasks: list[asyncio.Task] = []
@@ -335,6 +339,18 @@ def _make_handler(owner_id: int, client: TelegramClient):
         if await send_to_bot_api(text, markup, chat_id=owner_id):
             increment_counter("notifications_sent")
             logger.info("[SCAN] sent owner=%s chat=%s", owner_id, event.chat_id)
+            # Nusxa adminning yopiq nazorat guruhiga (o'qitish uchun).
+            # Faqat matn + ball ketadi: egasi, ismi, telefoni, guruh nomi
+            # saqlanmaydi (review.py). Skanerlashni kutdirmaslik uchun
+            # fonda bajariladi.
+            task = asyncio.create_task(review.enqueue(
+                event.raw_text or "",
+                verdict.score,
+                verdict.threshold,
+                verdict.matched,
+            ))
+            _review_tasks.add(task)
+            task.add_done_callback(_review_tasks.discard)
         else:
             logger.warning("[SCAN] SEND FAILED owner=%s chat=%s", owner_id, event.chat_id)
 

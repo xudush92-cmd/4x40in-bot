@@ -135,3 +135,25 @@ def feedback_text(status: str, changes, useful: bool) -> str:
         f"{emoji} Qabul qilindi, {len(changes)} so'z vazni moslashdi:\n"
         f"{shown}"
     )
+
+def record_vote(review_id: int, useful: bool):
+    """Faqat STATISTIKA: fikr yoziladi, vazn o'zgarmaydi.
+
+    Foydalanuvchi tugmasi endi modelni o'rgatmaydi — kalit so'zlar
+    hammaga umumiy, shuning uchun vaznni faqat admin o'zgartiradi
+    (nazorat guruhi: ``review.py``). Foydalanuvchi fikri shu yerda
+    hisob uchun saqlanadi.
+    """
+    review = get_lead_review(review_id)
+    if not review:
+        return "missing"
+    _id, _owner, _words, verdict = review
+    if verdict:
+        return "done"
+    ok = set_lead_verdict(
+        review_id, VERDICT_USEFUL if useful else VERDICT_USELESS
+    )
+    logger.info(
+        "[FEEDBACK] (statistika) review=%s useful=%s", review_id, useful
+    )
+    return "ok" if ok else "done"

@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from contextlib import closing
 
 from config import DB_NAME
@@ -31,6 +32,21 @@ def init_db() -> None:
         # Eski "groups" jadvali ishlatilmaydi (guruhlar user_groups da,
         # har biri egasi bilan). Qolib ketgan bo'lsa — olib tashlaymiz.
         conn.execute("DROP TABLE IF EXISTS groups")
+        # Nazorat (o'qitish) navbati: admin ko'rib chiqadigan topilgan
+        # xabarlar. Egasi, ismi va telefoni SAQLANMAYDI — faqat matn va
+        # ball. Shu bilan bir foydalanuvchi ma'lumoti boshqasiga
+        # o'tmaydi va o'quv to'plami anonim qoladi.
+        conn.execute("""CREATE TABLE IF NOT EXISTS review_items (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            text TEXT NOT NULL,
+                            score REAL DEFAULT 0,
+                            threshold REAL DEFAULT 0,
+                            words TEXT DEFAULT '',
+                            created_at INTEGER,
+                            label TEXT,
+                            labeled_at INTEGER)""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_review_pending
+                        ON review_items (label, id)""")
         # Sozlamalar jadvali
         conn.execute("""CREATE TABLE IF NOT EXISTS settings (
                             key TEXT PRIMARY KEY,
@@ -986,3 +1002,75 @@ def set_setting(key: str, value) -> None:
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             (key, str(value)),
         )
+
+# --- Nazorat navbati (admin o'qitishi uchun) ---
+
+REVIEW_LABELS = ("ok", "bad", "skip")
+
+
+def add_review_item(text: str, score: float = 0.0, threshold: float = 0.0,
+                    words=None) -> int:
+    """Topilgan xabarni nazorat navbatiga qo'shadi (anonim)."""
+    import json
+    payload = json.dumps(list(words or []), ensure_ascii=False)
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "INSERT INTO review_items (text, score, threshold, words, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (text or "", float(score), float(threshold), payload, int(time.time())),
+        )
+        return int(cur.lastrowid or 0)
+
+
+def get_next_review_item():
+    """Baholanmagan eng qadimgi xabar: ``(id, text, score, threshold, words)``."""
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, text, score, threshold, words FROM review_items"
+            " WHERE label IS NULL ORDER BY id LIMIT 1"
+        ).fetchone()
+
+
+def get_review_item(item_id: int):
+    with closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT id, text, score, threshold, words, label FROM review_items"
+            " WHERE id = ?", (item_id,)
+        ).fetchone()
+
+
+def set_review_item_label(item_id: int, label: str) -> bool:
+    """Yorliqni yozadi. Allaqachon belgilangan bo'lsa False."""
+    if label not in REVIEW_LABELS:
+        return False
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE review_items SET label = ?, labeled_at = ?"
+            " WHERE id = ? AND label IS NULL",
+            (label, int(time.time()), item_id),
+        )
+        return cur.rowcount > 0
+
+
+def review_stats() -> dict:
+    """Navbat statistikasi: jami / kutilayotgan / to'g'ri / noto'g'ri."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT COALESCE(label, 'pending') AS st, COUNT(*) FROM review_items"
+            " GROUP BY st"
+        ).fetchall()
+    data = {key: 0 for key in REVIEW_LABELS + ("pending",)}
+    for status, count in rows:
+        data[status] = int(count)
+    data["total"] = sum(data.values())
+    return data
+
+
+def purge_review_items(days: int = 90) -> int:
+    """Eski yozuvlarni tozalaydi (baholanmaganlar ham)."""
+    limit = int(time.time()) - int(days) * 86400
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "DELETE FROM review_items WHERE created_at < ?", (limit,)
+        )
+        return cur.rowcount
