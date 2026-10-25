@@ -55,3 +55,16 @@
 -3 ishga
 -3: kerak emas
 -3 kerakmas
++1.5 turadi
++2 bormikin
++1.5 ketadigan
++2: olib boradigan
++1.5 kimda
++1.5 yetkazish
++1 odam
+-3 joylar
+-3.5: qabul qilamiz
+-3 yuklab
+-2.5 haydovchiman
+-3: kimlar bor
+-4: admin kerak

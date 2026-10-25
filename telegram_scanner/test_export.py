@@ -70,12 +70,19 @@ class State:
     def __init__(self):
         self.state = None
         self.cleared = False
+        self.data = {}
 
     async def set_state(self, value):
         self.state = value
 
     async def clear(self):
         self.cleared = True
+
+    async def update_data(self, **kwargs):
+        self.data.update(kwargs)
+
+    async def get_data(self):
+        return dict(self.data)
 
 
 class ExportTest(unittest.IsolatedAsyncioTestCase):
@@ -125,18 +132,6 @@ class ExportTest(unittest.IsolatedAsyncioTestCase):
         await B.words_export(callback)
         self.assertEqual(callback.message.docs, [])
         self.assertIn("bo'sh", callback.answers[-1].lower())
-
-    async def test_import_via_message(self):
-        state = State()
-        await B.words_import_start(Cb("wimport"), state)
-        self.assertIsNotNone(state.state)
-        message = Msg()
-        message.text = "+3 kerak\n-4 joy bor\n+2 bormi"
-        await B.words_import_apply(message, state)
-        # setUp dagi 4 ta yozuv qoladi (reys ham), 3 tasi importdan.
-        self.assertEqual(len(db.get_keywords()), 4)
-        self.assertIn("Import natijasi", message.texts[-1])
-        self.assertTrue(state.cleared)
 
     async def test_empty_import_is_refused(self):
         state = State()

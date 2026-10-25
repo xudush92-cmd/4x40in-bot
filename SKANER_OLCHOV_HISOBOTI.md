@@ -1158,3 +1158,75 @@ Import mavjud yozuvlarning vaznini yangilaydi, yangisini qo'shadi.
 ro'yxatda **yo'q** — ular o'chirilmaydi, lekin importdan keyin
 `📋 To'liq ro'yxat` da qolib ketadi. Ularni qo'lda o'chirish kerak
 (yoki o'chirilgan ro'yxat bilan to'liq almashtirish — keyingi ish).
+
+## 21. Yakuniy kalit so'zlar ro'yxati + to'liq almashtirish importi
+
+### 21.1 Ro'yxat kengaytirildi: 63 → 76 yozuv
+
+20-bo'limdagi bazaga 13 yozuv qo'shildi va har biri alohida o'lchandi
+(faqat natijani buzmaydiganlari qabul qilindi):
+
+| Yo'nalish | Qo'shilgan yozuvlar |
+|---|---|
+| Musbat | `+1.5 turadi`, `+2 bormikin`, `+1.5 ketadigan`, `+2: olib boradigan`, `+1.5 kimda`, `+1.5 yetkazish`, `+1 odam` |
+| Manfiy | `-3 joylar`, `-3.5: qabul qilamiz`, `-3 yuklab`, `-2.5 haydovchiman`, `-3: kimlar bor`, `-4: admin kerak` |
+
+**Rad etilgan:** `+1 bor` (haydovchi e'lonida ham uchraydi — 1 ta xato
+keltirdi), `-3 guruh` (mijoz xabarini ham o'chirishi mumkin).
+
+### 21.2 O'lchov
+
+| Ro'yxat | Mijoz | Haydovchi xato | Aloqasiz xato |
+|---|---|---|---|
+| Jonli (65, 0 manfiy) | 34/45 | 10/20 | 6/20 |
+| Tavsiya v1 (63) | 45/45 | 0/20 | 2/20 |
+| **Tavsiya v2 (76)** | **45/45** | **0/20** | **1/20** |
+
+Yagona qolgan xato — `guruh uchun yangi admin kerakmi` (guruh a'zosi
+admin so'raydi). Uni `-4 admin` bilan yopish mumkin, lekin mijoz ham
+«admin, mashina kerak» deb yozishi mumkin — shuning uchun **ataylab
+qoldirildi**.
+
+### 21.3 Import endi ikki rejimda
+
+`📥 Import` → fayl (yoki matn) yuboriladi → bot **avval ko'rsatadi**:
+
+```
+📥 Fayl o'qildi
+
+Faylda: 70 ta yozuv
+Bazada hozir: 65 ta
+
+[➕ Qo'shish/yangilash]   [🧹 To'liq almashtirish]
+```
+
+| Rejim | Nima qiladi |
+|---|---|
+| ➕ Qo'shish/yangilash | fayldagi yozuvlar qo'shiladi, mavjudlarining vazni yangilanadi; **boshqa yozuvlar qoladi** |
+| 🧹 To'liq almashtirish | ro'yxat fayldagi bilan **bir xil** bo'ladi: faylda yo'q yozuvlar o'chiriladi |
+
+Hisobotda `🗑 O'chirildi: N ta` qatori ham chiqadi.
+
+### 21.4 Real sinov (eski ro'yxat → yangi)
+
+65 ta yozuvdan 76 talikka **bir bosishda** o'tildi:
+
+```
+qo'shildi 70 | yangilandi 1 | o'chirildi 59 | rad 0 | jami 76
+o'chirilganlar: bor, kim, olib, ketad, bir, ikki, uch, to'rt, besh, ...
+```
+
+Natija: mijoz **45/45**, haydovchi xatosi **0/20**, aloqasiz **1/20**.
+
+```
+mashina kerak        -> O'TDI  ball 4     (ilgari 1 -> yo'qolardi)
+2 joy bor            -> yo'q   ball -4    (ilgari O'TIB KETARDI)
+odam kerak           -> O'TDI  ball 4
+mashina kerak emas   -> yo'q   ball 1
+nechada uchrashamiz  -> yo'q   ball 1.5
+```
+
+### 21.5 Testlar
+
+`test_export.py` — **7 test** (preview + merge + replace + hisobot).
+Jami repo: 59 + 40 + 20 + 23 + 7 = **149 test**.

@@ -1718,6 +1718,9 @@ def _import_report(result: dict) -> str:
     lines.append(f"⏭ O'tkazildi: <b>{len(result['skipped'])}</b> ta")
     if result["invalid"]:
         lines.append(f"⚠️ Rad etildi: <b>{len(result['invalid'])}</b> ta")
+    if result.get("removed"):
+        lines.append(f"🗑 O'chirildi: <b>{len(result['removed'])}</b> ta "
+                     "(faylda yo'q edi)")
     if result["updated"]:
         lines += ["", "<b>Vazni o'zgarganlar:</b>"]
         for word, old, new in result["updated"][:15]:
@@ -1762,16 +1765,59 @@ async def words_import_apply(message: types.Message, state: FSMContext):
             parse_mode="HTML",
         )
         return
-    await state.clear()
-    result = import_phrases(pairs)
-    logger.info(
-        "[IMPORT] qo'shildi=%s yangilandi=%s o'tkazildi=%s rad=%s",
-        len(result["added"]), len(result["updated"]),
-        len(result["skipped"]), len(result["invalid"]),
-    )
+    # Faylni holatda saqlaymiz — keyingi qadamda qanday qo'llashni tanlaysiz.
+    await state.update_data(import_pairs=[[w, wt] for w, wt in pairs])
+    current = len(get_keywords())
+    file_words = len({w for w, _wt in pairs})
     await message.answer(
-        _import_report(result), parse_mode="HTML", reply_markup=main_menu()
+        f"📥 <b>Fayl o'qildi</b>\n\n"
+        f"Faylda: <b>{file_words}</b> ta yozuv\n"
+        f"Bazada hozir: <b>{current}</b> ta\n\n"
+        "Qanday qo'llaymiz?\n\n"
+        "➕ <b>Qo'shish/yangilash</b> — fayldagi yozuvlar qo'shiladi, "
+        "mavjudlarining vazni yangilanadi. Bazadagi boshqa yozuvlar "
+        "<b>qoladi</b>.\n\n"
+        "🧹 <b>To'liq almashtirish</b> — ro'yxat fayldagi bilan bir xil "
+        "bo'ladi: faylda yo'q yozuvlar <b>o'chiriladi</b>.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Qo'shish/yangilash",
+                                  callback_data="wimp:merge")],
+            [InlineKeyboardButton(text="🧹 To'liq almashtirish",
+                                  callback_data="wimp:replace")],
+            [_close_button()],
+        ]),
     )
+
+
+async def _apply_import(message: types.Message, state: FSMContext,
+                        replace: bool) -> None:
+    data = await state.get_data()
+    pairs = [tuple(row) for row in (data.get("import_pairs") or [])]
+    await state.clear()
+    if not pairs:
+        await message.answer("⚠️ Fayl topilmadi — qaytadan yuboring.",
+                             reply_markup=main_menu())
+        return
+    result = import_phrases(pairs, replace=replace)
+    logger.info(
+        "[IMPORT] replace=%s qo'shildi=%s yangilandi=%s o'tkazildi=%s rad=%s o'chirildi=%s",
+        replace, len(result["added"]), len(result["updated"]),
+        len(result["skipped"]), len(result["invalid"]), len(result["removed"]),
+    )
+    title = ("🧹 <b>To'liq almashtirildi</b>\n\n" if replace
+             else "➕ <b>Qo'shildi/yangilandi</b>\n\n")
+    await message.answer(
+        title + _import_report(result), parse_mode="HTML", reply_markup=main_menu()
+    )
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wimp:"))
+async def words_import_apply_mode(callback: types.CallbackQuery,
+                                 state: FSMContext):
+    mode = callback.data.split(":", 1)[1]
+    await _apply_import(callback.message, state, replace=(mode == "replace"))
+    await callback.answer("Qo'llanildi")
 
 
 # --- Admin: KALIT SO'ZLAR (yagona ro'yxat) ---

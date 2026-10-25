@@ -1090,13 +1090,26 @@ def export_phrases_text() -> str:
     return "\n".join(lines)
 
 
-def import_phrases(pairs) -> dict:
+def import_phrases(pairs, replace: bool = False) -> dict:
     """``[(yozuv, vazn), ...]`` ni bazaga qo'llaydi.
 
-    Mavjud yozuvning vazni yangilanadi, yangisi qo'shiladi. Qaytaradi:
-    ``{"added": [...], "updated": [...], "skipped": [...], "invalid": [...]}``.
+    Mavjud yozuvning vazni yangilanadi, yangisi qo'shiladi.
+    ``replace=True`` bo'lsa faylda **yo'q** yozuvlar o'chiriladi (to'liq
+    almashtirish — ro'yxat fayl bilan bir xil bo'ladi).
+
+    Qaytaradi: ``{"added", "updated", "skipped", "invalid", "removed"}``.
     """
-    added, updated, skipped, invalid = [], [], [], []
+    added, updated, skipped, invalid, removed = [], [], [], [], []
+    if replace:
+        keep = set()
+        for word, _weight in pairs:
+            cleaned = display_entry(word)
+            if cleaned:
+                keep.add(canonical_entry(cleaned))
+        for pid, word, _weight, _strict in get_phrases_full():
+            if canonical_entry(word) not in keep:
+                delete_phrase(pid)
+                removed.append(word)
     for word, weight in pairs:
         cleaned = display_entry(word)
         if not cleaned:
@@ -1124,4 +1137,5 @@ def import_phrases(pairs) -> dict:
         "updated": updated,
         "skipped": skipped,
         "invalid": invalid,
+        "removed": removed,
     }
