@@ -278,6 +278,50 @@ class TestDatabaseWAL(unittest.TestCase):
             conn.commit()
 
 
+class TestPhraseSurvivesRestart(unittest.TestCase):
+    """Ko'p so'zli ibora restartdan keyin ham butun va vazni bilan qoladi.
+
+    Regressiya: ``_migrate_old_sets`` har ``init_db()`` da ishlab,
+    ``joy bor`` ni ``joy`` + ``bor`` ga bo'lib, vaznini yo'qotardi.
+    """
+
+    def test_phrase_kept_after_init(self):
+        reset_words()
+        db.add_keyword_checked("joy bor", weight=-4.0)
+        db.add_keyword_checked("kerak", weight=3.0)
+        for _ in range(3):
+            db.init_db()
+        rows = db.get_phrases_full()
+        self.assertIn(("joy bor", -4.0), [(r[1], r[2]) for r in rows])
+        self.assertNotIn("joy", [r[1] for r in rows])
+        self.assertNotIn("bor", [r[1] for r in rows])
+
+    def test_export_keeps_phrase(self):
+        reset_words()
+        db.add_keyword_checked("kim olib ketadi", weight=3.0)
+        db.add_keyword_checked("reys", weight=-3.0)
+        db.init_db()
+        text = db.export_phrases_text()
+        self.assertIn("+3 kim olib ketadi", text)
+        self.assertIn("-3 reys", text)
+
+    def test_legacy_split_only_once_with_weight(self):
+        reset_words()
+        with db.closing(db._connect()) as conn, conn:
+            conn.execute("DELETE FROM settings WHERE key = 'legacy_sets_split'")
+            conn.execute(
+                "INSERT INTO phrases (text, weight, strict) VALUES ('reys har kuni', -3.5, 1)"
+            )
+        db.init_db()
+        rows = {r[1]: (r[2], r[3]) for r in db.get_phrases_full()}
+        self.assertEqual(rows.get("reys"), (-3.5, 1))
+        self.assertEqual(rows.get("har"), (-3.5, 1))
+        # Ikkinchi init hech narsani o'zgartirmaydi.
+        before = db.get_phrases_full()
+        db.init_db()
+        self.assertEqual(db.get_phrases_full(), before)
+
+
 class TestUserThreshold(unittest.TestCase):
     """Per-user chegara: har foydalanuvchi o'zi tanlaydi, admin fallback."""
 

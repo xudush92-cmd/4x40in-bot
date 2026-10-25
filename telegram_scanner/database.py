@@ -147,24 +147,48 @@ def _migrate_user_columns(conn) -> None:
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
 
 
-def _migrate_old_sets(conn) -> None:
-    """Eski 'to'plam' yozuvlarini alohida kalit so'zlarga bo'ladi.
+SETS_SPLIT_FLAG = "legacy_sets_split"
 
-    Avvalgi modelda bitta qatorda bir nechta so'z saqlangan bo'lishi
-    mumkin — har bir so'z alohida kalit qatoriga aylanadi.
+
+def _migrate_old_sets(conn) -> None:
+    """Eski "to'plam" yozuvlarini alohida kalit so'zlarga bo'ladi — FAQAT BIR MARTA.
+
+    Avvalgi modelda bitta qatorda bir nechta so'z saqlanardi. Endi ko'p
+    so'zli yozuv — qonuniy **ibora** (``joy bor``, ``kim olib ketadi``),
+    shuning uchun bu migratsiya faqat bir marta bajariladi va vaznni
+    saqlab qoladi. Aks holda har ishga tushishda iboralar bo'linib,
+    vaznlari yo'qolardi.
     """
     from matcher import parse_key_words
 
-    rows = conn.execute("SELECT id, text FROM phrases").fetchall()
-    for row_id, text in rows:
+    # Migratsiya allaqachon bajarilganmi (settings jadvali hali
+    # yaratilmagan bo'lishi mumkin — shu yerda kafolatlaymiz).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS settings (
+               key TEXT PRIMARY KEY,
+               value TEXT)"""
+    )
+    done = conn.execute(
+        "SELECT value FROM settings WHERE key = ?", (SETS_SPLIT_FLAG,)
+    ).fetchone()
+    if done:
+        return
+
+    rows = conn.execute("SELECT id, text, weight, strict FROM phrases").fetchall()
+    for row_id, text, weight, strict in rows:
         words = parse_key_words(text or "")
         if len(words) <= 1:
             continue
         conn.execute("DELETE FROM phrases WHERE id = ?", (row_id,))
         for word in words:
             conn.execute(
-                "INSERT OR IGNORE INTO phrases (text) VALUES (?)", (word,)
+                "INSERT OR IGNORE INTO phrases (text, weight, strict) VALUES (?, ?, ?)",
+                (word, weight if weight is not None else 1.0, strict or 0),
             )
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, '1')",
+        (SETS_SPLIT_FLAG,),
+    )
 
 
 # Bitta umumiy kalit so'zlar ro'yxati (phrases jadvali).

@@ -1230,3 +1230,54 @@ nechada uchrashamiz  -> yo'q   ball 1.5
 
 `test_export.py` — **7 test** (preview + merge + replace + hisobot).
 Jami repo: 59 + 40 + 20 + 23 + 7 = **149 test**.
+
+---
+
+## 22. Zaxira nusxasi (`zaxira.sh`) va iboralar bug'i
+
+### 22.1 Skript nima qiladi
+
+```bash
+./zaxira.sh                  # to'liq nusxa (xizmatni to'xtatib, keyin yoqadi)
+./zaxira.sh --no-stop        # xizmatni to'xtatmasdan (tez)
+./zaxira.sh --list           # mavjud nusxalar
+./zaxira.sh --restore FILE   # tiklash (avval hozirgi holat saqlanadi)
+```
+
+Arxiv ichida: `scanner.db` (+ `-wal` / `-shm`), `.env`, `kalit-sozlar.txt`
+(o'qish uchun oddiy matn), `README.txt` (sana, git commit, tiklash buyrug'i).
+Fayl huquqi `600`. Xizmat nomi — `SCANNER_SERVICE` (standart `scanner-bot`),
+papka — `SCANNER_BACKUP_DIR` (standart `<loyiha>/zaxira`).
+
+`--restore` avval arxivni `tar -tzf` bilan tekshiradi, xizmatni to'xtatadi,
+joriy bazani `oldin-tiklash-<sana>.tar.gz` ga saqlaydi, keyin arxivni ochadi.
+
+### 22.2 Sinov natijalari (sandbox, vaqtinchalik papkada)
+
+| Sinov | Natija |
+|---|---|
+| `--help`, `--list`, noto'g'ri parametr | ✅ |
+| `--no-stop` bilan nusxa | ✅ 4 fayl, `kalit-sozlar.txt` to'g'ri |
+| bazani o'chirib `--restore` | ✅ 4 yozuv **vazni bilan** qaytdi |
+| `oldin-tiklash-*.tar.gz` | ✅ yaratildi |
+| mavjud bo'lmagan arxiv | ✅ tushunarli xato, kod 1 |
+
+### 22.3 Topilgan va tuzatilgan bug (muhim)
+
+`_migrate_old_sets()` **har `init_db()` da** ishlar edi: ko'p so'zli har bir
+yozuvni alohida so'zlarga bo'lib tashlardi. Ya'ni bot har restartda
+`joy bor (-4)` ni `joy (+1)` + `bor (+1)` ga aylantirardi — **vazn yo'qolardi**.
+
+Tuzatish:
+
+* migratsiya `settings.legacy_sets_split` belgisi bilan **faqat bir marta**;
+* bo'lishda `weight` va `strict` **saqlanadi**;
+* iboralar (`joy bor`, `kim olib ketadi`) endi qonuniy yozuv.
+
+Regressiya: `test_weights.py` ga 3 test qo'shildi (ibora restartdan keyin
+butun; eksport iborani saqlaydi; legacy bo'lish bir martagina, vazni bilan).
+
+### 22.4 Testlar
+
+59 (matcher) + **43** (weights) + 20 (feedback) + 23 (review) + 7 (export)
+= **152 test** — hammasi OK.
