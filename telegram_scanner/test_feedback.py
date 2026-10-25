@@ -47,13 +47,38 @@ class TestShift(unittest.TestCase):
         self.assertEqual(fb._shift(3.0, -0.25), 2.75)
 
     def test_zero_is_never_reached(self):
-        # Musbat vazn 0 dan o'tib ketsa — kichik manfiy bo'ladi, 0 emas.
-        self.assertEqual(fb._shift(0.25, -0.5), -0.25)
-        self.assertEqual(fb._shift(-0.25, 0.5), 0.25)
+        # Nolga yetib borilmaydi: vazn MIN_ABS da to'xtaydi.
+        self.assertEqual(fb._shift(0.25, -0.25), fb.MIN_ABS)
+        self.assertEqual(fb._shift(-0.25, 0.25), -fb.MIN_ABS)
+
+    def test_sign_never_changes(self):
+        """Belgi almashmaydi: mijoz so'zi ❌ dan haydovchi so'ziga aylanmaydi.
+
+        Regressiya: ilgari ``_shift(0.25, -0.5)`` -> **-0.25** bo'lardi va
+        kalit so'z jimgina qarama-qarshi ma'no olardi.
+        """
+        self.assertEqual(fb._shift(0.25, -0.5), fb.MIN_ABS)
+        self.assertEqual(fb._shift(1.0, -5.0), fb.MIN_ABS)
+        self.assertEqual(fb._shift(-0.25, 0.5), -fb.MIN_ABS)
+        self.assertEqual(fb._shift(-4.0, 9.0), -fb.MIN_ABS)
+
+    def test_many_presses_keep_sign(self):
+        weight = 1.0
+        for _ in range(40):
+            weight = fb._shift(weight, -fb.STEP)
+            self.assertGreater(weight, 0)
+        self.assertEqual(weight, fb.MIN_ABS)
 
     def test_clamped(self):
-        self.assertEqual(fb._shift(9.9, 1.0), 10.0)
-        self.assertEqual(fb._shift(-9.9, -1.0), -10.0)
+        self.assertEqual(fb._shift(9.9, 1.0), fb.MAX_ABS)
+        self.assertEqual(fb._shift(-9.9, -1.0), -fb.MAX_ABS)
+        self.assertEqual(fb.MAX_ABS, 5.0)
+
+    def test_cap_is_reachable_but_bounded(self):
+        weight = 3.0
+        for _ in range(100):
+            weight = fb._shift(weight, fb.STEP)
+        self.assertEqual(weight, fb.MAX_ABS)
 
 
 class TestApplyFeedback(unittest.TestCase):

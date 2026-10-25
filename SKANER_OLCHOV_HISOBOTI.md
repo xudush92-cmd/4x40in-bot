@@ -1324,3 +1324,50 @@ ruxsat so'raladi.
 ### 23.3 Testlar
 
 O'zgarish yo'q: 152 test OK. `baholash.py` — alohida vosita, botga ta'sir qilmaydi.
+
+---
+
+## 24. Vazn xatolari va qoplama tuzatildi (4 + 1)
+
+### 24.1 Tuzatilgan xatolar
+
+| # | Xato | Avval | Endi |
+|---|---|---|---|
+| 1 | Manfiy so'zlar **qo'shilib** ketardi | `bo'sh joy bor` → **−10.50** | **−4.00** (eng kuchlisi) |
+| 2 | Vazn **belgisi almashardi** | `+0.25` ga ❌ → **−0.25** | `+0.25` da qoladi |
+| 3 | Yuqori chegara juda baland | 28 ✅ → **10.0** | 5.0 (`MAX_ABS`) |
+| 4 | Admin panelidagi «➖0.25» ham belgini almashtirardi | `+0.5` → `−0.25` | umumiy `_shift` qoidasi |
+| 5 | Ikki so'z mijozni bloklardi | `qo'ng'iroq qiling` (−3.5), `chiqamiz` (−2.5) | ro'yxatdan olib tashlandi |
+
+`feedback._shift` endi uch qoidani biladi: **0 ga o'tilmaydi**, **belgi
+almashmaydi**, **|vazn| ≤ 5**. `matcher.score_text` esa manfiylardan faqat
+**eng kuchlisini** hisoblaydi (musbatlar avvalgidek qo'shiladi).
+
+Muhim: foydalanuvchining ✅/❌ tugmasi **vaznga umuman tegmaydi** — faqat
+statistika. Vaznni faqat admin o'zgartiradi.
+
+### 24.2 O'lchov (315 xabar, chegara 1.75)
+
+| | Mijoz | Haydovchi xatosi | Boshqa xatosi |
+|---|---|---|---|
+| Avval (76 yozuv) | 83/97 — 85.6% | 0/101 | 14/117 |
+| **Endi (74 yozuv)** | **86/97 — 88.7%** | **0/101** | 14/117 |
+
+Ya'ni **+3 mijoz, haydovchilarda yo'qotish yo'q**.
+
+Tekshiruv:
+
+```
+bo'sh joy bor                      -4.00   (avval -10.50)
+kimda bo'sh joy bor                -2.50   (avval -9.00)
+mashina kerak, qo'ng'iroq qiling    4.00   (avval 0.50 -> o'tmasdi)
+bugun kechqurun chiqamiz, mashina kerak  4.00  (avval 1.50 -> o'tmasdi)
+Toshkentdan chiqdim, 2 joy bor     -4.00   (haydovchi, baribir blok)
+reys bor, 2 joy                    -3.00   (haydovchi, baribir blok)
+```
+
+### 24.3 Testlar
+
+59 + **47** + **23** + 23 + 7 = **159 test** — hammasi OK.
+Yangi testlar: belgi almashmasligi, 40 marta bosishdan keyin ham musbat
+qolishi, chegara 5.0, qoplama manfiylar bir marta hisoblanishi.

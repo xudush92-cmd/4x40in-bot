@@ -3482,10 +3482,9 @@ async def word_stats_adjust(callback: types.CallbackQuery):
         await callback.answer("So'z topilmadi.", show_alert=True)
         return
     old = row[2]
-    new = round(old - STATS_STEP, 2)
-    # Musbat vazn 0 dan o'tib ketmasin: kichik manfiy bo'ladi.
-    if old > 0 and new <= 0:
-        new = -STATS_STEP
+    # Umumiy qoida (feedback._shift): 0 ga o'tilmaydi, belgi almashmaydi,
+    # |vazn| MAX_ABS dan oshmaydi — qo'lda bosishda ham xuddi shunday.
+    new = fb._shift(old, -STATS_STEP)
     update_phrase(pid, weight=new)
     logger.info(
         "[WSTATS] so'z=%s vazn %s -> %s (admin=%s)",

@@ -669,6 +669,11 @@ def score_text(
     ``[(so'z, vazn, qatiylik), ...]``. Nol vaznli yozuvlar tashlab
     yuboriladi. Musbat yozuvlar odatdagi, manfiy yozuvlar qat'iy
     moslik bilan qidiriladi.
+
+    Hisoblash: **musbatlar yig'indisi + eng kuchli manfiy**. Manfiy
+    so'zlar qo'shilmaydi — bitta aniq haydovchi belgisi yetarli, aks
+    holda bir-birini qoplaydigan iboralar bitta xabarni bir necha
+    marta jazolaydi.
     """
     result = ScoreResult(threshold=float(threshold))
     pos_entries: dict[str, float] = {}
@@ -702,7 +707,14 @@ def score_text(
         result.negatives,
     ) = _collapse_variants(result.positives, result.negatives)
 
-    score = sum(result.positives.values()) + sum(result.negatives.values())
+    # Musbatlar QO'SHILADI (bir nechta zaif signal birga kuch beradi),
+    # manfiylardan esa faqat ENG KUCHLISI hisoblanadi: bitta aniq haydovchi
+    # belgisi yetarli, qolganlari ustiga qo'shilib ketsa bitta ibora
+    # (``bo'sh joy bor`` -> ``joy bor`` + ``bo'sh joy`` + ``bo'sh``)
+    # xabarni uch marta jazolaydi.
+    score = sum(result.positives.values()) + (
+        min(result.negatives.values()) if result.negatives else 0.0
+    )
     if emoji_penalty and contains_emoji(message_text):
         result.emoji_penalty = float(emoji_penalty)
         score -= result.emoji_penalty

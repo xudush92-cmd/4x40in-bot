@@ -322,6 +322,39 @@ class TestPhraseSurvivesRestart(unittest.TestCase):
         self.assertEqual(db.get_phrases_full(), before)
 
 
+class TestNegativeScoring(unittest.TestCase):
+    """Manfiylar qo'shilmaydi — faqat eng kuchlisi hisoblanadi.
+
+    Regressiya: bitta ibora bir nechta manfiy yozuvga mos tushsa
+    (``bo'sh joy bor`` -> ``joy bor`` + ``bo'sh joy`` + ``bo'sh``),
+    xabar uch marta jazolangani uchun ball **-10.5** chiqardi.
+    """
+
+    def test_overlapping_negatives_counted_once(self):
+        r = score_text(
+            "bo'sh joy bor",
+            [("joy bor", -4.0), ("bo'sh joy", -4.0), ("bo'sh", -2.5)],
+        )
+        self.assertEqual(r.score, -4.0)
+        self.assertFalse(r.is_match)
+
+    def test_single_strong_negative_is_enough(self):
+        r = score_text("reys bor, bo'sh joy bor", [("reys", -3.0), ("joy bor", -4.0)])
+        self.assertEqual(r.score, -4.0)
+
+    def test_positives_still_add_up(self):
+        r = score_text("mashina kerak", [("mashina", 1.0), ("kerak", 3.0)])
+        self.assertEqual(r.score, 4.0)
+        self.assertTrue(r.is_match)
+
+    def test_strong_client_signal_not_vetoed_by_two_weak_negatives(self):
+        r = score_text(
+            "mashina kerak, kim chiqadi",
+            [("mashina", 1.0), ("kerak", 3.0), ("chiqadi", -2.5), ("chiqdim", -2.5)],
+        )
+        self.assertEqual(r.score, 1.5)
+
+
 class TestUserThreshold(unittest.TestCase):
     """Per-user chegara: har foydalanuvchi o'zi tanlaydi, admin fallback."""
 

@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 STEP = 0.25
 # Vazn 0 ga juda yaqinlashsa — belgi saqlanib qoladi (0 emas!)
 MIN_ABS = 0.25
-MAX_ABS = 10.0
+# Yuqori chegara: chegaradan (odatda 1.75) ~3 baravar katta. Kattaroq
+# qilsak bitta so'z butun qarorni o'z qo'liga olib qo'yardi.
+MAX_ABS = 5.0
 
 VERDICT_USEFUL = "useful"
 VERDICT_USELESS = "useless"
@@ -46,17 +48,22 @@ VERDICT_USELESS = "useless"
 def _shift(weight: float, delta: float) -> float:
     """Vaznni siljitadi, chegaralarni va nolni hurmat qilib.
 
-    Nolga o'tish taqiqlanadi: so'z «hisobga olinmaydigan» bo'lib
-    qolmasin — aks holda foydalanuvchi nega endi bu so'z ishlamayotganini
-    tushunmaydi.
+    Ikkita qat'iy qoida:
+
+    * **Nolga o'tish taqiqlanadi** — so'z «hisobga olinmaydigan» bo'lib
+      qolmasin;
+    * **Belgi almashmaydi** — mijoz so'zi bir necha marta ❌ bosilsa
+      jimgina haydovchi so'ziga aylanib qolmasin (teskari ham).
+      Vazn ``MIN_ABS`` da to'xtaydi; belgini faqat admin qo'l bilan
+      (kalit so'zlar bo'limida) o'zgartiradi.
     """
+    if weight == 0:
+        return MIN_ABS if delta > 0 else -MIN_ABS
     new = weight + delta
-    if weight > 0 and new <= 0:
-        new = -MIN_ABS
-    elif weight < 0 and new >= 0:
-        new = MIN_ABS
-    if new == 0:
-        new = MIN_ABS if weight >= 0 else -MIN_ABS
+    if weight > 0:
+        new = max(new, MIN_ABS)
+    else:
+        new = min(new, -MIN_ABS)
     return round(max(-MAX_ABS, min(MAX_ABS, new)), 2)
 
 
