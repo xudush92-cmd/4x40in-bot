@@ -14,6 +14,12 @@ from config import missing_settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 🧾 Diagnostika: oxirgi log qatorlari xotirada turadi va admin tugma
+# bilan .txt fayl qilib oladi (telefon raqamlar yopiladi).
+import logbuffer  # noqa: E402
+
+logbuffer.install()
+
 
 async def run_all():
     # Sozlamalar tekshiruvi import'dan OLDIN bajarilishi kerak: bot va

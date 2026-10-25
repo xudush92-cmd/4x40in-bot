@@ -1499,3 +1499,49 @@ xabar chegaradan o'tadi.
 Yangi 5 test: oraliq chegaralari (1.0 / 1.75 / 0.9 / manfiy / chegara 0),
 ⚡ slayd belgisi, o'tgan xabarning belgisi, statistikada `near` soni,
 `_queue_near_miss` faqat `weight` + `keywords` + oraliq holatda qo'shishi.
+
+---
+
+## 28. 🧾 Diagnostika va 👁 Kuzatuv (botni kuzatish)
+
+### 28.1 🧾 Diagnostika — log faylini botning o'zi yuboradi
+
+`logbuffer.py` — halqa buferi (oxirgi **2000** qator). `main.py` va
+`bot.py` ishga tushganda `logbuffer.install()` chaqiriladi.
+
+* 🛠 Admin panel → **🧾 Diagnostika** → oxirgi 300 qator `diagnostika-*.txt`
+  bo'lib shu chatga keladi (serverga kirish shart emas).
+* **Maxfiylik:** yuborishdan oldin 9+ raqamli ketma-ketliklar `[raqam]` ga
+  almashtiriladi. `ball=4/1.75`, `2 kishi` kabi qiymatlar tegilmaydi.
+* Root logger darajasi INFO dan past bo'lsa, `install()` uni tushiradi —
+  aks holda loglar bufferga umuman yetib bormasdi.
+
+### 28.2 👁 Kuzatuv — har bir xabar va sababi
+
+`/kuzat 15` (yoki `/kuzat_ochir`) — admin uchun. Yoqilganda **har bir**
+skanerlangan xabar kartasi shaxsiy chatga keladi:
+
+```
+👁 Kuzatuv · 14 daq qoldi
+«mashina kerak 2 kishi»
+⚖️ ball 1.5 / 1.75
+➕ +1 mashina, +3 kerak
+➖ —
+Natija: ⚡ chegarada — o'tmadi
+```
+
+Cheklovlar:
+
+* faqat **adminning o'z akkaunti** skanerlagan xabarlar (`owner_id == ADMIN_ID`);
+* faqat `ADMIN_ID` ga yuboriladi;
+* 1–120 daqiqa, vaqt tugagach o'zi o'chadi;
+* matn 400 belgigacha qisqartiriladi, HTML escape qilinadi.
+
+### 28.3 Testlar
+
+59 + 53 + 23 + 36 + 7 + **18** = **196 test** — OK.
+
+Yangi 18 test: buffer yig'ishi, `tail` chegarasi, telefon yopilishi,
+ball `4/1.75` tegilmasligi, `install()` takrorlanmasligi, `clear`;
+kuzatuv yoqish/o'chirish, daqiqa chegarasi (1–120), muddat tugashi,
+karta matni (o'tgan / chegarada / emoji), HTML escape, qisqartirish.

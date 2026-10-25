@@ -77,7 +77,9 @@ from database import (
     upsert_user,
 )
 import feedback as fb
+import logbuffer
 import review
+import watch
 
 from login_manager import (
     LoginError,
@@ -127,6 +129,7 @@ BTN_ADMIN_PANEL = "🛠 Admin panel"
 BTN_SCAN_PANEL = "🎛 Skaner paneli"
 BTN_MAIN_MENU = "↩️ Asosiy menyu"
 BTN_REVIEW = "🎓 Nazorat (baholash)"   # o'qitish: bot ichida slayd
+BTN_DIAG = "🧾 Diagnostika"            # oxirgi log qatorlari (.txt)
 BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
 BTN_SCAN_RESUME = "🟢 ▶️ Start"
 # Eski nomlar yangi bitta bo'limga yo'naltiriladi
@@ -137,7 +140,7 @@ MENU_BUTTONS = {
     BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
-    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_REVIEW,
+    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_REVIEW, BTN_DIAG,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -233,7 +236,7 @@ def admin_panel_keyboard() -> list:
         [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
         [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
         [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
-        [KeyboardButton(text=BTN_REVIEW)],
+        [KeyboardButton(text=BTN_REVIEW), KeyboardButton(text=BTN_DIAG)],
         [KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -458,12 +461,70 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
         "🎓 <b>O'qitish:</b> «🎓 Nazorat (baholash)» tugmasini bosing — "
         "bot topgan xabarlar shu chatga bitta slayd bo'lib tushadi, siz "
         "✅/❌ bilan baholaysiz va faqat shundan keyin so'zlar vazni "
-        "o'zgaradi. Guruh kerak emas.",
+        "o'zgaradi. Guruh kerak emas.\n\n"
+        "🧾 <b>Diagnostika</b> — oxirgi log qatorlari fayl bo'lib keladi.\n"
+        "👁 <b>Kuzatuv</b> — <code>/kuzat 15</code>: 15 daqiqa davomida har "
+        "bir skanerlangan xabar kartasi shu chatga keladi.",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=admin_panel_keyboard(), resize_keyboard=True
         ),
     )
+
+
+@dp.message(AdminFilter(), F.text == BTN_DIAG)
+async def send_diagnostics(message: types.Message, state: FSMContext):
+    """🧾 Diagnostika — oxirgi log qatorlari ``.txt`` bo'lib keladi."""
+    await state.clear()
+    text = logbuffer.tail(300)
+    if not text.strip():
+        await message.answer(
+            "🧾 Log hozircha bo'sh.\n\nBot yaqinda qayta ishga tushgan "
+            "bo'lishi mumkin — bir necha xabar o'tgach yana urinib ko'ring."
+        )
+        return
+    stamp = time.strftime("%Y%m%d-%H%M")
+    body = (
+        "# Diagnostika\n"
+        f"sana: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"qatorlar: {len(text.splitlines())}\n"
+        f"chegara: {get_score_threshold():g}\n\n"
+        f"{text}\n"
+    ).encode("utf-8")
+    await message.answer_document(
+        BufferedInputFile(body, filename=f"diagnostika-{stamp}.txt"),
+        caption="🧾 Oxirgi log qatorlari (telefon raqamlar [raqam] ga "
+                "almashtirilgan).",
+    )
+
+
+@dp.message(AdminFilter(), Command("kuzat"))
+async def watch_start(message: types.Message, state: FSMContext):
+    """👁 Kuzatuv: vaqtincha har bir xabar kartasi shu chatga keladi."""
+    await state.clear()
+    parts = (message.text or "").split()
+    minutes = watch.DEFAULT_MINUTES
+    if len(parts) > 1:
+        try:
+            minutes = int(parts[1])
+        except ValueError:
+            minutes = watch.DEFAULT_MINUTES
+    minutes = watch.enable(minutes)
+    await message.answer(
+        f"👁 <b>Kuzatuv yoqildi — {minutes} daqiqa.</b>\n\n"
+        "Shu vaqt ichida <b>har bir</b> skanerlangan xabar kartasi shu "
+        "chatga keladi: matn, ball, ishlagan so'zlar va natija.\n\n"
+        "Faqat sizning akkauntingiz guruhlari ko'rsatiladi.\n"
+        "To'xtatish: /kuzat_ochir",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(AdminFilter(), Command("kuzat_ochir"))
+async def watch_stop(message: types.Message, state: FSMContext):
+    await state.clear()
+    watch.disable()
+    await message.answer("👁 Kuzatuv o'chirildi.")
 
 
 @dp.message(AdminFilter(), F.text == BTN_SCAN_PANEL)
@@ -3867,6 +3928,7 @@ async def main():
             + ", ".join(missing)
             + ". telegram_scanner/.env faylini .env.example asosida to'ldiring."
         )
+    logbuffer.install()   # 🧾 Diagnostika: loglar xotirada saqlanadi
     init_db()
     logger.info("Boshqaruv boti ishga tushdi...")
 

@@ -34,6 +34,7 @@ from login_manager import revoke_session
 from filters import evaluate, summary_line
 from session_crypto import decrypt_session
 import review
+import watch
 from notifier import (
     build_feedback_row,
     build_message_link,
@@ -46,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 # Fonda ketayotgan nazorat yozuvlari (GC yeb qo'ymasin).
 _review_tasks: set = set()
+# 👁 Kuzatuv kartalari (admin uchun) — fon vazifalari
+_watch_tasks: set = set()
 
 _clients: dict[int, TelegramClient] = {}
 _tasks: list[asyncio.Task] = []
@@ -241,6 +244,22 @@ def reset_diagnostics(owner_id: int) -> None:
     _last_event.pop(owner_id, None)
 
 
+def _queue_watch_card(event, verdict) -> None:
+    """👁 Kuzatuv kartasini adminga yuboradi (faqat o'z akkaunti).
+
+    Kuzatuv yoqilgan bo'lsa, har bir skanerlangan xabar kartasi ketadi:
+    matn, ball, ishlagan so'zlar va natija. Boshqa foydalanuvchilarning
+    xabarlari hech qachon ko'rsatilmaydi.
+    """
+    try:
+        text = watch.card_text(getattr(event, "raw_text", "") or "", verdict)
+        task = asyncio.create_task(send_to_bot_api(text, None, chat_id=ADMIN_ID))
+        _watch_tasks.add(task)
+        task.add_done_callback(_watch_tasks.discard)
+    except Exception:
+        logger.exception("[WATCH] karta yuborilmadi")
+
+
 def _queue_near_miss(verdict, event) -> None:
     """⚡ Chegaraga yaqin xabarni o'qitish navbatiga qo'shadi.
 
@@ -306,6 +325,8 @@ def _make_handler(owner_id: int, client: TelegramClient):
             is_sticker=is_sticker,
             chat_id=event.chat_id,
         )
+        if owner_id == ADMIN_ID and watch.is_active():
+            _queue_watch_card(event, verdict)
         if not verdict.ok:
             # O'tkazib yuborish sababi logga yoziladi: [SCAN] skip ...
             logger.info(
