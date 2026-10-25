@@ -1663,3 +1663,28 @@ bitta hisoblagich, guruh kabi boshqa sabablar chat bo'yicha alohida.
 
 Matcher 59 + weights 53 + feedback 23 + review 36 + export 7 + diag 27
 = **205 test — OK**.
+
+---
+
+## 31. Nazorat buyruqlari tugmalarga almashtirildi
+
+Skrinshotdagi `REVIEW_HELP` matnida `/nazorat`, `/nazorat_ochir` va
+`/nazorat_stat` buyruqlari ko'rsatilgan edi. Endi xabar ostida inline
+boshqaruv tugmalari bor:
+
+- **🔍 Slaydni ochish** — navbat slaydini yangilaydi;
+- **📊 Statistika** — baholash statistikasini ko'rsatadi;
+- **🔕 Nazoratni o'chirish** — nazoratni o'chiradi, ochiq slaydni holat
+  xabariga almashtiradi va undagi eski baholash tugmalarini olib tashlaydi;
+- **❌ Yopish** — yordam xabarini yopadi.
+
+`🛠 Admin panel → 🎓 Nazorat (baholash)` nazoratni ochish tugmasi bo'lib
+qoladi. Eski slash-buyruqlar moslik uchun ishlashda davom etadi, lekin
+foydalanuvchiga ko'rsatiladigan yordam matnidan olib tashlandi.
+
+### Tekshiruv
+
+Matcher 59 + weights 53 + feedback 23 + review **38** + export 7 + diag
+27 = **207 test — OK**. Yangi testlar tugmalar ko'rsatilishi, slayd va
+baholash tugmalari nazorat o'chirilganda tozalanishi, hamda stop callback
+ishlashini tekshiradi.

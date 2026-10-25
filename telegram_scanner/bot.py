@@ -3724,11 +3724,21 @@ REVIEW_HELP = (
     "⚡ <b>Chegarada</b> — ball chegaradan past bo'lgan xabar: model uni "
     "o'tkazib yubordi. ✅ desangiz so'zlar kuchayadi va keyingi safar "
     "o'tadi.\n\n"
-    "Buyruqlar (shu chatda):\n"
-    "/nazorat — slaydni ochish\n"
-    "/nazorat_ochir — nazoratni o'chirish\n"
-    "/nazorat_stat — statistika"
+    "Quyidagi tugmalar bilan slaydni oching, statistikani ko'ring yoki "
+    "nazoratni o'chiring."
 )
+
+
+def review_control_keyboard() -> InlineKeyboardMarkup:
+    """Nazorat bo'limidagi matn buyruqlari o'rniga ko'rinadigan tugmalar."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔍 Slaydni ochish", callback_data="rv:open:0")],
+        [
+            InlineKeyboardButton(text="📊 Statistika", callback_data="rv:stats:0"),
+            InlineKeyboardButton(text="🔕 Nazoratni o'chirish", callback_data="rv:stop:0"),
+        ],
+        [_close_button()],
+    ])
 
 
 @dp.message(AdminFilter(), Command("nazorat"))
@@ -3743,6 +3753,7 @@ async def review_start(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ Nazorat shu chatda yoqildi.\n\n{REVIEW_HELP}",
         parse_mode="HTML",
+        reply_markup=review_control_keyboard(),
     )
     await review.refresh(force_new=True)
 
@@ -3760,15 +3771,19 @@ async def open_review_panel(message: types.Message, state: FSMContext):
             ),
         )
         return
-    await message.answer(REVIEW_HELP, parse_mode="HTML")
+    await message.answer(
+        REVIEW_HELP,
+        parse_mode="HTML",
+        reply_markup=review_control_keyboard(),
+    )
     await review.refresh(force_new=True)
 
 
 @dp.message(AdminFilter(), Command("nazorat_ochir"))
 async def review_stop(message: types.Message, state: FSMContext):
     await state.clear()
-    review.set_review_chat(0)
-    await message.answer("🔕 Nazorat guruhi o'chirildi — nusxalar endi kelmaydi.")
+    await review.disable()
+    await message.answer("🔕 Nazorat o'chirildi — nusxalar endi kelmaydi.")
 
 
 @dp.message(AdminFilter(), Command("nazorat_stat"))
@@ -3782,6 +3797,30 @@ async def review_callback(callback: types.CallbackQuery, state: FSMContext):
     """✅ To'g'ri / ❌ Noto'g'ri / ⏭ O'tkazish — vazn shu yerda o'zgaradi."""
     parts = callback.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
+    if action == "open":
+        if not review.review_chat_id():
+            await callback.answer("Avval 🎓 Nazoratni yoqing.", show_alert=True)
+            return
+        await callback.answer("Slayd yangilandi")
+        await review.refresh()
+        return
+    if action == "stop":
+        await review.disable()
+        try:
+            await callback.message.edit_text(
+                "🔕 <b>Nazorat o'chirildi</b> — nusxalar endi kelmaydi. "
+                "Qayta yoqish uchun 🛠 Admin panel → 🎓 Nazorat (baholash) "
+                "ni bosing.",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        await callback.answer("Nazorat o'chirildi")
+        return
+    if action in {"ok", "bad", "skip"} and not review.review_chat_id():
+        await callback.answer("Nazorat o'chirilgan.", show_alert=True)
+        return
     if action == "stats":
         await callback.answer("Statistika yangilandi")
         try:

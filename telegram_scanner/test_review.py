@@ -47,6 +47,10 @@ class Msg:
         self.texts.append(text)
         self.markups.append(kw.get("reply_markup"))
 
+    async def edit_text(self, text, **kw):
+        self.texts.append(text)
+        self.markups.append(kw.get("reply_markup"))
+
 
 class Cb:
     """aiogram CallbackQuery o'rnini bosuvchi."""
@@ -62,6 +66,9 @@ class Cb:
 
     async def answer(self, text="", **kw):
         self.answers.append(text)
+
+    async def edit_text(self, text, **kw):
+        self.message.texts.append(text)
 
 
 class State:
@@ -401,6 +408,17 @@ class TestSetup(ReviewTestBase):
         )
         self.assertEqual(review.review_chat_id(), 777)
         self.assertTrue(any("Nazorat rejimi" in t for t in message.texts))
+        controls = message.markups[-1]
+        button_texts = {
+            button.text
+            for row in controls.inline_keyboard
+            for button in row
+        }
+        self.assertIn("🔍 Slaydni ochish", button_texts)
+        self.assertIn("📊 Statistika", button_texts)
+        self.assertIn("🔕 Nazoratni o'chirish", button_texts)
+        self.assertNotIn("/nazorat_stat", message.texts[-1])
+        self.assertNotIn("/nazorat_ochir", message.texts[-1])
 
     async def test_stop_disables(self):
         from bot import review_stop
@@ -410,6 +428,26 @@ class TestSetup(ReviewTestBase):
         before = len(self.calls)
         await review.enqueue("kerak", 0.0, 1.75, ["kerak"])
         self.assertEqual(len(self.calls), before)
+
+    async def test_disable_clears_slide_and_buttons(self):
+        await review.enqueue("kerak", 4.0, 1.75, ["kerak"])
+        self.assertEqual(review._message_id(), 1001)
+        await review.disable()
+        self.assertFalse(review.review_chat_id())
+        self.assertIsNone(review._message_id())
+        edits = self.sent("editMessageText")
+        self.assertIn("Nazorat o'chirildi", edits[-1]["text"])
+        self.assertEqual(edits[-1]["reply_markup"], {"inline_keyboard": []})
+
+    async def test_stop_button_disables_review(self):
+        await review.enqueue("kerak", 4.0, 1.75, ["kerak"])
+        from bot import review_callback
+        callback = Cb("rv:stop:0")
+        await review_callback(callback, State())
+        self.assertFalse(review.review_chat_id())
+        self.assertIsNone(review._message_id())
+        self.assertIn("Nazorat o'chirildi", callback.message.texts[-1])
+        self.assertEqual(callback.answers[-1], "Nazorat o'chirildi")
 
     async def test_deleted_slide_is_resent(self):
         review._set_message_id(1)

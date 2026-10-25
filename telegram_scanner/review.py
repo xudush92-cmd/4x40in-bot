@@ -100,6 +100,27 @@ def set_review_chat(chat_id: int) -> None:
     set_setting(CHAT_KEY, str(chat_id) if chat_id else "")
 
 
+async def disable() -> None:
+    """Nazoratni o'chiradi va slayddagi eski baholash tugmalarini olib tashlaydi."""
+    chat_id = review_chat_id()
+    message_id = _message_id()
+    set_review_chat(0)
+    try:
+        if chat_id and message_id:
+            await _api("editMessageText", {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": "🔕 <b>Nazorat o'chirildi</b>\n\n"
+                        "Nusxalar endi navbatga kelmaydi. Qayta ochish uchun "
+                        "🛠 Admin panel → 🎓 Nazorat (baholash) ni bosing.",
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": []},
+            })
+    finally:
+        # Qayta yoqilganda eski, o'chirilgan slaydni tahrirlashga urinmasin.
+        _set_message_id(None)
+
+
 def _message_id() -> int | None:
     value = get_setting(MSG_KEY)
     try:
