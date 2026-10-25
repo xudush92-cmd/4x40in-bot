@@ -72,16 +72,24 @@ def _is_cyrillic(word: str) -> bool:
     return any(ch in _CYRILLIC_CHARS for ch in word)
 
 
-def _lazy_latin(word: str) -> str:
+def _lazy_latin(word: str, fold_apostrophe: bool = True) -> str:
     """Lotin yozuvidagi "dangasalik"ni tenglashtiradi.
 
     Odamlar kirillni ham, lotinni ham soddalashtirib yozadi:
-    ``ў`` o'rniga ``у``, ``қ`` o'rniga ``к``, ``ҳ`` o'rniga ``х``,
-    ``o'`` o'rniga ``o`` yoki ``u``. Solishtirishda ikkala tomon ham
-    shu yagona shaklga keltiriladi, shunda bitta lotin so'z kirillning
-    barcha yozilish variantini topadi.
+    ``ў`` o'rniga ``у``, ``қ`` o'rniga ``к``, ``ҳ`` o'rniga ``х``.
+
+    ``fold_apostrophe=True`` — ``o'``/``g'`` ni ``u``/``g`` ga aylantiradi.
+    Bu kirill manbali so'z uchun kerak (``жўнаймиз`` -> ``жунаймиз``) va
+    uzun lotin so'zlar uchun ham (``jo'nat`` ~ ``жунат``).
+
+    Qisqa so'zlarda bu almashtirish XAVFLI: ``yo'q`` -> ``yuk``,
+    ``to'q`` -> ``tuk``, ``so'z`` -> ``suz``. Natijada kalit ``yo'q``
+    xabardagi ``yuk``/``yukim`` so'zini tutib oladi (domenda ``yuk`` eng
+    ko'p uchraydigan so'z). Shuning uchun qisqa so'zlarda o'chiriladi.
     """
-    w = word.replace("o'", "u").replace("g'", "g")
+    w = word
+    if fold_apostrophe:
+        w = w.replace("o'", "u").replace("g'", "g")
     return w.replace("q", "k").replace("h", "x")
 
 
@@ -91,9 +99,14 @@ def _fold_variants(word: str) -> tuple[str, ...]:
 
     ``word`` allaqachon normallashtirilgan (kichik harf, apostrof bir xil).
     """
-    base = cyr_to_lat(word) if _is_cyrillic(word) else word
+    is_cyr = _is_cyrillic(word)
+    base = cyr_to_lat(word) if is_cyr else word
     variants = [base]
-    lazy = _lazy_latin(base)
+    # ``o'``->``u`` almashtirish kirillda doim, lotinda esa faqat so'z
+    # yetarlicha uzun bo'lsa qo'llanadi (qisqa so'zlarda u boshqa haqiqiy
+    # so'z bilan to'qnashadi: yo'q ~ yuk, to'q ~ tuk, so'z ~ suz).
+    long_enough = len(base.replace("'", "")) >= 4
+    lazy = _lazy_latin(base, fold_apostrophe=is_cyr or long_enough)
     if lazy not in variants:
         variants.append(lazy)
     plain = base.replace("o'", "o").replace("g'", "g")
@@ -222,6 +235,14 @@ def _word_matches_single(
     if key_word == message_word:
         return True
 
+    # So'roq shakli ASSIMMETRIK tekshiriladi: kalit so'roq shaklida yozilgan
+    # bo'lsa (``bormi``), u faqat so'roq shaklidagi so'zga mos keladi.
+    # Aks holda ``bormi`` kaliti haydovchining "2 joy bor" e'lonini tutib
+    # oladi. Teskari yo'nalish ochiq qoladi: ``kerak`` kaliti ``kerakmi``
+    # savolini ham topaveradi (mijoz shakli yo'qolmasin).
+    if _is_question_form(key_word) and not _is_question_form(message_word):
+        return False
+
     # Fe'l shaxsi: "olamiz" ~ "olaman" mos, "olamiz" ~ "olasiz" emas.
     key_stem, key_person, key_tense = _verb_parts(key_word)
     msg_stem, msg_person, msg_tense = _verb_parts(message_word)
@@ -245,11 +266,14 @@ def _word_matches_single(
     ):
         return True
     # Yozuv xabar so'zidan uzun bo'lsa, faqat qisqa qoldiq (1-2 harf)
-    # qabul qilinadi: "ketadi" ~ "ketad", "ikki" ~ "ikk".
+    # qabul qilinadi: "ketadi" ~ "ketad".
+    # Xabar so'zi kamida 4 harf bo'lishi shart: aks holda "menga" kaliti
+    # xabardagi "men" olmoshi bilan mos kelib, "men ham shu sohada
+    # ishlayman" kabi begona xabarga ball qo'shardi.
     # Aks holda "boramiz" yozuvi xabardagi oddiy "bor" so'zini ham
     # tutib qo'yardi va mijoz xabari bloklanardi.
     if (
-        min(len(key_word), len(message_word)) >= 3
+        min(len(key_word), len(message_word)) >= 4
         and key_word.startswith(message_word)
         and len(key_word) - len(message_word) <= 2
     ):
@@ -505,4 +529,14 @@ def canonical_entry(text: str | None) -> str:
     (``қарши`` / ``карши``) ham bitta yozuv sifatida qaraladi.
     """
     tokens = normalize_tokens(text or "")
-    return " ".join(_lazy_latin(_canon(token)) for token in tokens)
+    out = []
+    for token in tokens:
+        base = _canon(token)
+        # ``_fold_variants`` bilan bir xil qoida: qisqa so'zlarda
+        # ``o'``->``u`` qo'llanmaydi. Aks holda ``yo'q`` va ``yuk``
+        # "bir xil yozuv" bo'lib qolardi va admin ikkalasini ham
+        # ro'yxatga qo'sha olmasdi.
+        out.append(
+            _lazy_latin(base, fold_apostrophe=len(base.replace("'", "")) >= 4)
+        )
+    return " ".join(out)

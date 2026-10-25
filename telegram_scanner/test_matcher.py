@@ -167,15 +167,23 @@ class TestShortWordGuard(unittest.TestCase):
 
     def test_client_short_message_passes_filters(self):
         stop = ["olamiz", "chiqamiz", "boramiz", "ketamiz"]
+        # Diqqat: ``bormi`` kaliti endi oddiy ``bor`` bilan tenglashtirilmaydi
+        # (quyidagi TestQuestionKeyRequired), shuning uchun mijoz savoli
+        # so'roq shaklida yozilgan variantlar sinaladi.
         client = ["bormi", "kerak", "kimga"]
         keys = ["toshkent", "xorazm", "odam", "kishi", "posilka", "dona"]
         for text in (
-            "Toshkentdan xorazimga 2 odam bor",
+            "Toshkentdan xorazimga 2 odam bor, mashina bormi",
             "Toshkentdan Xorazmga 2 dona posilka bor, kimga topshiraman",
         ):
             self.assertEqual(find_stop_words(text, stop), [])
             self.assertTrue(find_client_words(text, client))
             self.assertTrue(match_keywords(text, keys, required_count=3).is_match)
+        # Haydovchining "2 odam bor" e'loni endi mijoz kaliti bilan
+        # belgilanmaydi — bu ataylab shunday.
+        self.assertEqual(
+            find_client_words("Toshkentdan xorazimga 2 odam bor", ["bormi"]), []
+        )
 
     def test_driver_message_still_blocked(self):
         stop = ["olamiz", "chiqamiz", "boramiz", "ketamiz"]
@@ -269,6 +277,87 @@ class TestLargeKeywordList(unittest.TestCase):
     def test_no_false_positive_from_padding(self):
         keys = ["toshkent", "soz0001"]
         self.assertEqual(match_keywords("об-ҳаво қандай", keys, 1).matched_count, 0)
+
+
+class TestApostropheFoldGuard(unittest.TestCase):
+    """Qisqa so'zlarda ``o'``->``u`` almashtirilmasligi kerak.
+
+    Aks holda ``yo'q`` kaliti xabardagi ``yuk``/``yukim`` so'zini tutib
+    oladi — domenda ``yuk`` eng ko'p uchraydigan so'z.
+    """
+
+    def test_yoq_does_not_match_yuk(self):
+        for text in ("yuk bor", "yukim katta", "yuklar keldi", "2 tonna yuk"):
+            self.assertEqual(
+                match_keywords(text, ["yo'q"], 1).matched_count, 0, text
+            )
+
+    def test_yoq_still_matches_itself(self):
+        for text in ("yo'q", "yoq", "йўқ", "YO'Q"):
+            self.assertEqual(
+                match_keywords(text, ["yo'q"], 1).matched_count, 1, text
+            )
+
+    def test_dumb_cyrillic_ambiguity_is_not_guessed(self):
+        # "йук" — "dangasa" yozuvda ham "йўқ" (yo'q), ham "юк" (yuk) bo'lishi
+        # mumkin. Noaniqlikni taxmin qilmaymiz: "yo'q" kaliti uni tutmaydi,
+        # "yuk" kaliti esa tutadi.
+        self.assertEqual(match_keywords("йук", ["yo'q"], 1).matched_count, 0)
+        self.assertEqual(match_keywords("йук", ["yuk"], 1).matched_count, 1)
+
+    def test_canonical_keeps_yoq_and_yuk_apart(self):
+        # Takror tekshiruvi ham ularni bir xil deb hisoblamasligi kerak,
+        # aks holda admin "yuk" kalitini qo'sha olmaydi.
+        self.assertNotEqual(canonical_entry("yo'q"), canonical_entry("yuk"))
+        self.assertEqual(canonical_entry("yo'q"), canonical_entry("йўқ"))
+
+    def test_other_short_collisions_closed(self):
+        self.assertEqual(match_keywords("tuk keldi", ["to'q"], 1).matched_count, 0)
+        self.assertEqual(match_keywords("bush joy", ["bo'sh"], 1).matched_count, 1)
+
+    def test_long_latin_words_keep_dumb_cyrillic_match(self):
+        # Uzun so'zlarda o'->u saqlanadi: lotin kalit "dangasa" kirill
+        # yozuvini ham topadi.
+        self.assertEqual(match_keywords("жунат", ["jo'nat"], 1).matched_count, 1)
+        self.assertEqual(match_keywords("жунаймиз", ["jo'naymiz"], 1).matched_count, 1)
+
+    def test_driver_word_still_found(self):
+        self.assertEqual(match_keywords("yuk bor", ["yuk"], 1).matched_count, 1)
+
+
+class TestQuestionKeyRequired(unittest.TestCase):
+    """``bormi`` kaliti faqat so'roq shaklini topadi, ``bor`` ni emas."""
+
+    def test_question_key_ignores_statement(self):
+        for text in ("2 joy bor", "Toshkent Xorazm joy bor", "2 odam bor"):
+            self.assertEqual(
+                match_keywords(text, ["bormi"], 1).matched_count, 0, text
+            )
+
+    def test_question_key_matches_question(self):
+        for text in ("joy bormi", "joy bormi?", "жой борми", "mashina bormi"):
+            self.assertEqual(
+                match_keywords(text, ["bormi"], 1).matched_count, 1, text
+            )
+
+    def test_base_key_still_matches_question(self):
+        # Teskari yo'nalish ochiq: ``kerak`` kaliti ``kerakmi`` ni topadi.
+        self.assertEqual(match_keywords("mashina kerakmi", ["kerak"], 1).matched_count, 1)
+
+
+class TestShortWordPrefixGuard(unittest.TestCase):
+    """Uzunroq kalit 3 harfli olmoshni "yuqtirib" olmasligi kerak."""
+
+    def test_menga_does_not_match_men(self):
+        self.assertEqual(
+            find_client_words("men ham shu sohada ishlayman", ["menga"]), []
+        )
+
+    def test_menga_matches_itself(self):
+        self.assertTrue(find_client_words("menga mashina kerak", ["menga"]))
+
+    def test_normal_stem_match_kept(self):
+        self.assertTrue(find_client_words("bugun ketad", ["ketadi"]))
 
 
 if __name__ == "__main__":

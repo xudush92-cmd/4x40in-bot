@@ -96,7 +96,10 @@ Natija: aloqasiz 2 → **1**.
 
 ---
 
-## 4. Topilgan BUGLAR (kod hali tuzatilmagan)
+## 4. Topilgan BUGLAR
+
+> **Holat: A qadami bajarildi** (2026-10-25) — 3 bug tuzatildi, 13 yangi test
+> qo'shildi. Batafsil: **10-bo'lim**.
 
 ### 4.1 🔴 Jiddiy: `yo'q` va `yuk` tenglashtiriladi
 
@@ -236,3 +239,72 @@ bajariladi — natija yomonlashsa qaytariladi.
 O'lchov skripti vaqtinchalik papkada (`/tmp/sk/`), snapshotga kirmaydi.
 Kerak bo'lsa repoga `tools/measure_scanner.py` sifatida qo'shiladi (korpus
 bilan birga). Hozircha faqat raqamlar va qarorlar saqlangan.
+
+---
+
+## 10. A QADAMI BAJARILDI — 3 bug tuzatildi
+
+**Sana:** 2026-10-25 · **Fayllar:** `matcher.py`, `test_matcher.py`
+**Testlar:** 39 → **52** (13 yangi, hammasi o'tadi)
+
+### 10.1 Nima o'zgardi
+
+| # | Bug | Tuzatish | Ta'sir |
+|---|---|---|---|
+| 1 | `yo'q` = `yuk` | `o'`→`u` almashtirish endi **faqat kirill manbali** va **4+ harfli** lotin so'zlarda | `yo'q`~`yuk` yopildi; `jo'nat`~`жунат`, `jo'naymiz`~`жунаймиз` saqlandi |
+| 2 | `bormi` = `bor` | so'roq shakli **assimmetrik**: kalit `bormi` bo'lsa, xabar so'zi ham so'roq shaklida bo'lishi shart. `kerak` → `kerakmi` ochiq qoldi | haydovchining «2 joy bor» e'loni `bormi` kalitini endi tutmaydi |
+| 3 | `menga` = `men` | «kalit uzunroq» qoidasida xabar so'zi **kamida 4 harf** | «men ham ishlayman» begona xabari endi ball olmaydi |
+
+**Bonus (shu bugning davomi):** `canonical_entry()` — takror tekshiruvi ham
+`yo'q` va `yuk` ni bir xil deb hisoblardi, ya'ni admin `yuk` ni qo'shgandan
+keyin `yo'q` ni qo'sha olmasdi. Endi ikkalasi ham qabul qilinadi.
+
+### 10.2 Cheklov (halol qayd)
+
+«Dangasa» kirillda `йук` yozuvi **ikki xil** bo'lishi mumkin: `йўқ` (yo'q)
+va `юк` (yuk). Bunday noaniqlik **taxmin qilinmaydi**: `yo'q` kaliti uni
+tutmaydi, `yuk` kaliti tutadi. Bu ataylab — xato taxmin qilgandan ko'ra
+tutmaslik yaxshiroq.
+
+### 10.3 O'lchov (tuzatishdan keyin, 45/30/20 korpus)
+
+| Ko'rsatkich | A dan oldin | A dan keyin |
+|---|---|---|
+| Ishlab chiqarish mantiqi (emoji + 12 so'z): mijoz | 38/45 | **38/45** (o'zgarmadi) |
+| … haydovchi o'tdi | 1/30 | 1/30 |
+| … aloqasiz o'tdi | 3/20 | 3/20 |
+| D varianti (vaznli model): mijoz | 44/45 | **44/45** |
+| … haydovchi o'tdi | 0/30 | **0/30** |
+| … aloqasiz o'tdi | 1/20 | **1/20** |
+
+Ya'ni A **hech narsani buzmadi** (regressiya yo'q), lekin keyingi B qadam
+uchun poydevor tayyor: `bormi` endi kalit sifatida xavfsiz, `yo'q` esa
+manfiy vazn sifatida ishlatilishi mumkin.
+
+### 10.4 Yangi testlar (13 ta)
+
+- `TestApostropheFoldGuard` (6): `yo'q`~`yuk`/`yukim`/`yuklar` yopilgan;
+  `yo'q` o'zi bilan (lotin + `йўқ`) mos; `to'q`~`tuk`, `bo'sh`~`bush`;
+  uzun so'zlarda `o'`→`u` saqlangan; `canonical_entry` ikkalasini ajratadi;
+  `йук` noaniqligi taxmin qilinmaydi.
+- `TestQuestionKeyRequired` (3): `bormi` faqat so'roq shaklini topadi;
+  `kerak` → `kerakmi` ochiq.
+- `TestShortWordPrefixGuard` (3): `menga`~`men` yopilgan; `menga` o'zi bilan
+  mos; `ketadi`~`ketad` saqlangan.
+- Mavjud `test_client_short_message_passes_filters` tuzatilgan semantikaga
+  moslandi (endi `bormi` o'rniga haqiqiy savol shakli sinaladi va
+  «2 odam bor» e'lon sifatida qabul qilinishi tekshiriladi).
+
+### 10.5 Qayta tekshirish buyruqlari
+
+```bash
+cd telegram_scanner
+python3 test_matcher.py          # 52 test
+python3 -m py_compile *.py       # sintaksis
+```
+
+### 10.6 Keyingi qadam (B)
+
+B1 — baza ustunlari (`weight`, `strict`) + `score()` + regressiya testi.
+A dan farqi: bu yerda **model** o'zgaradi, shuning uchun alohida commit va
+alohida o'lchov talab qilinadi.
