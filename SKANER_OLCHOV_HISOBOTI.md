@@ -1741,3 +1741,64 @@ sekinlashtirishi mumkin.
 
 Matcher 59 + weights 53 + feedback 23 + review 44 + export 7 + diag 27
 = **213 test — OK**.
+
+---
+
+## 33. Amaldagi 74 kalit va 315 xabar bo'yicha qayta o'lchov
+
+Kiritilgan fayl: `kalit-sozlar (1).txt` (74 yozuv; so'nggi qatorda
+newline yo'q, shuning uchun `wc -l` 73 ko'rsatadi).
+
+- **42 musbat, 32 manfiy**; 52 ta bir so'zli yozuv, 22 ta ibora.
+- 74 ta yozuvning barchasi alohida sinov matnida topildi; `jonat` yozuvi
+  canonical shaklga `jo'nat` bo'lib tushadi. Bu juftlik alohida ro'yxat
+  yozuvlari bo'lsa ham matcher bir xabarga vaznni bir marta hisoblaydi.
+- Joriy chegara **2.0**. Mavjud 315 anonim etiketli xabarda 1.75 va 2.0
+  natijalari bir xil chiqdi — datasetda ball 1.75–2.0 oralig'ida bo'lgan
+  xabar yo'q.
+
+| Toifa | O'tdi | Foiz |
+|---|---:|---:|
+| Mijoz | 85 / 97 | 87.6% |
+| Haydovchi | 0 / 101 | 0% noto'g'ri o'tdi |
+| Boshqa | 14 / 117 | 12.0% noto'g'ri o'tdi |
+
+Boshlang'ich `kalit-sozlar-tavsiya.txt` bilan mijoz 86/97 (88.7%),
+haydovchi 0/101 va boshqa 14/117 bo'lgan. Faqat bitta dataset qarori
+almashgan: **“odam kerak emas, posilka”** 2.0 ball bilan o'tishdan
+0.75 ball bilan to'xtashga o'tgan; musbat `odam`/`kerak` vaznlari pasaygan
+va `kerak emas` manfiy iborasi hisoblangan. Namuna yorlig'ini tekshirish
+kerak.
+
+Sinovdagi ko'zga tashlangan xato misollar:
+
+- mijoz, o'tmadi: `2 ta sumka bilan ketamiz`, `meni olib keting,
+  Toshkentdan Sirdaryoga`, `kimda bo'sh joy bor`, `ichki reys kerak ...`;
+- boshqa, o'tdi: `admin bormi`, `ish qidiraman, haydovchi bo'lib`,
+  `yoqilg'i narxi qancha`, `kim yordam bera oladi`, `manzilni yuboraman`.
+
+Bularni yangi so'z qo'shishdan oldin admin **✅/❌/⏭** bilan baholashi
+kerak; hozircha vaznlar va so'zlar o'zgartirilmadi.
+
+### Jonli diagnostika
+
+`diagnostika-20261025-143606.txt`: tizim yoniq, threshold 2, bitta
+sessiya va bitta faol guruh, 1,344 event. Log buferining oxirgi 300
+qatorida 251 event va 30 skip-summary bor, keyword `topildi/sent`
+chiqishi yo'q; ko'ringan skiplar guruh ro'yxati bosqichida. Demak shu
+vaqt oralig'ida faol guruhdan real scoringni tekshirib bo'lmadi. API
+va timeout xatosi ko'rinmadi.
+
+### Eksport/import tuzatishi
+
+Eski eksport `+2 kim bor` deb chiqargan. Import parseri buni `kim` va
+`bor` kabi alohida kalitlarga ajratishi mumkin edi. Endi ko'p so'zli
+yozuvlar `+2: kim bor` ko'rinishida eksport qilinadi; parser uni aynan
+bitta ibora sifatida qayta oladi. Eski attachmentni qayta import
+qilmang; yangi format deploy qilingandan keyin yangi nusxa oling.
+
+### Tekshiruv
+
+Matcher 59 + weights 53 + feedback 23 + review 44 + export 8 + diag 27
+= **214 test — OK**. Merge hamda replace importida ijobiy ko'p so'zli
+iboralar saqlanishi regressiya testi bilan tekshirildi.

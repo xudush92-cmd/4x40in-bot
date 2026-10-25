@@ -303,7 +303,7 @@ class TestPhraseSurvivesRestart(unittest.TestCase):
         db.add_keyword_checked("reys", weight=-3.0)
         db.init_db()
         text = db.export_phrases_text()
-        self.assertIn("+3 kim olib ketadi", text)
+        self.assertIn("+3: kim olib ketadi", text)
         self.assertIn("-3 reys", text)
 
     def test_legacy_split_only_once_with_weight(self):

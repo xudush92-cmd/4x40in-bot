@@ -92,16 +92,19 @@ class ExportTest(unittest.IsolatedAsyncioTestCase):
         db.set_match_mode("weight")
         db.set_score_threshold(1.75)
         for word, weight in (("kerak", 3.0), ("reys", -3.0),
-                             ("joy bor", -4.0), ("bormi", 2.5)):
+                             ("joy bor", -4.0), ("bormi", 2.5),
+                             ("kim bor", 2.0), ("kim olib ketadi", 3.0)):
             db.add_keyword_checked(word, weight=weight)
 
     async def test_export_text_format(self):
         text = db.export_phrases_text()
-        self.assertEqual(len(text.splitlines()), 4)
+        self.assertEqual(len(text.splitlines()), 6)
         self.assertIn("+3 kerak", text)
         self.assertIn("-3 reys", text)
-        self.assertIn("-4 joy bor", text)
+        self.assertIn("-4: joy bor", text)
         self.assertIn("+2.5 bormi", text)
+        self.assertIn("+2: kim bor", text)
+        self.assertIn("+3: kim olib ketadi", text)
 
     async def test_export_sends_file(self):
         callback = Cb("wexport")
@@ -116,14 +119,27 @@ class ExportTest(unittest.IsolatedAsyncioTestCase):
         result = db.import_phrases(pairs)
         self.assertEqual(result["added"], [])
         self.assertEqual(result["updated"], [])
-        self.assertEqual(len(result["skipped"]), 4)
+        self.assertEqual(len(result["skipped"]), 6)
+        self.assertIn(("kim bor", 2.0), pairs)
+        self.assertIn(("kim olib ketadi", 3.0), pairs)
+        self.assertNotIn(("kim", 2.0), pairs)
+
+    async def test_replace_roundtrip_preserves_phrases(self):
+        before = {word: weight for _pid, word, weight, _strict in db.get_phrases_full()}
+        pairs = parse_weighted_entries(db.export_phrases_text())
+        result = db.import_phrases(pairs, replace=True)
+        after = {word: weight for _pid, word, weight, _strict in db.get_phrases_full()}
+        self.assertEqual(after, before)
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["added"], [])
+        self.assertEqual(result["updated"], [])
 
     async def test_import_adds_and_updates(self):
         result = db.import_phrases([("kerak", 4.0), ("yangi", 2.0), ("ketadi", 1.5)])
         self.assertEqual(len(result["added"]), 2)
         self.assertEqual(len(result["updated"]), 1)
         self.assertEqual(db.get_phrase(db.word_id_by_text("kerak"))[2], 4.0)
-        self.assertEqual(len(db.get_keywords()), 6)
+        self.assertEqual(len(db.get_keywords()), 8)
 
     async def test_export_empty_list(self):
         with db.closing(db._connect()) as conn, conn:

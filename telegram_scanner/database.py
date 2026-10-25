@@ -1127,13 +1127,16 @@ def purge_review_items(days: int = 90) -> int:
 def export_phrases_text() -> str:
     """Ro'yxatni qayta yuklash mumkin bo'lgan matn ko'rinishida qaytaradi.
 
-    Har qatorda bitta yozuv: ``+3 kerak`` / ``-4 joy bor``. Bu formatni
-    ``AddPhrase`` ham, ``import_phrases`` ham tushunadi — ya'ni nusxa
-    bazaga qaytariladi.
+    Har qatorda bitta yozuv: ``+3 kerak`` / ``+2: kim bor`` /
+    ``-4: joy bor``. Ko'p so'zli iborada ``:`` majburiy: import parseri
+    musbat, kolonsiz bir nechta so'zni alohida kalit deb talqin qiladi.
+    Kolon eksportda ibora chegarasini saqlaydi — nusxani import qilish
+    asl yozuv va vaznlarni o'zgartirmasligi kerak.
     """
     lines = []
     for _pid, word, weight, _strict in get_phrases_full():
-        lines.append(f"{weight:+g} {word}")
+        phrase_marker = ":" if len(word.split()) > 1 else ""
+        lines.append(f"{weight:+g}{phrase_marker} {word}")
     return "\n".join(lines)
 
 
