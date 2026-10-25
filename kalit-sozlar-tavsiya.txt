@@ -1,0 +1,57 @@
++3 kerak kerek
++3 izl qidir
++3 jo'nat jonat jull jiber yubor
++2 qancha
++1.5 necha
++1 ketadi
++2.5 bormi
++2: kim bor
++3: kim olib ketadi
++2 ketadimi
++3: olib ketadimi
++3: kim tashaydi
++2.5: kim yordam
++2: qabul qiladi
++1.5 narx
++1.5 yordam
++1 iltimos
++1.5: olib ketish
++2: ketishi kerak
++2: borishi kerak
++2 tashaydi
++1.5 shoshilinch
++1.5 yukim
++2: kerak edi
++1 posilka
++1 pochta
++1 mashina
++1 kishi
++1 yuk
+-4 joy bor
+-4: bo'sh joy
+-3 reys
+-3: har kuni
+-3.5 tashaymiz
+-3.5: qo'ng'iroq qiling
+-2.5 bo'sh
+-3.5 yetkazamiz
+-2.5 olamiz
+-2.5 chiqamiz
+-3.5: murojaat qiling
+-2.5 kelishiladi
+-3 shugullanamiz
+-3: olib ketaman
+-4: xizmat ko'rsatamiz
+-3: bo'sh mashina
+-3 yukingizni
+-2.5 boraman
+-2 ketaman
+-3 oshpaz
+-3 sotaman
+-3 sotiladi
+-3 ijaraga
+-3 reklama
+-3 obuna
+-3 ishga
+-3: kerak emas
+-3 kerakmas

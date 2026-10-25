@@ -1070,3 +1070,91 @@ yangi qo'shish + vazn yangilash, bo'sh ro'yxat, matn orqali import,
 bo'sh matn rad etilishi, menyudagi tugmalar.
 
 Jami repo testlari: 59 + 40 + 20 + 23 + **8** = **150**.
+
+## 20. Jonli ro'yxat auditi (65 yozuv) va tuzatilgan ro'yxat
+
+**Sana:** 2026-10-25 · Manba: serverdan olingan eksport (`kalit-sozlar.txt`, 65 yozuv).
+
+### 20.1 O'lchov: hozirgi ro'yxat korpusda yiqildi
+
+| Ro'yxat | Mijoz | Haydovchi xato o'tdi | Aloqasiz xato | F1 |
+|---|---|---|---|---|
+| **Jonli (65 yozuv, 0 manfiy)** | **34/45** | **10/20** | **6/20** | 0.618 |
+| Tavsiya etilgan (63 yozuv, 28 manfiy) | **45/45** | **0/20** | 2/20 | **0.978** |
+
+Ya'ni jonli ro'yxat mijoz xabarlarining **11 tasini yo'qotadi** va
+haydovchi e'lonlarining **yarmini** o'tkazib yuboradi.
+
+### 20.2 Uch ildiz sabab
+
+**1) `kerak` umuman yo'q.** Ro'yxatda `+0.5 karakm` va `+1 garakm`
+(«kerakmi» xato yozuvlari) bor, lekin **`kerak`** yo'q. Natijada:
+
+```
+mashina kerak        -> ball 1     chegaradan (1.75) past -> YO'QOLADI
+yuk kerak            -> ball 1     -> YO'QOLADI
+menga mashina kerak  -> ball 1     -> YO'QOLADI
+```
+
+Eng kuchli mijoz belgisi tushib qolgan.
+
+**2) Bitta ham manfiy yozuv yo'q (0/65).** Faqat emoji blok qolgan:
+
+```
+2 joy bor        -> ball 4  -> haydovchi e'loni O'TIB KETADI
+3 joy bor ...    -> ball 4  -> O'TIB KETADI
+```
+
+**3) Umumiy so'zlar yuqori vazn bilan.** `odam +2.75`, `bor +3`,
+`bir +1.75`, `ikki +1.25` — bular mijozga ham, haydovchiga ham tegishli.
+
+Boshqa nuqsonlar: `ketad`, `olib`, `olp`, `getad`, `ating`, `qling`,
+`bash`, `alti`, `ikk`, `kish` — **o'zak noto'g'ri kesilgan** (bu shakllar
+haqiqiy so'zlarga mos kelmaydi yoki tasodifiy so'zni tutadi).
+
+### 20.3 Tuzatilgan ro'yxat
+
+`kalit-sozlar-tavsiya.txt` (repo ildizida, 63 yozuv: 35 musbat + 28 manfiy).
+O'lchangan (45/20/20 korpus):
+
+| Ko'rsatkich | Qiymat |
+|---|---|
+| Mijoz xabari | **45/45** |
+| Haydovchi e'lonlari o'tib ketdi | **0/20** |
+| Aloqasiz o'tib ketdi | 2/20 (`shu guruhda kimlar bor`, `admin kerakmi`) |
+| F1 | **0.978** |
+
+Asosiy yozuvlar:
+
+```
++3 kerak kerek          -4 joy bor           -3.5: qo'ng'iroq qiling
++3 izl qidir            -4: bo'sh joy        -3.5 tashaymiz
++3 jo'nat jonat ...     -3 reys              -4: xizmat ko'rsatamiz
++2.5 bormi              -3: har kuni         -3: olib ketaman
++3: kim olib ketadi     -2.5 kelishiladi     -3: bo'sh mashina
++2: kim bor             -3: kerak emas       -3 sotaman/sotiladi/...
+```
+
+### 20.4 Inkor ham yopildi (kod o'zgarmadi)
+
+```
+mashina kerak emas       -> ball 1   -> bloklanadi ✅
+menga mashina kerak emas -> ball 1   -> bloklanadi ✅
+kerak emasmi? kim bor    -> ball 5   -> o'tadi (mijoz savoli) ✅
+```
+
+Buning uchun `-3: kerak emas` va `-3 kerakmas` yozuvlari yetadi —
+manfiy ibora qat'iy moslikda qidiriladi, shuning uchun `emasmi` shakli
+tegilmaydi.
+
+### 20.5 Qanday qo'llanadi
+
+```
+🔑 Kalit so'zlar → 📥 Import → kalit-sozlar-tavsiya.txt ni yuborish
+```
+
+Import mavjud yozuvlarning vaznini yangilaydi, yangisini qo'shadi.
+`kerak`, `bor`, `odam` kabi eski yuqori vaznli umumiy so'zlar yangi
+ro'yxatda **yo'q** — ular o'chirilmaydi, lekin importdan keyin
+`📋 To'liq ro'yxat` da qolib ketadi. Ularni qo'lda o'chirish kerak
+(yoki o'chirilgan ro'yxat bilan to'liq almashtirish — keyingi ish).
