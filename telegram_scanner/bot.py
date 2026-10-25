@@ -1445,6 +1445,10 @@ def _user_count_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
+# Bundan past chegara amalda "hamma xabar mijoz" degani.
+LOW_THRESHOLD_WARN = 1.5
+
+
 def _user_threshold_keyboard(uid: int) -> InlineKeyboardMarkup:
     """Foydalanuvchi uchun chegara tugmalari (ball rejimi)."""
     current = get_user_score_threshold(uid)
@@ -1534,6 +1538,14 @@ async def user_set_threshold_callback(callback: types.CallbackQuery,
             f"Ball shu qiymatdan yuqori bo'lsa xabar keladi. "
             f"Admin standarti: {admin:g}."
         )
+        if value < LOW_THRESHOLD_WARN:
+            # O'lchov: 0.5–1.0 da "nechada uchrashamiz?" kabi aloqasiz
+            # xabarlar ham o'tib ketadi (ular 1.5 ball oladi).
+            text += (
+                "\n\n⚠️ <b>Juda past chegara.</b> Bunday qiymatda "
+                "guruhdagi umumiy gaplar ham mijoz xabari bo'lib keladi. "
+                f"Kamida <b>{LOW_THRESHOLD_WARN:g}</b> tavsiya etiladi."
+            )
     else:
         text = (
             f"↩️ Admin standartiga qaytdingiz: <b>{admin:g}</b>"

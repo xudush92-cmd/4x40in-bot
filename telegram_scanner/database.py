@@ -6,7 +6,17 @@ from matcher import canonical_entry, display_entry
 
 
 def _connect() -> sqlite3.Connection:
-    return sqlite3.connect(DB_NAME)
+    """Ulanish. WAL rejimi: bot va skaner bir vaqtda yozganda bloklanish kamayadi.
+
+    WAL fayli (``-wal``/``-shm``) tarmoq diski yoki eski fayl tizimida
+    ishlamasligi mumkin — u holda oddiy rejimda davom etamiz.
+    """
+    conn = sqlite3.connect(DB_NAME, timeout=10)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.Error:
+        pass
+    return conn
 
 
 def init_db() -> None:

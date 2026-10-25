@@ -578,6 +578,68 @@ def _find_entries_strict(message_text: str, entries) -> list[str]:
     return found
 
 
+def _variant_signature(entry: str) -> tuple[frozenset, ...]:
+    """Yozuvning "bir xil so'z" ekanini aniqlash uchun belgisi.
+
+    Har bir so'z uchun ``_fold_variants`` bergan shakllar to'plami olinadi:
+    ``jo'nat`` -> {jo'nat, junat, jonat}. Ikki yozuvning to'plamlari kesishsa
+    — ular bir so'zning har xil yozilishi (``jo'nat`` / ``jonat``).
+    """
+    return tuple(frozenset(_fold_variants(t)) for t in normalize_tokens(entry))
+
+
+def _same_signature(a, b) -> bool:
+    """Ikki yozuv bir xil so'z(lar)dan iboratmi."""
+    if len(a) != len(b) or not a:
+        return False
+    return all(left & right for left, right in zip(a, b))
+
+
+def _collapse_variants(
+    positives: dict[str, float], negatives: dict[str, float]
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Bir so'zning bir necha yozuvi topilsa — faqat bittasi sanaladi.
+
+    Ro'yxatda ``jo'nat`` va ``jonat`` ikkalasi ham bo'lsa, xabar ikkala
+    vaznni ham olardi (``jo'natamiz`` -> +3 +3 = +6). Endi bitta hisoblanadi:
+    mutlaq qiymati kattasi qoladi (``-4`` ``-2`` dan kuchli). Teng bo'lsa
+    manfiy qoladi — ortiqcha xabar yubormaslik xavfsizroq.
+    """
+    chosen: list[tuple[tuple[frozenset, ...], str, float]] = []
+    out_pos: dict[str, float] = {}
+    out_neg: dict[str, float] = {}
+
+    def place(word: str, weight: float) -> None:
+        if weight > 0:
+            out_pos[word] = weight
+        else:
+            out_neg[word] = weight
+
+    def drop(word: str) -> None:
+        out_pos.pop(word, None)
+        out_neg.pop(word, None)
+
+    for word, weight in list(positives.items()) + list(negatives.items()):
+        signature = _variant_signature(word)
+        for known_signature, known_word, known_weight in chosen:
+            if _same_signature(known_signature, signature):
+                better = abs(weight) > abs(known_weight) or (
+                    abs(weight) == abs(known_weight) and weight < known_weight
+                )
+                if better:
+                    drop(known_word)
+                    place(word, weight)
+                    chosen = [
+                        (signature, word, weight) if w == known_word else (s, w, wt)
+                        for s, w, wt in chosen
+                    ]
+                break
+        else:
+            chosen.append((signature, word, weight))
+            place(word, weight)
+    return out_pos, out_neg
+
+
 @dataclass
 class ScoreResult:
     score: float = 0.0
@@ -632,6 +694,13 @@ def score_text(
     if neg_entries:
         for word in _find_entries_strict(message_text, list(neg_entries)):
             result.negatives[word] = neg_entries[word]
+
+    # Bitta so'z ro'yxatda ikki xil yozuv bilan tursa (``jo'nat``/``jonat``),
+    # xabar ikki marta ball olmasin — kuchlirog'i qoladi.
+    (
+        result.positives,
+        result.negatives,
+    ) = _collapse_variants(result.positives, result.negatives)
 
     score = sum(result.positives.values()) + sum(result.negatives.values())
     if emoji_penalty and contains_emoji(message_text):

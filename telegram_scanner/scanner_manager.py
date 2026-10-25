@@ -277,10 +277,20 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 owner_id, event.chat_id, summary_line(verdict),
             )
             return
-        logger.info(
-            "[SCAN] owner=%s chat=%s topildi=%s/%s",
-            owner_id, event.chat_id, len(verdict.matched), verdict.required,
-        )
+        if verdict.mode == "weight":
+            # Vazn rejimida "nechta kalit" shart emas — ball va chegara muhim.
+            logger.info(
+                "[SCAN] owner=%s chat=%s topildi ball=%g/%g: %s",
+                owner_id, event.chat_id, verdict.score, verdict.threshold,
+                ", ".join(f"{w:+g} {n}"
+                          for n, w in {**verdict.positives,
+                                       **verdict.negatives}.items()),
+            )
+        else:
+            logger.info(
+                "[SCAN] owner=%s chat=%s topildi=%s/%s",
+                owner_id, event.chat_id, len(verdict.matched), verdict.required,
+            )
 
         sender = await event.get_sender()
         sender_name, username, user_id = "Noma'lum", "Yo'q", getattr(sender, "id", None)

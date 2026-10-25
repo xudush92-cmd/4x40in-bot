@@ -772,3 +772,100 @@ bosish butun tizim vaznini o'zgartirsa, boshqa foydalanuvchilar zarar
 ko'radi — kalitlar esa umumiy (admin). Shuning uchun avtomatik o'zgarish
 yo'q: admin ko'radi, o'zi bosadi. Har bosish jurnalga tushadi (`INFO`),
 ya'ni keyin qaytarish oson.
+
+## 16. Tashqi sharh bo'yicha tekshiruv va tuzatishlar
+
+Boshqa model yozgan sharh keldi. U **kodni ko'rmagan** va eski 12 so'zlik
+ro'yxat bo'yicha yozilgan edi, lekin ichida ikkita haqiqiy xato bor edi.
+Hammasi haqiqiy kod bilan o'lchandi (56 yozuv, chegara 1.75).
+
+### 16.1 Sharhdagi 7 misol — tekshiruv
+
+| Xabar | Sharh dedi | Haqiqat (o'lchandi) |
+|---|---|---|
+| `Ertaga Xorazmga mashina ketadi` | mijoz bo'ladi | 1.0 ball → o'tmaydi ✅ |
+| `Posilka jo'natamiz, yuboramiz` | — | **9.0 ball bilan o'tardi** ⚠️ |
+| `Taksi xizmati kerak` | `-3 xizmat` bilan bloklanadi | 3.0 → o'tadi ✅ |
+| `Mashina kerak ✅ 901234567` | xato | **ataylab** — emoji = qat'iy blok |
+| `Mashina kerak emas` | inkor yo'q | **3.0 → o'tardi** ⚠️ |
+| `Машина керак` (kirill) | translit yo'q | o'tadi ✅ (`cyr_to_lat` bor) |
+| `Nechada uchrashamiz?` | `necha` juda keng | 1.5 < 1.75 → o'tmaydi ✅ |
+
+Sharhning «kunlik limit 200», «xotiradagi dedup», `Verdict.add_step`,
+`notifier.send` degan bandlari bu loyihada **umuman yo'q** — boshqa kod
+haqida yozilgan.
+
+### 16.2 Tuzatish 1 — bitta so'z ikki marta sanalmasin
+
+**Muammo:** ro'yxatda `jo'nat` va `jonat` ikkalasi ham bo'lsa, bitta xabar
+ikkala vaznni ham olardi:
+
+```
+"Posilka jo'natamiz, yuboramiz"  ->  +3 jo'nat  +3 jonat  +3 yubor  = 9.0
+```
+
+**Sabab:** `canonical_entry("jo'nat")` = `junat`, `canonical_entry("jonat")`
+= `jonat` — dangasa-lotin qoidasi apostrofli shaklga qo'llanadi, apostrofsiziga
+yo'q. Shuning uchun takroriy tekshiruv ularni ajratadi.
+
+**Tuzatish (`matcher.py`):** yangi `_variant_signature()` — yozuvning
+`_fold_variants` shakllari to'plami. `score_text()` da `_collapse_variants()`
+bir xil so'zning barcha yozuvlarini birlashtiradi va **mutlaq qiymati eng
+katta** vaznni qoldiradi. Musbat/manfiy birga ko'riladi: bitta so'z ikki
+tomonda tursa ham faqat bittasi ishlaydi (aks holda `+3` va `-3` bir-birini
+bekor qilardi). Teng bo'lsa manfiy qoladi — ortiqcha xabar yubormaslik
+xavfsizroq.
+
+Natija: `9.0` → `6.0` (`jo'nat` +3, `yubor` +3). `yo'q` ~ `yuk` kabi
+omonimlar **ajralib turadi** (test bilan qulflangan).
+
+### 16.3 Tuzatish 2 — inkor (`kerak emas`)
+
+Kodda inkor qoidasi yo'q va **qo'shish shart emas**: bu ro'yxat masalasi.
+Manfiy ibora qo'shilsa yetadi:
+
+| Ro'yxat | Mijoz | Haydovchi xato | Aloqasiz xato | `Mashina kerak emas` |
+|---|---|---|---|---|
+| hozir | 44/45 | 0/30 | 2/20 | o'tadi ❌ |
+| `-2: kerak emas` | 44/45 | 0/30 | 2/20 | **bloklanadi ✅** |
+
+Korpusda birorta xabar yo'qolmadi; `kerak emasmi?` (mijoz savoli) ham
+buzilmadi — manfiy ibora qat'iy moslikda ishlaydi.
+
+### 16.4 Tuzatish 3 — WAL
+
+`database._connect()` endi `PRAGMA journal_mode=WAL` + `timeout=10` bilan
+ulanadi. Bot va skaner bir vaqtda yozganda `database is locked` xatosi
+kamayadi. WAL yoqilmasa (tarmoq diski va h.k.) — jim o'tib, oddiy rejimda
+davom etadi.
+
+### 16.5 Tuzatish 4 — log va past chegara
+
+- `[SCAN] topildi` vazn rejimida `3/0` deb yozardi. Endi:
+  `topildi ball=4/1.75: +3 kerak, +1 iltimos`.
+- Per-user chegara **0.5–1.0** da «nechada uchrashamiz?» (1.5 ball) kabi
+  umumiy gaplar ham o'tadi. Endi 1.5 dan past tanlansa ogohlantirish
+  chiqadi (`LOW_THRESHOLD_WARN = 1.5`), lekin taqiqlanmaydi.
+
+### 16.6 Ro'yxat bo'yicha tavsiya (kod emas)
+
+Tuzatishdan keyin ham `Posilka jo'natamiz, yuboramiz` 6.0 oladi, chunki
+`jo'nat` va `yubor` — musbat yozuvlar, xizmat reklamasida ham uchraydi.
+Yechim: shu so'zlarga manfiy juft qo'shish — `-3: jo'natamiz`,
+`-3: yuboramiz`. Mijoz shakli (`yubormoqchiman`) qat'iy moslikda
+tegilmaydi, ya'ni mijoz xabarlari o'tishda davom etadi.
+
+### 16.7 Testlar
+
+| Test | Soni | Nima |
+|---|---|---|
+| `test_matcher.py` → `TestVariantCollapse` | +7 | apostrof jufti, omonimlar, `bo'sh`/`bosh`, kuchli manfiy, iboralar, aloqasiz so'zlar |
+| `test_weights.py` → `TestDatabaseWAL` | +2 | `journal_mode=wal`, WAL bilan yozish/o'qish |
+| chegara-UI | +4 | 0.5 da ogohlantirish, 2.0/1.5 da yo'q |
+
+Jami: `test_matcher` **59** + `test_weights` **40** + `test_feedback` 20 +
+UI 31 + oqim 18 + feedback-UI 11 + chegara-UI **16** + tahlil-UI 23 =
+**218 tekshiruv**.
+
+Korpus regressiyasi: mijoz 44/45, haydovchi 0/30, aloqasiz 2/20 —
+tuzatishlardan oldingi bilan **bir xil**.

@@ -557,7 +557,9 @@ Bular — boshqa AI modelidan fikr so'rash uchun asosiy ro'yxat.
 13. `SESSION_ENCRYPTION_KEY` yo'qolsa — hamma qayta login qilishi kerak.
 14. Qayta ishga tushirishda `_seen_events` kabi diagnostika hisoblagichlari
     nolga tushadi (xotirada).
-15. SQLite + bir nechta yozuvchilik (bot + scanner) uchun WAL yoqilmagan.
+15. ~~SQLite + bir nechta yozuvchilik (bot + scanner) uchun WAL yoqilmagan.~~
+    **Bajarildi (2026-10-25):** `database._connect()` endi `PRAGMA journal_mode=WAL`
+    yoqadi (ishlamasa — oddiy rejimda davom etadi). `timeout=10` ham qo'shildi.
 
 ### D. Huquqiy / siyosiy
 16. Foydalanuvchi akkaunti (MTProto) bilan guruhlarni o'qish Telegram

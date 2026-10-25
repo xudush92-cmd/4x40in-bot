@@ -261,6 +261,23 @@ class TestScore(unittest.TestCase):
         self.assertEqual(r.positives, {})
 
 
+class TestDatabaseWAL(unittest.TestCase):
+    """Bot va skaner bir vaqtda yozadi — WAL rejimi yoqilgan bo'lishi kerak."""
+
+    def test_journal_mode_is_wal(self):
+        with db.closing(db._connect()) as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(mode.lower(), "wal")
+
+    def test_connection_usable(self):
+        """WAL yoqilgandan keyin oddiy yozish/o'qish buzilmaydi."""
+        db.add_keyword_checked("waltest", weight=1.5)
+        self.assertIn("waltest", db.get_keywords())
+        with db.closing(db._connect()) as conn:
+            conn.execute("DELETE FROM phrases WHERE text = ?", ("waltest",))
+            conn.commit()
+
+
 class TestUserThreshold(unittest.TestCase):
     """Per-user chegara: har foydalanuvchi o'zi tanlaydi, admin fallback."""
 

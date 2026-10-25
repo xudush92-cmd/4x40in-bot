@@ -11,6 +11,7 @@ from matcher import (
     match_keywords,
     normalize_tokens,
     parse_key_words,
+    score_text,
 )
 
 KEYWORDS = ["toshkent", "samarqand", "odam", "mashina", "kerak", "yuk", "bugun"]
@@ -241,6 +242,48 @@ class TestVerbPerson(unittest.TestCase):
         text = "Тошкентдан Хоразмга посилка жўнатмоқчиман, 3 дона"
         self.assertEqual(find_stop_words(text, ["jo'natamiz"]), [])
         self.assertTrue(find_client_words(text, ["jo'natmoqchiman"]))
+
+
+class TestVariantCollapse(unittest.TestCase):
+    """Bitta so'zning ikki yozuvi xabarda ikki marta sanalmasin."""
+
+    def score(self, text, entries):
+        return score_text(text, entries, threshold=1.75)
+
+    def test_apostrophe_variants_counted_once(self):
+        # jo'nat va jonat — bir so'zning ikki yozilishi
+        r = self.score("Posilka jo'natamiz", [("jo'nat", 3.0), ("jonat", 3.0)])
+        self.assertEqual(r.score, 3.0, r.positives)
+        self.assertEqual(len(r.positives), 1)
+
+    def test_different_words_not_collapsed(self):
+        r = self.score("yukim bor", [("yo'q", -3.0), ("yuk", 3.0)])
+        self.assertEqual(r.score, 3.0, r.positives)
+        self.assertEqual(list(r.positives), ["yuk"])
+
+    def test_bosh_and_bosh_collapse(self):
+        # ``bosh`` va ``bo'sh`` — yaqin shakllar; ikki tomonda tursa ham
+        # faqat bittasi ishlaydi (kuchlirog'i).
+        r = self.score("bo'sh joy", [("bo'sh", -2.5), ("bosh", 1.0)])
+        self.assertEqual(len(r.positives) + len(r.negatives), 1)
+        self.assertEqual(r.score, -2.5)
+
+    def test_opposite_signs_do_not_cancel(self):
+        # +3 va -3 bir-birini bekor qilmasin — kuchliroq/manfiy qoladi
+        r = self.score("jo'natamiz", [("jo'nat", 3.0), ("jonat", -1.0)])
+        self.assertEqual(r.score, 3.0, (r.positives, r.negatives))
+
+    def test_strongest_negative_kept(self):
+        r = self.score("jo'natamiz", [("jonat", -2.0), ("jo'nat", -4.0)])
+        self.assertEqual(r.score, -4.0, r.negatives)
+
+    def test_multiword_entries(self):
+        r = self.score("joy bor edi", [("joy bor", -4.0), ("joy bo'r", -3.0)])
+        self.assertEqual(r.score, -4.0, r.negatives)
+
+    def test_unrelated_entries_all_count(self):
+        r = self.score("mashina kerak iltimos", [("kerak", 3.0), ("iltimos", 1.0)])
+        self.assertEqual(r.score, 4.0, r.positives)
 
 
 class TestQuestionParticle(unittest.TestCase):
