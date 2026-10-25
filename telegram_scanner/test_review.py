@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 
 _TMP = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _TMP.close()
@@ -119,6 +120,99 @@ class ReviewTestBase(unittest.IsolatedAsyncioTestCase):
         return [payload for method, payload in self.calls if method == kind]
 
 
+class _Response:
+    status = 200
+
+    async def json(self, content_type=None):
+        return {"ok": True, "result": {"message_id": 42}}
+
+
+class _RequestContext:
+    def __init__(self, fail: bool):
+        self.fail = fail
+
+    async def __aenter__(self):
+        if self.fail:
+            raise asyncio.TimeoutError()
+        return _Response()
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _UnchangedResponse:
+    status = 400
+
+    async def json(self, content_type=None):
+        return {
+            "ok": False,
+            "error_code": 400,
+            "description": "Bad Request: message is not modified",
+        }
+
+
+class _UnchangedRequestContext:
+    async def __aenter__(self):
+        return _UnchangedResponse()
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _UnchangedSession:
+    closed = False
+
+    def post(self, *args, **kwargs):
+        return _UnchangedRequestContext()
+
+
+class _FakeSession:
+    closed = False
+
+    def __init__(self, failures: int):
+        self.failures = failures
+        self.calls = 0
+
+    def post(self, *args, **kwargs):
+        self.calls += 1
+        return _RequestContext(self.calls <= self.failures)
+
+
+class TestReviewAPI(unittest.IsolatedAsyncioTestCase):
+    async def test_timeout_retries_once_and_succeeds(self):
+        session = _FakeSession(failures=1)
+        with patch.object(review, "_get_api_session", new=AsyncMock(return_value=session)), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            result = await review._api("editMessageText", {"chat_id": 777})
+        self.assertEqual(result, {"message_id": 42})
+        self.assertEqual(session.calls, 2)
+
+    async def test_unchanged_edit_is_treated_as_success(self):
+        session = _UnchangedSession()
+        with patch.object(review, "_get_api_session", new=AsyncMock(return_value=session)):
+            result = await review._api(
+                "editMessageText", {"chat_id": 777, "message_id": 9}
+            )
+        self.assertEqual(result, {"message_id": 9})
+
+    async def test_two_timeouts_return_temporary_failure(self):
+        session = _FakeSession(failures=2)
+        with patch.object(review, "_get_api_session", new=AsyncMock(return_value=session)), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            result = await review._api("editMessageText", {"chat_id": 777})
+        self.assertIs(result, review._API_TEMPORARY_FAILURE)
+        self.assertEqual(session.calls, 2)
+
+
+    async def test_send_message_timeout_is_not_retried_to_avoid_duplicates(self):
+        session = _FakeSession(failures=2)
+        with patch.object(review, "_get_api_session", new=AsyncMock(return_value=session)), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            result = await review._api("sendMessage", {"chat_id": 777})
+        self.assertIs(result, review._API_TEMPORARY_FAILURE)
+        self.assertEqual(session.calls, 1)
+
+
 class TestSchema(ReviewTestBase):
     def test_table_exists(self):
         with db.closing(db._connect()) as conn:
@@ -159,6 +253,13 @@ class TestQueue(ReviewTestBase):
         await review.enqueue("ikkinchi", 2.0, 1.75, ["iltimos"])
         self.assertEqual(len(self.sent("sendMessage")), 1)
         self.assertEqual(len(self.sent("editMessageText")), 1)
+
+    async def test_network_timeout_does_not_send_duplicate_slide(self):
+        review._set_message_id(555)
+        review._api = AsyncMock(return_value=review._API_TEMPORARY_FAILURE)
+        await review.refresh()
+        self.assertEqual(review._message_id(), 555)
+        self.assertEqual(self.sent("sendMessage"), [])
 
     async def test_next_item_is_oldest_pending(self):
         first = await review.enqueue("birinchi", 2.0, 1.75, ["kerak"])
@@ -438,6 +539,13 @@ class TestSetup(ReviewTestBase):
         edits = self.sent("editMessageText")
         self.assertIn("Nazorat o'chirildi", edits[-1]["text"])
         self.assertEqual(edits[-1]["reply_markup"], {"inline_keyboard": []})
+
+    async def test_reopening_panel_edits_same_slide(self):
+        from bot import open_review_panel
+        await open_review_panel(Msg(), State())
+        await open_review_panel(Msg(), State())
+        self.assertEqual(len(self.sent("sendMessage")), 1)
+        self.assertGreaterEqual(len(self.sent("editMessageText")), 1)
 
     async def test_stop_button_disables_review(self):
         await review.enqueue("kerak", 4.0, 1.75, ["kerak"])

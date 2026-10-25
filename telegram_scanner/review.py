@@ -135,18 +135,90 @@ def _set_message_id(message_id: int | None) -> None:
 
 # --- Telegram Bot API (bot tomonidagi yordamchilar) ---
 
-async def _api(method: str, payload: dict) -> dict | None:
+# Bitta doimiy HTTP sessiya: har chaqiruvda TCP/TLS ulanish ochmaydi.
+# Bot API javobi sust bo'lsa, bir urinish 4.5 sekunddan oshmaydi.
+_api_session: aiohttp.ClientSession | None = None
+_API_TIMEOUT = aiohttp.ClientTimeout(
+    total=4.5, connect=2.0, sock_connect=2.0, sock_read=3.0
+)
+_API_TEMPORARY_FAILURE = object()
+
+
+async def _get_api_session() -> aiohttp.ClientSession:
+    global _api_session
+    if _api_session is None or _api_session.closed:
+        _api_session = aiohttp.ClientSession(timeout=_API_TIMEOUT)
+    return _api_session
+
+
+async def close_api_session() -> None:
+    """Bot to'xtaganda ulashilgan HTTP sessiyani to'g'ri yopadi."""
+    global _api_session
+    session, _api_session = _api_session, None
+    if session is not None and not session.closed:
+        await session.close()
+
+
+async def _api(method: str, payload: dict):
+    """Bot API chaqiruvi: ulanishni qayta ishlatadi va vaqtincha xatoda retry.
+
+    ``_API_TEMPORARY_FAILURE`` tarmoq/timeout xatosini bildiradi; bu oddiy
+    Telegram API rad javobidan alohida, shuning uchun edit muvaffaqiyatsiz
+    bo'lganda eski slayd ustiga ortiqcha yangi xabar yuborilmaydi.
+    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+    # edit* ni qayta urinib ko'rish xavfsiz (xabar ID o'zgarmaydi).
+    # sendMessage da timeoutdan so'ng Telegram xabarni yetkazgan, ammo
+    # javob yo'qolgan bo'lishi mumkin — retry yangi dublikat yaratadi.
+    attempts = 2 if method.startswith("edit") else 1
+    for attempt in range(attempts):
+        try:
+            session = await _get_api_session()
+            async with session.post(url, json=payload) as resp:
                 data = await resp.json(content_type=None)
-    except Exception:
-        logger.exception("[REVIEW] API xatosi: %s", method)
-        return None
-    if not isinstance(data, dict) or not data.get("ok"):
-        return None
-    return data.get("result")
+                if resp.status >= 500 or resp.status == 429:
+                    if attempt + 1 < attempts:
+                        logger.warning(
+                            "[REVIEW] API %s HTTP %s, yana urinadi",
+                            method, resp.status,
+                        )
+                        await asyncio.sleep(0.2)
+                        continue
+                    logger.error(
+                        "[REVIEW] API %s vaqtincha HTTP %s qaytardi",
+                        method, resp.status,
+                    )
+                    return _API_TEMPORARY_FAILURE
+                if not isinstance(data, dict) or not data.get("ok"):
+                    description = data.get("description", "javob xato") if isinstance(data, dict) else "javob xato"
+                    # Tahrirlangan matn allaqachon aynan shunday bo'lsa,
+                    # Telegram 400 qaytaradi. Bu muvaffaqiyatga teng —
+                    # aks holda refresh ikkinchi, takroriy slayd yuborardi.
+                    if method.startswith("edit") and "message is not modified" in description.lower():
+                        return {"message_id": payload.get("message_id")}
+                    logger.warning(
+                        "[REVIEW] API %s rad etdi (HTTP %s): %s",
+                        method, resp.status, description,
+                    )
+                    return None
+                return data.get("result")
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "[REVIEW] API %s vaqtincha xato (%s); qayta urinadi",
+                    method, type(exc).__name__,
+                )
+                await asyncio.sleep(0.2)
+                continue
+            logger.error(
+                "[REVIEW] API %s %s urinishda bajarilmadi (%s)",
+                method, attempts, type(exc).__name__,
+            )
+            return _API_TEMPORARY_FAILURE
+        except Exception:
+            logger.exception("[REVIEW] API %s kutilmagan xato", method)
+            return _API_TEMPORARY_FAILURE
+    return _API_TEMPORARY_FAILURE
 
 
 def near_miss(score, threshold) -> bool:
@@ -280,9 +352,11 @@ async def refresh(force_new: bool = False) -> None:
                 "disable_web_page_preview": True,
                 "reply_markup": markup,
             })
+            if result is _API_TEMPORARY_FAILURE:
+                return
             if result is not None:
                 return
-            # Xabar o'chirilgan yoki tahrirlab bo'lmayapti — yangisini yuboramiz.
+            # API javobi kelib, eski xabar topilmagan bo'lsa — yangisini yuboramiz.
             _set_message_id(None)
         result = await _api("sendMessage", {
             "chat_id": chat_id,
@@ -291,6 +365,8 @@ async def refresh(force_new: bool = False) -> None:
             "disable_web_page_preview": True,
             "reply_markup": markup,
         })
+        if result is _API_TEMPORARY_FAILURE:
+            return
         if isinstance(result, dict):
             _set_message_id(result.get("message_id"))
 

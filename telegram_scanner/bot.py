@@ -3755,7 +3755,7 @@ async def review_start(message: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=review_control_keyboard(),
     )
-    await review.refresh(force_new=True)
+    await review.refresh()
 
 
 @dp.message(AdminFilter(), F.text == BTN_REVIEW)
@@ -3776,7 +3776,7 @@ async def open_review_panel(message: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=review_control_keyboard(),
     )
-    await review.refresh(force_new=True)
+    await review.refresh()
 
 
 @dp.message(AdminFilter(), Command("nazorat_ochir"))
@@ -4067,7 +4067,11 @@ async def main():
         logger.exception("Sessiya managerini ishga tushirish")
 
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Nazorat slaydlari uchun alohida, qayta ishlatiladigan HTTP sessiya.
+        await review.close_api_session()
 
 
 if __name__ == "__main__":

@@ -1688,3 +1688,56 @@ Matcher 59 + weights 53 + feedback 23 + review **38** + export 7 + diag
 27 = **207 test — OK**. Yangi testlar tugmalar ko'rsatilishi, slayd va
 baholash tugmalari nazorat o'chirilganda tozalanishi, hamda stop callback
 ishlashini tekshiradi.
+
+---
+
+## 32. 13:57 diagnostika: nazorat API timeoutlari
+
+Fayl: `diagnostika-20261025-135751.txt` (169 log qatori; jarayon
+13:56:06 da qayta ishga tushgan).
+
+### Skaner holati
+
+```
+tizim: 🟢 yoniq
+kalitlar: 74 ta · chegara: 1.75 · rejim: weight
+faol guruhlar: 1 ta · sessiyalar: 1 ta
+nazorat: jami 3 · ⏳ 0 · ⚡ 0
+```
+
+Skaner va sessiya ishlayapti; **97 ta xabar** ko'rilgan. Bu oraliqda
+`[SCAN] topildi` yoki `[SCAN] sent` yo'q: ko'ringan xabarlarning aksari
+faol ro'yxatga kiritilmagan guruhlardan. Kerakli guruhlarni 📋 Guruhlarim
+orqali faollashtirish kerak.
+
+### Topilgan nosozlik
+
+Nazorat slaydi uchun Telegram Bot API uch marta timeout bo'lgan:
+
+- `sendMessage`: 13:56:43 va 13:57:22;
+- `editMessageText`: 13:57:38.
+
+So'rovlar 15 sekundlik kutishdan keyin tugagan, mos aiogram update'lari
+15–25 sekund davom etgan. Bu nazorat xabarini ochish/yangilashni
+sekinlashtirishi mumkin.
+
+### Tuzatish
+
+- Har so'rovda yangi HTTP sessiya ochish o'rniga birta qayta ishlatiladigan
+  sessiya qo'shildi.
+- Timeoutlar: umumiy 4.5 s, ulanish 2 s; tarmoq xatosida `edit*` xavfsiz
+  ravishda yana bir marta urinadi.
+- `sendMessage` timeoutdan sonra retry qilinmaydi — Telegram xabarni
+  yetkazgan чоғда javob yo'qolsa dublikat yuborish xavfi bor.
+- Tarmoq vaqtincha uzilsa, `editMessageText` muvaffaqiyatsiz deb
+  hisoblab yangi slayd yuborilmaydi.
+- Telegram «message is not modified» degan javobni xato emas,
+  muvaffaqiyat deb qabul qiladi; bu o'zgarmagan slayd uchun dublikat
+  `sendMessage` yuborilishining oldini oladi.
+- Nazorat oynasini qayta ochish `force_new` o'rniga mavjud slaydni tahrirlaydi.
+- Bot yopilganda doimiy HTTP sessiya to'g'ri yopiladi.
+
+### Tekshiruv
+
+Matcher 59 + weights 53 + feedback 23 + review 44 + export 7 + diag 27
+= **213 test — OK**.
