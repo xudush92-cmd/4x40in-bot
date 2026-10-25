@@ -1545,3 +1545,68 @@ Yangi 18 test: buffer yig'ishi, `tail` chegarasi, telefon yopilishi,
 ball `4/1.75` tegilmasligi, `install()` takrorlanmasligi, `clear`;
 kuzatuv yoqish/o'chirish, daqiqa chegarasi (1–120), muddat tugashi,
 karta matni (o'tgan / chegarada / emoji), HTML escape, qisqartirish.
+
+---
+
+## 29. Diagnostika faylidan topilgan 3 xato
+
+Fayl: `diagnostika-20261025-1231.txt` (34 qator).
+
+### 29.1 Tizim to'xtatilgan (eng muhim)
+
+Har bir xabar shu bosqichda to'xtagan:
+
+```
+[SCAN] skip owner=… chat=…: system: tizim admin tomonidan ⏸ to'xtatilgan
+```
+
+Ya'ni skaner ishlayapti (xabarlar kelmoqda), lekin **umumiy o'chirgich
+o'chirilgan** — hech kimga xabar ketmaydi. Yechim: **⏸/▶️ Tizim
+(hammaga)** tugmasi.
+
+Endi bu holat ikki joyda ko'rinadi: menyudagi holat matnida
+(`⏸ TIZIM TO'XTATILGAN …`) va diagnostika faylining eng boshida
+(`tizim: 🔴 TO'XTATILGAN`).
+
+### 29.2 Har bir xabar IKKI marta skanerlanardi
+
+Logda har bir yozuv ikki nusxada:
+
+```
+12:30:43 [SESSION] owner=… client ishga tushdi
+12:30:43 [SESSION] owner=… client ishga tushdi
+12:30:44 [SCAN] skip … system
+12:30:44 [SCAN] skip … system
+```
+
+Sabab: `start_user_client()` da `_clients` ga yozish **ulanishdan keyin**
+bo'ladi. `bot.main()` dagi `sync_now()` va sync loop birinchi aylanishi
+bir vaqtda ishga tushib, ikkalasi ham "client yo'q" deb ko'rgan va
+**ikkita Telethon klienti** yaratilgan. Natijada: ikki ulanish, ikki
+handler, har xabar ikki marta ishlanadi — ya'ni **egasiga bildirishnoma
+ikki marta** ketishi mumkin.
+
+Tuzatish: `_starting` to'plami — sessiya ko'tarilayotganda ikkinchi
+chaqiruv darhol qaytadi (`try/finally` bilan tozalanadi).
+
+### 29.3 Redakt qatorlarni birlashtirib yuborardi
+
+Logda shunday qator chiqqan:
+
+```
+… is handled. Duration 288 ms by bot id=[raqam].10 12:31:00 I scanner_manager: [SCAN] …
+```
+
+Sabab: telefon regexida `\s` bor edi — u **yangi qatorni ham** yutgan,
+ikki qator bitta bo'lib qolgan. Tuzatish: `[ \t\d\-()]` (yangi qatorsiz)
++ oldida `=` yoki harf bo'lsa tegilmaydi — endi `owner=777`,
+`chat=-1001234567890`, `bot id=123456789` kabi texnik ID lar saqlanadi,
+faqat haqiqiy telefon raqamlar `[raqam]` bo'ladi.
+
+### 29.4 Testlar
+
+59 + 53 + 23 + 36 + 7 + **24** = **202 test** — OK.
+
+Yangi testlar: redakt qatorlarni buzmasligi, texnik ID lar saqlanishi,
+telefon yopilishi, sessiya bir marta ko'tarilishi (uch parallel chaqiruv),
+xato bo'lsa `_starting` tozalanishi, mavjud client qayta ko'tarilmasligi.

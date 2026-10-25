@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 # Fonda ketayotgan nazorat yozuvlari (GC yeb qo'ymasin).
 _review_tasks: set = set()
+# Hozir ko'tarilayotgan sessiyalar (ikki marta ulanishning oldini oladi)
+_starting: set = set()
 # 👁 Kuzatuv kartalari (admin uchun) — fon vazifalari
 _watch_tasks: set = set()
 
@@ -449,8 +451,27 @@ async def _notify_session_problem(owner_id: int, *, invalid: bool) -> None:
 
 
 async def start_user_client(owner_id: int) -> bool:
+    """Foydalanuvchi sessiyasini ko'taradi (bitta client, poygasiz).
+
+    MUHIM: ``_clients`` ga yozish faqat ulanish tugagandan keyin bo'ladi.
+    ``sync_now()`` va sync loop bir vaqtda chaqirsa, ikkalasi ham
+    "client yo'q" deb ko'rib, **ikkita** Telethon klienti yaratardi —
+    natijada har bir xabar ikki marta skanerlanib, egasiga xabar ikki
+    marta ketardi. Shuning uchun boshlash jarayoni ``_starting`` bilan
+    belgilanadi.
+    """
     if owner_id in _clients:
         return True
+    if owner_id in _starting:
+        return True
+    _starting.add(owner_id)
+    try:
+        return await _start_user_client(owner_id)
+    finally:
+        _starting.discard(owner_id)
+
+
+async def _start_user_client(owner_id: int) -> bool:
     row = get_user_full(owner_id)
     if not row:
         _start_error[owner_id] = "foydalanuvchi bazada yo'q"

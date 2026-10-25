@@ -77,6 +77,83 @@ class TestRedact(unittest.TestCase):
         self.assertIn("[raqam]", logbuffer.redact("+998 90 123 45 67"))
 
 
+class TestRedactDetails(unittest.TestCase):
+    """Redakt qatorlarni buzmasligi va texnik ID larni saqlashi kerak."""
+
+    def test_newlines_are_not_swallowed(self):
+        text = "qator 25.10 12:31:00 I x\nkeyingi qator 12:31:01"
+        self.assertEqual(logbuffer.redact(text), text)
+
+    def test_technical_ids_kept(self):
+        for line in (
+            "[SCAN] skip owner=777 chat=-1001234567890",
+            "bot id=123456789 - 'WPION'",
+            "update id=555123456 handled",
+        ):
+            self.assertEqual(logbuffer.redact(line), line)
+
+    def test_phone_still_masked(self):
+        self.assertEqual(logbuffer.redact("tel 901234567"), "tel [raqam]")
+        self.assertEqual(logbuffer.redact("tel:+998901234567"), "tel:[raqam]")
+
+
+class TestSingleSession(unittest.IsolatedAsyncioTestCase):
+    """Sessiya ikki marta ko'tarilmaydi (ikki marta xabar ketmasin)."""
+
+    async def asyncSetUp(self):
+        import scanner_manager
+
+        self.sm = scanner_manager
+        scanner_manager._clients.clear()
+        scanner_manager._starting.clear()
+        self.real = scanner_manager._start_user_client
+        self.calls = []
+
+    async def asyncTearDown(self):
+        self.sm._start_user_client = self.real
+        self.sm._clients.clear()
+        self.sm._starting.clear()
+
+    async def test_concurrent_start_once(self):
+        import asyncio
+
+        async def fake(owner_id):
+            self.calls.append(owner_id)
+            await asyncio.sleep(0.05)   # ulanish "davom etmoqda"
+            return True
+
+        self.sm._start_user_client = fake
+        results = await asyncio.gather(
+            self.sm.start_user_client(777),
+            self.sm.start_user_client(777),
+            self.sm.start_user_client(777),
+        )
+        self.assertEqual(self.calls, [777])
+        self.assertEqual(results, [True, True, True])
+
+    async def test_flag_cleared_after_error(self):
+        async def boom(owner_id):
+            raise RuntimeError("tarmoq")
+
+        self.sm._start_user_client = boom
+        with self.assertRaises(RuntimeError):
+            await self.sm.start_user_client(777)
+        self.assertFalse(self.sm._starting)
+
+        async def ok(owner_id):
+            self.calls.append(owner_id)
+            return True
+
+        self.sm._start_user_client = ok
+        self.assertTrue(await self.sm.start_user_client(777))
+        self.assertEqual(self.calls, [777])
+
+    async def test_existing_client_returns_true(self):
+        self.sm._clients[777] = object()
+        self.assertTrue(await self.sm.start_user_client(777))
+        self.assertEqual(self.calls, [])
+
+
 class _Verdict:
     """filters.Verdict o'rniga sodda soxta obyekt."""
 

@@ -386,11 +386,20 @@ def account_status_text(user_id: int) -> str:
 
 
 def current_status_text() -> str:
-    return (
+    """Menyudagi qisqa holat + to'xtatilgan bo'lsa ogohlantirish."""
+    text = (
         f"🔑 Kalitlar soni: <b>{len(get_keywords())}</b> ta\n"
         f"🔔 Xabar sharti: kamida <b>{get_match_count()}</b> ta kalit so'z "
         "topilsa xabar beriladi"
     )
+    if get_setting("is_active") != "1":
+        # Eng ko'p uchraydigan chalg'ituvchi holat: tizim o'chirilgan,
+        # logda hamma xabar "system: to'xtatilgan" bo'lib turadi.
+        text += (
+            "\n\n⏸ <b>TIZIM TO'XTATILGAN</b> — hech kimga xabar "
+            "berilmayapti.\nYoqish: <b>" + BTN_TOGGLE + "</b> tugmasi."
+        )
+    return text
 
 
 class MenuEscapeMiddleware(BaseMiddleware):
@@ -472,6 +481,43 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
     )
 
 
+def state_header() -> str:
+    """Diagnostika faylining boshidagi holat qatori.
+
+    Eng ko'p uchraydigan chalg'ituvchi holat — **tizim to'xtatilgan**
+    bo'lishi: logda hamma xabar ``skip ... system`` bo'lib turadi.
+    Shuning uchun holat faylning eng boshida yoziladi.
+    """
+    try:
+        active = get_setting("is_active") == "1"
+        system = "🟢 yoniq" if active else "🔴 TO'XTATILGAN (Tizim tugmasi)"
+        keywords = len(get_keywords())
+        threshold = get_score_threshold()
+        groups = [g for g in get_all_user_groups() if g[5] == 1]
+        try:
+            import scanner_manager as _sm
+
+            online = len(_sm.online_user_ids())
+            diag = _sm.scan_diagnostics(ADMIN_ID)
+            events = diag.get("events", 0)
+        except Exception:
+            online, events = -1, -1
+        stats = review.review_stats()
+        return (
+            f"tizim: {system}\n"
+            f"kalitlar: {keywords} ta · chegara: {threshold:g} · "
+            f"rejim: {get_match_mode()}\n"
+            f"faol guruhlar: {len(groups)} ta · sessiyalar: {online} ta\n"
+            f"kuzatuv: {'🟢' if watch.is_active() else '—'} · "
+            f"ko'rilgan xabar: {events}\n"
+            f"nazorat: jami {stats['total']} · ⏳ {stats['pending']} · "
+            f"⚡ {stats['near']}\n"
+        )
+    except Exception:
+        logger.exception("Holat sarlavhasi")
+        return ""
+
+
 @dp.message(AdminFilter(), F.text == BTN_DIAG)
 async def send_diagnostics(message: types.Message, state: FSMContext):
     """🧾 Diagnostika — oxirgi log qatorlari ``.txt`` bo'lib keladi."""
@@ -483,13 +529,15 @@ async def send_diagnostics(message: types.Message, state: FSMContext):
             "bo'lishi mumkin — bir necha xabar o'tgach yana urinib ko'ring."
         )
         return
-    stamp = time.strftime("%Y%m%d-%H%M")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     body = (
         "# Diagnostika\n"
         f"sana: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"qatorlar: {len(text.splitlines())}\n"
-        f"chegara: {get_score_threshold():g}\n\n"
-        f"{text}\n"
+        + state_header()
+        + "\n"
+        + text
+        + "\n"
     ).encode("utf-8")
     await message.answer_document(
         BufferedInputFile(body, filename=f"diagnostika-{stamp}.txt"),

@@ -20,8 +20,13 @@ CAPACITY = 2000
 _lines: collections.deque[str] = collections.deque(maxlen=CAPACITY)
 _lock = threading.Lock()
 
-# Telefon/uzun raqamlar: 9 va undan ortiq raqam ketma-ket kelsa yopiladi.
-_PHONE_RE = re.compile(r"\+?\d[\d\s\-()]{7,}\d")
+# Telefon/uzun raqamlar. Ikki muhim cheklov:
+#
+# * ichida ``\s`` YO'Q — aks holda regex qator oxiridagi raqamdan keyin
+#   yangi qatorni ham yutib, **ikki log qatorini birlashtirib** yuborardi;
+# * oldida ``=`` yoki harf bo'lsa tegilmaydi — ``owner=123456789``,
+#   ``chat=-1001234567890`` kabi texnik ID lar debug uchun kerak.
+_PHONE_RE = re.compile(r"(?<![\w=+\-])\+?\d[ \t\d\-()]{7,}\d")
 
 
 def redact(text: str) -> str:
