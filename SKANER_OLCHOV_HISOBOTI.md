@@ -1371,3 +1371,51 @@ reys bor, 2 joy                    -3.00   (haydovchi, baribir blok)
 59 + **47** + **23** + 23 + 7 = **159 test** — hammasi OK.
 Yangi testlar: belgi almashmasligi, 40 marta bosishdan keyin ham musbat
 qolishi, chegara 5.0, qoplama manfiylar bir marta hisoblanishi.
+
+---
+
+## 25. Kirill inkori tuzatildi
+
+### 25.1 Muammo
+
+```
+машина керак эмас   ->  +3.00  O'TIB KETARDI
+```
+
+Sabab: musbat yozuvlar ``_fold_variants`` orqali solishtirilardi (u yerda
+``cyr_to_lat`` bor), manfiy yozuvlar esa **xom** tokenlar bilan —
+``керак эмас`` lotin ``kerak emas`` ga aylanmasdi.
+
+### 25.2 Tuzatish
+
+`_find_entries_strict` endi ham lotin-kirill farqini biladi:
+
+* **so'z**: `_strict_word_match` — aynan teng, qo'shimchali shakl
+  (``reys`` ~ ``reyslar``) yoki **uzun so'zda bitta harf farqi**
+  (``kerak`` ~ ``kerek``, ya'ni ``керек эмас``);
+* **ibora**: `_phrase_token_match` — tenglik + uzun so'zda bitta harf
+  farqi (``керек эмас`` ~ ``kerak emas``);
+* qisqa so'zlarda bitta harf farqi **qo'llanmaydi**: ``bor`` ~ ``bir``
+  kabi tasodifiy moslik bo'lmasin.
+
+### 25.3 Natija
+
+| Xabar | Avval | Endi |
+|---|---|---|
+| `машина керак эмас` | +3.00 **o'tardi** | **+1.00 o'tmaydi** |
+| `керек эмас` | +3.00 o'tardi | **0.00 o'tmaydi** |
+| `mashina kerek emas` | +4.00 o'tardi | **+1.00 o'tmaydi** |
+| `Машина керак Тошкентдан` | +4.00 o'tadi | +4.00 **o'tadi** (o'zgarmadi) |
+| `Ташкентдан чиқдим, 2 жой бор` | −4.00 blok | −4.00 **blok** |
+
+315 xabarlik to'plamda o'zgarish yo'q: mijoz **86/97**, haydovchi xatosi
+**0/101**, boshqa **14/117**.
+
+Tezlik: bitta xabar ~**2.2 ms** (600 xabar = 1.3 s) — bot uchun muammo emas.
+
+### 25.4 Testlar
+
+59 + **53** + 23 + 23 + 7 = **165 test** — OK.
+Yangi 6 test: kirill inkori topilishi, o'tib ketmasligi, `керек` imlo
+varianti, kirill mijoz xabari o'tishi, kirill haydovchi e'loni bloki,
+qisqa so'zda bitta harf qoidasi ishlamasligi.

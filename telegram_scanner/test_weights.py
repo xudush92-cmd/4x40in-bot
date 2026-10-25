@@ -26,6 +26,7 @@ os.environ.setdefault("BOT_TOKEN", "1:x")
 import database as db  # noqa: E402
 from matcher import (  # noqa: E402
     _find_entries_strict,
+    _strict_word_match,
     parse_weighted_entries,
     score_text,
 )
@@ -353,6 +354,48 @@ class TestNegativeScoring(unittest.TestCase):
             [("mashina", 1.0), ("kerak", 3.0), ("chiqadi", -2.5), ("chiqdim", -2.5)],
         )
         self.assertEqual(r.score, 1.5)
+
+
+class TestCyrillicNegation(unittest.TestCase):
+    """Kirill yozuvidagi inkor ham manfiy yozuvni topadi.
+
+    Regressiya: ``машина керак эмас`` o'tib ketardi — manfiy iboralar
+    ``cyr_to_lat`` qo'llanmaydigan qidiruvdan o'tardi, shuning uchun
+    ``керак эмас`` lotin ``kerak emas`` bilan mos kelmasdi.
+    """
+
+    def test_strict_finds_cyrillic_negation(self):
+        self.assertEqual(
+            _find_entries_strict("машина керак эмас", ["kerak emas"]),
+            ["kerak emas"],
+        )
+
+    def test_negation_does_not_pass(self):
+        r = score_text(
+            "машина керак эмас", [("kerak", 3.0), ("mashina", 1.0), ("kerak emas", -3.0)]
+        )
+        self.assertIn("kerak emas", r.negatives)
+        self.assertFalse(r.is_match)
+
+    def test_kerek_spelling_variant(self):
+        # ``керек эмас`` — bir harf farqi bilan ham inkor topiladi.
+        r = score_text(
+            "машина керек эмас", [("kerak", 3.0), ("mashina", 1.0), ("kerak emas", -3.0)]
+        )
+        self.assertFalse(r.is_match)
+
+    def test_cyrillic_client_message_still_passes(self):
+        r = score_text("Машина керак Тошкентдан", [("kerak", 3.0), ("mashina", 1.0)])
+        self.assertTrue(r.is_match)
+
+    def test_cyrillic_driver_ad_blocked(self):
+        r = score_text("Ташкентдан чиқдим, 2 жой бор", [("joy bor", -4.0)])
+        self.assertIn("joy bor", r.negatives)
+
+    def test_one_letter_rule_needs_long_words(self):
+        # Qisqa so'zlarda bitta harf farqi tasodifiy moslik beradi.
+        self.assertFalse(_strict_word_match("bor", "bir"))
+        self.assertTrue(_strict_word_match("kerak", "kerek"))
 
 
 class TestUserThreshold(unittest.TestCase):

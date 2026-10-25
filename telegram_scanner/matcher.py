@@ -531,6 +531,69 @@ def find_client_words(message_text, client_words) -> list[str]:
 _NEG_FUZZY_MIN = 4  # manfiy yozuv o'zak bo'lib xizmat qilishi uchun
 
 
+def _same_word(a: str, b: str) -> bool:
+    """Ikki so'z bir xilmi (alifbo va apostrof farqi hisobsiz)."""
+    for x in _fold_variants(a):
+        for y in _fold_variants(b):
+            if x == y:
+                return True
+    return False
+
+
+def _phrase_token_match(key: str, token: str) -> bool:
+    """Ibora ichidagi so'z mosligi: tenglik + uzun so'zda bitta harf farqi."""
+    if _same_word(key, token):
+        return True
+    for x in _fold_variants(key):
+        for y in _fold_variants(token):
+            if len(x) >= 5 and _one_diff(x, y):
+                return True
+    return False
+
+
+@lru_cache(maxsize=16384)
+def _one_diff(a: str, b: str) -> bool:
+    """So'zlar bir harf bilan farq qiladimi (``kerak`` ~ ``kerek``)."""
+    if len(a) != len(b) or a == b:
+        return False
+    diff = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            diff += 1
+            if diff > 1:
+                return False
+    return diff == 1
+
+
+def _strict_word_match(key: str, token: str) -> bool:
+    """Qat'iy moslik: aynan teng yoki qo'shimchali shakl.
+
+    Lotin-kirill farqi hisobga olinadi (``керак`` ~ ``kerak``), lekin
+    boshqa so'z shakli mos kelmaydi (``tashaymiz`` ~ ``tashaydi`` emas).
+    """
+    for x in _fold_variants(key):
+        for y in _fold_variants(token):
+            if x == y:
+                return True
+            if len(x) < _NEG_FUZZY_MIN or len(y) < _NEG_FUZZY_MIN:
+                continue
+            # Oldinga: qo'shimcha har qanday uzunlikda bo'lishi mumkin
+            # (``reys`` ~ ``reyslar``, ``xizmat`` ~ ``xizmatimiz``).
+            if y.startswith(x):
+                return True
+            # Orqaga: xabar so'zi kalitning o'zagi bo'lsa, faqat qisqa
+            # qoldiq (1-2 harf) — aks holda ``tashaymiz`` kaliti
+            # ``tashaydi`` bilan aralashardi.
+            if x.startswith(y) and len(x) - len(y) <= 2:
+                return True
+            # Bitta harf farqi: ``kerak emas`` ~ ``керек эмас`` (kerek).
+            # Faqat uzun so'zlarda — qisqa so'zda bu tasodifiy moslik
+            # beradi (``bor`` ~ ``bir``).
+            if len(x) >= 5 and _one_diff(x, y):
+                return True
+    return False
+
+
 def _find_entries_strict(message_text: str, entries) -> list[str]:
     """Manfiy yozuvlar uchun qat'iy qidiruv (imlo xatosi hisobga olinmaydi).
 
@@ -538,6 +601,10 @@ def _find_entries_strict(message_text: str, entries) -> list[str]:
     (``reys`` ~ ``reyslar``), lekin ``tashaymiz`` ~ ``tashaydi`` kabi
     boshqa shakl mos kelmaydi. Ko'p so'zli yozuv (ibora): yonma-yon
     aynan teng bo'lishi kerak.
+
+    Alifbo farqi hisobga olinadi: xabar kirillda yozilgan bo'lsa ham
+    (``керак эмас``) lotin yozuvli manfiy ibora topiladi. Ilgari bu
+    yerda ``cyr_to_lat`` qo'llanmasdi va inkor o'tib ketardi.
     """
     entries = list(entries or ())
     if not entries:
@@ -551,28 +618,19 @@ def _find_entries_strict(message_text: str, entries) -> list[str]:
         if not entry_tokens:
             continue
         if len(entry_tokens) == 1:
-            key = entry_tokens[0]
-            for token in message_tokens:
-                if token == key:
-                    found.append(entry)
-                    break
-                if len(key) < _NEG_FUZZY_MIN or len(token) < _NEG_FUZZY_MIN:
-                    continue
-                # Oldinga: qo'shimcha har qanday uzunlikda bo'lishi mumkin
-                # (``reys`` ~ ``reyslar``, ``xizmat`` ~ ``xizmatimiz``).
-                if token.startswith(key):
-                    found.append(entry)
-                    break
-                # Orqaga: xabar so'zi kalitning o'zagi bo'lsa, faqat qisqa
-                # qoldiq (1-2 harf) — aks holda ``tashaymiz`` kaliti
-                # ``tashaydi`` bilan aralashardi.
-                if key.startswith(token) and len(key) - len(token) <= 2:
-                    found.append(entry)
-                    break
+            if any(
+                _strict_word_match(entry_tokens[0], token)
+                for token in message_tokens
+            ):
+                found.append(entry)
         else:
             size = len(entry_tokens)
             for start in range(len(message_tokens) - size + 1):
-                if message_tokens[start:start + size] == entry_tokens:
+                window = message_tokens[start:start + size]
+                if all(
+                    _phrase_token_match(k, t)
+                    for k, t in zip(entry_tokens, window)
+                ):
                     found.append(entry)
                     break
     return found
