@@ -284,6 +284,18 @@ class TestScore(unittest.TestCase):
         r = score_text("2 joy bormi", [("bormi", 2.5)])
         self.assertEqual(r.positives, {"bormi": 2.5})
 
+    def test_locked_word_matches_exact_form_only(self):
+        r = score_text("ketadimi", [("ketadi", 1.0, 1)])
+        self.assertEqual(r.positives, {})
+        r = score_text("ketadi", [("ketadi", 1.0, 1)])
+        self.assertEqual(r.positives, {"ketadi": 1.0})
+
+    def test_locked_phrase_requires_exact_consecutive_words(self):
+        entries = [("kim bor", 2.0, 1)]
+        self.assertEqual(score_text("kim bor", entries).positives, {"kim bor": 2.0})
+        self.assertEqual(score_text("kimda bor", entries).positives, {})
+        self.assertEqual(score_text("kim bori", entries).positives, {})
+
     def test_base_key_matches_question_form(self):
         """Teskari yo'nalish ochiq: ``ketadi`` kaliti ``ketadimi`` ni topadi.
 

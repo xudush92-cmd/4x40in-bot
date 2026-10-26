@@ -63,6 +63,16 @@ class TestParsingAndForms(unittest.TestCase):
         self.assertEqual(r.matched_words, ["borm"])
         self.assertEqual(r.matched_count, 1)
 
+    def test_locked_key_in_count_mode_requires_exact_form(self):
+        self.assertEqual(
+            match_keywords("ketadimi", ["ketadi"], 1, strict_words=["ketadi"]).matched_count,
+            0,
+        )
+        self.assertEqual(
+            match_keywords("ketadi", ["ketadi"], 1, strict_words=["ketadi"]).matched_count,
+            1,
+        )
+
     def test_separate_occurrences_can_match_separate_keys(self):
         r = match_keywords("bor borm", ["bor", "borm"], required_count=2)
         self.assertEqual(r.matched_words, ["bor", "borm"])

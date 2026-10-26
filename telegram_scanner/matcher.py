@@ -399,20 +399,34 @@ def _most_specific_for_token(matched_keys, token: str) -> list[str]:
     return selected
 
 
-def _find_weighted_single_matches(message_text, positive_entries, negative_entries):
+def _find_weighted_single_matches(
+    message_text, positive_entries, negative_entries,
+    strict_positive=(), strict_negative=(),
+):
     """Yakka kalitlarni topib, bitta token uchun eng aniq kalitni qoldiradi."""
     positive_entries = list(positive_entries)
     negative_entries = list(negative_entries)
+    strict_positive = set(strict_positive)
+    strict_negative = set(strict_negative)
     message_tokens = normalize_tokens(message_text)
     found_positive: set[str] = set()
     found_negative: set[str] = set()
     for token in message_tokens:
         matched_positive = [
             word for word in positive_entries
-            if _word_matches(word, token, question_key_only=True)
+            if (
+                _same_word(word, token)
+                if word in strict_positive
+                else _word_matches(word, token, question_key_only=True)
+            )
         ]
         matched_negative = [
-            word for word in negative_entries if _strict_word_match(word, token)
+            word for word in negative_entries
+            if (
+                _same_word(word, token)
+                if word in strict_negative
+                else _strict_word_match(word, token)
+            )
         ]
         all_matches = _most_specific_for_token(
             matched_positive + matched_negative, token
@@ -425,17 +439,40 @@ def _find_weighted_single_matches(message_text, positive_entries, negative_entri
     )
 
 
+def _find_exact_phrases(message_text: str, entries) -> list[str]:
+    """Qat'iy ko'p-so'zli yozuvlarni faqat ketma-ket, aniq tokenlarda topadi."""
+    message_tokens = normalize_tokens(message_text)
+    found = []
+    for entry in entries or ():
+        key_tokens = normalize_tokens(entry)
+        if not key_tokens:
+            continue
+        size = len(key_tokens)
+        if any(
+            all(_same_word(key, token) for key, token in zip(
+                key_tokens, message_tokens[start:start + size]
+            ))
+            for start in range(len(message_tokens) - size + 1)
+        ):
+            found.append(entry)
+    return found
+
+
 def match_keywords(
     message_text: str,
     keywords,
     required_count: int = 3,
+    *,
+    strict_words=None,
 ) -> MatchResult:
     """Xabarda kalitlardan nechtasi topilganini hisoblaydi.
 
     keywords — barcha kalit so'zlar ro'yxati (soni cheksiz).
     required_count — admin belgilagan chegara (botda o'zgartiriladi).
+    strict_words — berilgan kalitlarda shakl/imlo mosligi o'chadi (faqat aniq).
     """
     words = _dedup_words(keywords)
+    strict = set(_dedup_words(strict_words))
     try:
         required = int(required_count)
     except (TypeError, ValueError):
@@ -455,7 +492,11 @@ def match_keywords(
     for token in message_tokens:
         token_matches = [
             idx for idx in _candidate_ids(token, exact, prefix)
-            if _word_matches(words[idx], token)
+            if (
+                _same_word(words[idx], token)
+                if words[idx] in strict
+                else _word_matches(words[idx], token)
+            )
         ]
         selected = _most_specific_for_token(
             [words[idx] for idx in token_matches], token
@@ -824,12 +865,17 @@ def score_text(
     result = ScoreResult(threshold=float(threshold))
     pos_entries: dict[str, float] = {}
     neg_entries: dict[str, float] = {}
+    strict_entries: dict[str, bool] = {}
     for row in entries or ():
         word = row[0]
         try:
             weight = float(row[1])
         except (TypeError, ValueError):
             continue
+        try:
+            strict_entries[word] = bool(int(row[2])) if len(row) > 2 else False
+        except (TypeError, ValueError):
+            strict_entries[word] = False
         if not word or weight == 0:
             continue
         if weight > 0:
@@ -840,7 +886,11 @@ def score_text(
     pos_single = [word for word in pos_entries if len(normalize_tokens(word)) == 1]
     neg_single = [word for word in neg_entries if len(normalize_tokens(word)) == 1]
     matched_pos, matched_neg = _find_weighted_single_matches(
-        message_text, pos_single, neg_single
+        message_text,
+        pos_single,
+        neg_single,
+        strict_positive=(w for w in pos_single if strict_entries.get(w)),
+        strict_negative=(w for w in neg_single if strict_entries.get(w)),
     )
     for word in matched_pos:
         result.positives[word] = pos_entries[word]
@@ -851,11 +901,19 @@ def score_text(
     # token uchun o'zaro qoplanadigan kalitlarga qo'llanadi.
     pos_phrases = [word for word in pos_entries if len(normalize_tokens(word)) > 1]
     neg_phrases = [word for word in neg_entries if len(normalize_tokens(word)) > 1]
+    pos_exact = [w for w in pos_phrases if strict_entries.get(w)]
+    neg_exact = [w for w in neg_phrases if strict_entries.get(w)]
+    pos_flexible = [w for w in pos_phrases if not strict_entries.get(w)]
+    neg_flexible = [w for w in neg_phrases if not strict_entries.get(w)]
+    for word in _find_exact_phrases(message_text, pos_exact):
+        result.positives[word] = pos_entries[word]
     for word in _find_entries(
-        message_text, pos_phrases, question_key_only=True
+        message_text, pos_flexible, question_key_only=True
     ):
         result.positives[word] = pos_entries[word]
-    for word in _find_entries_strict(message_text, neg_phrases):
+    for word in _find_exact_phrases(message_text, neg_exact):
+        result.negatives[word] = neg_entries[word]
+    for word in _find_entries_strict(message_text, neg_flexible):
         result.negatives[word] = neg_entries[word]
 
     # Bitta so'z ro'yxatda ikki xil yozuv bilan tursa (``jo'nat``/``jonat``),

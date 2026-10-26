@@ -182,7 +182,12 @@ def evaluate(
     verdict.required, verdict.total_keywords = required, len(keywords)
     if not keywords:
         return finish("keywords", "ro'yxat bo'sh — admin kalit so'z kiritmagan")
-    result = match_keywords(text, keywords, required)
+    strict_words = [
+        word for word, _weight, strict in get_keywords_weighted() if strict
+    ]
+    result = match_keywords(
+        text, keywords, required, strict_words=strict_words
+    )
     verdict.matched = list(result.matched_words)
     if result.matched_count < required:
         return finish(

@@ -2257,6 +2257,15 @@ def _weight_word(weight: float) -> str:
     return "hisobga olinmaydi"
 
 
+def _weight_color(weight: float) -> str:
+    """Telegram tugmasida rang o'rniga ko'rinadigan rangli holat belgisi."""
+    if weight > 0:
+        return "🟢"
+    if weight < 0:
+        return "🔴"
+    return "⚪"
+
+
 def _mode_line() -> str:
     mode = get_match_mode()
     if mode == "weight":
@@ -2294,7 +2303,8 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
     chunk = phrases[start:start + WORDS_PER_PAGE]
     rows = []
     for p_id, word, weight, strict in chunk:
-        word_label = word + (" 🔒" if strict else "")
+        shown_weight = f"{weight:+g}" if weight else "0"
+        word_label = f"{word} {_weight_color(weight)} {shown_weight}"
         if len(word_label) > 64:
             word_label = word_label[:63] + "…"
         # Full-width word row prevents Telegram mobile from clipping the key.
@@ -2308,8 +2318,8 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
                 callback_data=f"wqadj:{p_id}:-0.5:{page}",
             ),
             InlineKeyboardButton(
-                text=f"⚖️ {_weight_badge(weight)}",
-                callback_data="wnav",
+                text=("🔒" if strict else "🔓"),
+                callback_data=f"wqtog:{p_id}:{page}",
             ),
             InlineKeyboardButton(
                 text="➕0.5",
@@ -2343,9 +2353,9 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
         f"📋 <b>Kalit so'zlar — {total} ta</b>\n"
         f"Sahifa {page + 1}/{pages}.\n\n"
         f"{_mode_line()}\n\n"
-        "ℹ️ Kalit to'liq qatorda, joriy vazni ostida ko'rinadi. "
-        "➖0.5 / ➕0.5 tugmalari vaznni o'zgartiradi; kalitni bossangiz, "
-        "aniq vazn tanlaysiz."
+        "ℹ️ 🟢 musbat, 🔴 manfiy vazn. Kalit ostidagi ➖/➕ vaznni "
+        "0.5 ga o'zgartiradi, 🔒/🔓 esa qat'iylikni almashtiradi. "
+        "Kalitni bossangiz, aniq vazn tanlaysiz."
     )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2399,6 +2409,25 @@ async def word_list_weight_adjust(callback: types.CallbackQuery):
     update_phrase(pid, weight=new_weight)
     await _edit_words_page(callback.message, page)
     await callback.answer(f"⚖️ {row[1]}: {new_weight:+g}")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wqtog:"))
+async def word_list_strict_toggle(callback: types.CallbackQuery):
+    """Ro'yxatdan chiqmasdan kalitning qat'iy/qo'shimchali mosligini o'zgartiradi."""
+    parts = callback.data.split(":")
+    try:
+        pid, page = int(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    row = get_phrase(pid)
+    if not row:
+        await callback.answer("So'z topilmadi.", show_alert=True)
+        return
+    new_strict = 0 if row[3] else 1
+    update_phrase(pid, strict=new_strict)
+    await _edit_words_page(callback.message, page)
+    await callback.answer("🔒 Faqat aniq shakl" if new_strict else "🔓 Shakllar ham mos")
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("del:"))

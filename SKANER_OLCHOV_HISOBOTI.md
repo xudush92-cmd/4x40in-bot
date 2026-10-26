@@ -1881,14 +1881,15 @@ Tekshiruv: matcher 62 + weights 59 + feedback 23 + bu o'chirish bo'yicha
 
 ## 37. Kalitlar ro'yxatida tezkor +/− vazn tugmalari
 
-Kalit har biri **to'liq enli qatorda**, joriy vazni esa uning ostida
-ko'rinadi; shu qatorda `➖0.5` va `➕0.5` tugmalari bor. Tugmalar so'zni
-kartochkaga kirmasdan 0.5 qadamda kamaytiradi yoki oshiradi, ro'yxat shu
-xabarning o'zida qoladi. So'z nomini bossangiz aniq preset/sozlamalar
-kartochkasi ochiladi. Mobil ekranda to'liq ko'rinishi uchun sahifadagi
-kalitlar soni 20 tadan 10 taga tushirildi. Vazn 0 ga tushishi mumkin va
-neytral `⚪0` deb ko'rsatiladi; chegara ±10 da oshirish/kamaytirish
-to'xtaydi.
+Kalit har biri **to'liq enli qatorda** ko'rinadi; vazn so'z oxirida
+rangli belgi bilan chiqadi: `🟢 +1` — musbat, `🔴 -3` — manfiy,
+`⚪ 0` — neytral. Har kalit ostida `➖0.5`, `🔒/🔓`, `➕0.5` tugmalari bor.
+`➖/➕` vaznni shu xabarning o'zida o'zgartiradi; qulf esa ikkala rejimda
+ham faqat aniq yozuvni tanish yoki shakllarni ham tanish holatini boshqaradi.
+So'z nomini bossangiz aniq preset/sozlamalar kartochkasi ochiladi. Mobil
+ekranda to'liq ko'rinishi uchun sahifadagi kalitlar soni 20 tadan 10 taga
+tushirildi. Vazn 0 ga tushishi mumkin; chegara ±10.
 
-Tekshiruv: yangi `test_word_list.py` 4 ta UI/ball testi; jami **192 test — OK**.
-`compileall` va `git diff --check` ham o'tdi.
+Tekshiruv: `test_word_list.py` 6 ta UI/ball/qulf testi; matcher 63,
+vazn testlari 61. Jami **197 test — OK**; `compileall` va
+`git diff --check` ham o'tdi.
