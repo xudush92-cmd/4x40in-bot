@@ -62,13 +62,15 @@ class QuickWeightButtons(unittest.IsolatedAsyncioTestCase):
 
     def test_each_word_row_has_minus_word_plus(self):
         _text, markup = bot._words_page(0)
-        row = markup.inline_keyboard[0]
-        self.assertEqual(len(row), 3)
-        self.assertEqual(row[0].text, "➖0.5")
-        self.assertIn("ketadi", row[1].text)
-        self.assertEqual(row[2].text, "➕0.5")
-        self.assertEqual(row[0].callback_data, f"wqadj:{self.pid}:-0.5:0")
-        self.assertEqual(row[2].callback_data, f"wqadj:{self.pid}:0.5:0")
+        word_row, adjustment_row = markup.inline_keyboard[:2]
+        self.assertEqual(len(word_row), 1)
+        self.assertEqual(word_row[0].text, "ketadi")
+        self.assertEqual(len(adjustment_row), 3)
+        self.assertEqual(adjustment_row[0].text, "➖0.5")
+        self.assertEqual(adjustment_row[1].text, "⚖️ ➕1")
+        self.assertEqual(adjustment_row[2].text, "➕0.5")
+        self.assertEqual(adjustment_row[0].callback_data, f"wqadj:{self.pid}:-0.5:0")
+        self.assertEqual(adjustment_row[2].callback_data, f"wqadj:{self.pid}:0.5:0")
 
     async def test_minus_button_updates_weight_and_keeps_list_open(self):
         callback = FakeCallback(f"wqadj:{self.pid}:-0.5:0")
@@ -76,13 +78,13 @@ class QuickWeightButtons(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.get_phrase(self.pid)[2], 0.5)
         self.assertEqual(len(callback.message.edits), 1)
         markup = callback.message.edits[0][1]["reply_markup"]
-        self.assertIn("ketadi", markup.inline_keyboard[0][1].text)
+        self.assertIn("ketadi", markup.inline_keyboard[0][0].text)
         self.assertEqual(callback.answers, ["⚖️ ketadi: +0.5"])
 
     async def test_plus_button_can_return_from_zero_to_positive(self):
         db.update_phrase(self.pid, weight=0.0)
         _text, markup = bot._words_page(0)
-        self.assertTrue(markup.inline_keyboard[0][1].text.startswith("⚪0"))
+        self.assertTrue(markup.inline_keyboard[1][1].text.startswith("⚖️ ⚪0"))
         callback = FakeCallback(f"wqadj:{self.pid}:0.5:0")
         await bot.word_list_weight_adjust(callback)
         self.assertEqual(db.get_phrase(self.pid)[2], 0.5)

@@ -2235,7 +2235,7 @@ async def set_count_message(message: types.Message, state: FSMContext):
     await _apply_match_count(message, state, int(text))
 
 
-WORDS_PER_PAGE = 20
+WORDS_PER_PAGE = 10
 
 
 def _weight_badge(weight: float, strict: int = 0) -> str:
@@ -2294,15 +2294,22 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
     chunk = phrases[start:start + WORDS_PER_PAGE]
     rows = []
     for p_id, word, weight, strict in chunk:
+        word_label = word + (" 🔒" if strict else "")
+        if len(word_label) > 64:
+            word_label = word_label[:63] + "…"
+        # Full-width word row prevents Telegram mobile from clipping the key.
+        rows.append([InlineKeyboardButton(
+            text=word_label,
+            callback_data=f"wcard:{p_id}:{page}",
+        )])
         rows.append([
             InlineKeyboardButton(
                 text="➖0.5",
                 callback_data=f"wqadj:{p_id}:-0.5:{page}",
             ),
             InlineKeyboardButton(
-                text=f"{_weight_badge(weight, strict)} "
-                     f"{html.escape(word[:30], quote=False)}",
-                callback_data=f"wcard:{p_id}:{page}",
+                text=f"⚖️ {_weight_badge(weight)}",
+                callback_data="wnav",
             ),
             InlineKeyboardButton(
                 text="➕0.5",
@@ -2336,8 +2343,9 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
         f"📋 <b>Kalit so'zlar — {total} ta</b>\n"
         f"Sahifa {page + 1}/{pages}.\n\n"
         f"{_mode_line()}\n\n"
-        "ℹ️ Har qatordagi ➖0.5 / ➕0.5 tugmalari vaznni tez o'zgartiradi; "
-        "so'zning o'zini bossangiz, aniq vazn tanlaysiz."
+        "ℹ️ Kalit to'liq qatorda, joriy vazni ostida ko'rinadi. "
+        "➖0.5 / ➕0.5 tugmalari vaznni o'zgartiradi; kalitni bossangiz, "
+        "aniq vazn tanlaysiz."
     )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
