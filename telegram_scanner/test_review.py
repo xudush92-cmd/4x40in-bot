@@ -83,13 +83,37 @@ class FeedbackRemainsSeparate(unittest.TestCase):
         self.assertEqual(self._weight(), before)
         self.assertEqual(db.get_feedback_stats()["useful"], 1)
 
-    def test_admin_feedback_can_still_adjust_weight(self):
+    def test_admin_feedback_is_statistics_only(self):
+        # Admin ham xabar tugmasi bilan vaznni avtomatik o'zgartirmaydi.
+        # Vazn faqat kalitlar menyusidagi qo'lda boshqaruvdan o'zgaradi.
         review_id = db.save_lead_review(777, ["kerak"])
         before = self._weight()
-        status, changes = fb.apply_feedback(review_id, True)
-        self.assertEqual(status, "ok")
-        self.assertTrue(changes)
-        self.assertGreater(self._weight(), before)
+        self.assertEqual(fb.record_vote(review_id, True), "ok")
+        self.assertEqual(self._weight(), before)
+        self.assertEqual(db.get_feedback_stats()["useful"], 1)
+
+    def test_admin_feedback_callback_does_not_call_weight_adjuster(self):
+        import asyncio
+        from types import SimpleNamespace
+        import bot
+
+        review_id = db.save_lead_review(777, ["kerak"])
+        before = self._weight()
+        callback = SimpleNamespace(
+            data=f"fb:{review_id}:1",
+            from_user=SimpleNamespace(id=777),
+            answer=AsyncMock(),
+            message=SimpleNamespace(
+                edit_reply_markup=AsyncMock(), answer=AsyncMock()
+            ),
+        )
+        with patch.object(
+            bot.fb, "apply_feedback", side_effect=AssertionError("weight changed")
+        ):
+            asyncio.run(bot.feedback_callback(callback))
+        self.assertEqual(self._weight(), before)
+        self.assertEqual(db.get_feedback_stats()["useful"], 1)
+        callback.answer.assert_awaited_once()
 
 
 if __name__ == "__main__":

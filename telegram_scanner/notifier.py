@@ -30,8 +30,7 @@ def build_feedback_row(review_id: int) -> list[dict]:
     """Bildirishnoma uchun «foydali / keraksiz» tugmalari.
 
     ``review_id`` — ``database.save_lead_review()`` qaytargan id. Tugma
-    bosilganda ``feedback.apply_feedback()`` chaqiriladi va o'sha
-    xabarda qatnashgan so'zlarning vazni moslashadi.
+    bosilganda ovoz faqat statistikaga yoziladi; so'zlar vazni o'zgarmaydi.
     """
     return [
         {"text": "✅ Foydali", "callback_data": f"fb:{review_id}:1"},

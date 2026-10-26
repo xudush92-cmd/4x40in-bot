@@ -1,23 +1,12 @@
-"""Bildirishnoma ustidan fikr-mulohaza: «✅ Foydali / ❌ Keraksiz».
+"""Bildirishnoma fikrlarini qayd etish.
 
-Nega kerak: kalit so'zlarning vazni qo'lda qo'yiladi, ya'ni ular
-foydalanuvchining real oqimini bilmaydi. Foydalanuvchi har bir
-bildirishnomada bitta tugma bosadi — o'sha xabarda qatnashgan
-so'zlarning vazni asta-sekin to'g'rilanadi. Bu "o'z-o'zini sozlash"
-uchun eng arzon yo'l: qo'shimcha so'rovnoma ham, qo'lda sozlash ham
-kerak emas.
+Faol botdagi «✅ Foydali / ❌ Keraksiz» tugmalari faqat statistika
+saqlaydi; ular vaznni hech qachon o'zgartirmaydi. Kalit vazni admin
+kalitlar menyusidagi qo'lda boshqaruv orqali o'zgartiriladi.
 
-Mantiq (oddiy va bashorat qilinadigan):
-
-* **✅ Foydali** — xabarda qatnashgan musbat so'zlar kuchayadi
-  (+qadam), manfiy so'zlar zaiflashadi (0 tomon −qadam). Ya'ni
-  «men buni mijoz deb oldim» degan signal.
-* **❌ Keraksiz** — musbat so'zlar zaiflashadi (−qadam). Manfiy
-  so'zlarga tegilmaydi: ular o'z vazifasini to'g'ri bajargan
-  (xabar o'tkazib yuborilgan bo'lsa).
-
-Qadam kichik (0.25) — bitta bosish butun tizimni buzdirmaydi,
-lekin bir xil xato takrorlansa vazn tez sur'atda to'g'rilanadi.
+Quyidagi ``compute_changes`` / ``apply_feedback`` yordamchilari eski
+nazorat oqimi uchun saqlangan; ular faol bildirishnoma tugmalaridan
+chaqirilmaydi.
 """
 from __future__ import annotations
 

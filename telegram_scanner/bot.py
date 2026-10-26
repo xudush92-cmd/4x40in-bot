@@ -2634,10 +2634,11 @@ async def word_card_delete(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("fb:"))
 async def feedback_callback(callback: types.CallbackQuery):
-    """«✅ Foydali / ❌ Keraksiz» — xabardagi so'zlar vazni moslashadi.
+    """«✅ Foydali / ❌ Keraksiz» — faqat statistika, vazn o'zgarmaydi.
 
-    Ruxsat: bildirishnoma egasi yoki admin. Boshqa foydalanuvchi
-    o'zgartira olmaydi (har kimning ma'lumoti alohida).
+    Kalitlar umumiy bo'lgani uchun vaznni faqat admin kalitlar menyusidagi
+    qo'lda boshqaruv tugmalari bilan o'zgartiradi. Fikr bildirishga esa
+    bildirishnoma egasi yoki admin haqli.
     """
     parts = callback.data.split(":")
     try:
@@ -2656,30 +2657,22 @@ async def feedback_callback(callback: types.CallbackQuery):
             "Bu bildirishnoma sizga tegishli emas.", show_alert=True
         )
         return
-    if actor == ADMIN_ID:
-        # Vaznni faqat admin o'zgartiradi (kalitlar hammaga umumiy).
-        status, changes = fb.apply_feedback(review_id, useful)
-        text = fb.feedback_text(status, changes, useful)
+    # Kim bosganidan qat'i nazar, bu tugmalar hech qachon vazn o'zgartirmaydi.
+    # Vazn faqat adminning kalitlar menyusidagi qo'lda −/+ amali bilan o'zgaradi.
+    status = fb.record_vote(review_id, useful)
+    if status == "missing":
+        text = "Bu bildirishnoma topilmadi (baza tozalangan bo'lishi mumkin)."
+    elif status == "done":
+        text = "Bu xabar allaqachon baholangan. Rahmat!"
     else:
-        # Foydalanuvchi fikri — faqat statistika uchun.
-        status = fb.record_vote(review_id, useful)
-        changes = []
-        if status == "missing":
-            text = "Bu bildirishnoma topilmadi (baza tozalangan bo'lishi mumkin)."
-        elif status == "done":
-            text = "Bu xabar allaqachon baholangan. Rahmat!"
-        else:
-            text = "👍 Fikringiz statistikaga yozildi. Rahmat!"
+        text = "👍 Fikringiz statistikaga yozildi. Kalit vazni o'zgarmadi."
     await callback.answer(text[:190], show_alert=(status != "ok"))
     if status == "ok":
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
             note = (
-                "ℹ️ Vaznlar shu asosda moslashadi — 🔑 Kalit so'zlar "
-                "bo'limida ko'rasiz."
-                if actor == ADMIN_ID else
-                "ℹ️ Fikringiz statistikada hisobga olinadi. Kalit so'zlar "
-                "vaznini faqat bot egasi o'zgartiradi."
+                "ℹ️ Fikringiz faqat statistikada hisobga olinadi. Vaznni "
+                "admin 🔑 Kalit so'zlar menyusida qo'lda o'zgartiradi."
             )
             await callback.message.answer(
                 f"{text}\n\n{note}", parse_mode="HTML"
