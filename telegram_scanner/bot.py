@@ -78,7 +78,7 @@ from database import (
 )
 import feedback as fb
 import logbuffer
-import review
+import review  # eski nazorat slaydini yangilanishda o'chirish uchun
 import watch
 
 from login_manager import (
@@ -128,7 +128,6 @@ BTN_HELP = "ℹ️ Yordam"
 BTN_ADMIN_PANEL = "🛠 Admin panel"
 BTN_SCAN_PANEL = "🎛 Skaner paneli"
 BTN_MAIN_MENU = "↩️ Asosiy menyu"
-BTN_REVIEW = "🎓 Nazorat (baholash)"   # o'qitish: bot ichida slayd
 BTN_DIAG = "🧾 Diagnostika"            # oxirgi log qatorlari (.txt)
 BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
 BTN_SCAN_RESUME = "🟢 ▶️ Start"
@@ -140,7 +139,7 @@ MENU_BUTTONS = {
     BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
-    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_REVIEW, BTN_DIAG,
+    BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_DIAG,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -236,7 +235,7 @@ def admin_panel_keyboard() -> list:
         [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
         [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
         [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
-        [KeyboardButton(text=BTN_REVIEW), KeyboardButton(text=BTN_DIAG)],
+        [KeyboardButton(text=BTN_DIAG)],
         [KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -494,10 +493,6 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
         "🛠 <b>Admin panel</b>\n\n"
         "Kalit so'zlar, xabar sharti, foydalanuvchilar, arizalar, "
         "xabar yuborish va statistika.\n\n"
-        "🎓 <b>O'qitish:</b> «🎓 Nazorat (baholash)» tugmasini bosing — "
-        "bot topgan xabarlar shu chatga bitta slayd bo'lib tushadi, siz "
-        "✅/❌ bilan baholaysiz va faqat shundan keyin so'zlar vazni "
-        "o'zgaradi. Guruh kerak emas.\n\n"
         "🧾 <b>Diagnostika</b> — oxirgi log qatorlari fayl bo'lib keladi.\n"
         "👁 <b>Kuzatuv</b> — <code>/kuzat 15</code>: 15 daqiqa davomida har "
         "bir skanerlangan xabar kartasi shu chatga keladi.",
@@ -529,7 +524,6 @@ def state_header() -> str:
             events = diag.get("events", 0)
         except Exception:
             online, events = -1, -1
-        stats = review.review_stats()
         return (
             f"tizim: {system}\n"
             f"kalitlar: {keywords} ta · chegara: {threshold:g} · "
@@ -537,8 +531,6 @@ def state_header() -> str:
             f"faol guruhlar: {len(groups)} ta · sessiyalar: {online} ta\n"
             f"kuzatuv: {'🟢' if watch.is_active() else '—'} · "
             f"ko'rilgan xabar: {events}\n"
-            f"nazorat: jami {stats['total']} · ⏳ {stats['pending']} · "
-            f"⚡ {stats['near']}\n"
         )
     except Exception:
         logger.exception("Holat sarlavhasi")
@@ -3712,158 +3704,6 @@ def _admin_stats_kb() -> InlineKeyboardMarkup:
     ])
 
 
-# --- Nazorat (o'qitish) rejimi: yopiq guruhda slayd bilan baholash ---
-
-REVIEW_HELP = (
-    "🎓 <b>Nazorat rejimi</b>\n\n"
-    "Bot topgan xabarlar shu chatga <b>bitta slayd</b> bo'lib tushadi va "
-    "o'zi yangilanib turadi — chat to'lmaydi. Siz <b>✅ / ❌</b> bilan "
-    "baholaysiz; faqat shundan keyin so'zlar vazni o'zgaradi.\n\n"
-    "Nusxa anonim: matn, ball va ishlagan so'zlar — boshqa hech narsa. "
-    "Boshqa foydalanuvchining xabari hech kimga ko'rinmaydi.\n\n"
-    "⚡ <b>Chegarada</b> — ball chegaradan past bo'lgan xabar: model uni "
-    "o'tkazib yubordi. ✅ desangiz so'zlar kuchayadi va keyingi safar "
-    "o'tadi.\n\n"
-    "Quyidagi tugmalar bilan slaydni oching, statistikani ko'ring yoki "
-    "nazoratni o'chiring."
-)
-
-
-def review_control_keyboard() -> InlineKeyboardMarkup:
-    """Nazorat bo'limidagi matn buyruqlari o'rniga ko'rinadigan tugmalar."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Slaydni ochish", callback_data="rv:open:0")],
-        [
-            InlineKeyboardButton(text="📊 Statistika", callback_data="rv:stats:0"),
-            InlineKeyboardButton(text="🔕 Nazoratni o'chirish", callback_data="rv:stop:0"),
-        ],
-        [_close_button()],
-    ])
-
-
-@dp.message(AdminFilter(), Command("nazorat"))
-async def review_start(message: types.Message, state: FSMContext):
-    """Nazoratni shu (shaxsiy) chatda yoqadi va slaydni ochadi."""
-    await state.clear()
-    chat = message.chat
-    if chat.type != "private":
-        # Guruhda hech qanday javob yo'q — bot u yerda butunlay jim.
-        return
-    review.set_review_chat(chat.id)
-    await message.answer(
-        f"✅ Nazorat shu chatda yoqildi.\n\n{REVIEW_HELP}",
-        parse_mode="HTML",
-        reply_markup=review_control_keyboard(),
-    )
-    await review.refresh()
-
-
-@dp.message(AdminFilter(), F.text == BTN_REVIEW)
-async def open_review_panel(message: types.Message, state: FSMContext):
-    """🎓 Nazorat (baholash) — bot ichida slayd ko'rinishida."""
-    await state.clear()
-    review.set_review_chat(message.chat.id)
-    if not review.review_chat_id():
-        await message.answer(
-            "⚠️ Nazorat faqat adminning shaxsiy chatida ishlaydi.",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=admin_panel_keyboard(), resize_keyboard=True
-            ),
-        )
-        return
-    await message.answer(
-        REVIEW_HELP,
-        parse_mode="HTML",
-        reply_markup=review_control_keyboard(),
-    )
-    await review.refresh()
-
-
-@dp.message(AdminFilter(), Command("nazorat_ochir"))
-async def review_stop(message: types.Message, state: FSMContext):
-    await state.clear()
-    await review.disable()
-    await message.answer("🔕 Nazorat o'chirildi — nusxalar endi kelmaydi.")
-
-
-@dp.message(AdminFilter(), Command("nazorat_stat"))
-async def review_stats_cmd(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer(review.stats_text(), parse_mode="HTML")
-
-
-@dp.callback_query(AdminFilter(), F.data.startswith("rv:"))
-async def review_callback(callback: types.CallbackQuery, state: FSMContext):
-    """✅ To'g'ri / ❌ Noto'g'ri / ⏭ O'tkazish — vazn shu yerda o'zgaradi."""
-    parts = callback.data.split(":")
-    action = parts[1] if len(parts) > 1 else ""
-    if action == "open":
-        if not review.review_chat_id():
-            await callback.answer("Avval 🎓 Nazoratni yoqing.", show_alert=True)
-            return
-        await callback.answer("Slayd yangilandi")
-        await review.refresh()
-        return
-    if action == "stop":
-        await review.disable()
-        try:
-            await callback.message.edit_text(
-                "🔕 <b>Nazorat o'chirildi</b> — nusxalar endi kelmaydi. "
-                "Qayta yoqish uchun 🛠 Admin panel → 🎓 Nazorat (baholash) "
-                "ni bosing.",
-                parse_mode="HTML",
-                reply_markup=None,
-            )
-        except Exception:
-            pass
-        await callback.answer("Nazorat o'chirildi")
-        return
-    if action in {"ok", "bad", "skip"} and not review.review_chat_id():
-        await callback.answer("Nazorat o'chirilgan.", show_alert=True)
-        return
-    if action == "stats":
-        await callback.answer("Statistika yangilandi")
-        try:
-            await callback.message.edit_text(
-                review.stats_text(), parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="◀️ Navbatga qaytish", callback_data="rv:back:0"),
-                ]]),
-            )
-        except Exception:
-            pass
-        return
-    if action == "back":
-        await callback.answer()
-        await review.refresh()
-        return
-    try:
-        item_id = int(parts[2])
-    except (IndexError, ValueError):
-        await callback.answer("Xato ma'lumot.", show_alert=True)
-        return
-    status, changes, stats = await review.label(item_id, action)
-    if status == "missing":
-        await callback.answer("Bu xabar topilmadi.", show_alert=True)
-    elif status == "done":
-        await callback.answer("Allaqachon baholangan.")
-    elif action == "skip":
-        await callback.answer("O'tkazildi")
-    elif action == "bad":
-        if changes:
-            shown = ", ".join(f"{w} {old:+g}→{new:+g}" for _p, w, old, new in changes[:4])
-            await callback.answer(f"❌ Vazn pasaytirildi: {shown}"[:190], show_alert=True)
-        else:
-            await callback.answer("❌ Belgilandi (vazn o'zgarmadi)")
-    else:
-        if changes:
-            shown = ", ".join(f"{w} {old:+g}→{new:+g}" for _p, w, old, new in changes[:4])
-            await callback.answer(f"✅ Vazn kuchaytirildi: {shown}"[:190], show_alert=True)
-        else:
-            await callback.answer("✅ Belgilandi (vazn o'zgarmadi)")
-    await review.refresh()
-
-
 @dp.message(AdminFilter(), F.text == BTN_STATS)
 async def show_stats(message: types.Message, state: FSMContext):
     await state.clear()
@@ -4053,6 +3893,11 @@ async def main():
         )
     logbuffer.install()   # 🧾 Diagnostika: loglar xotirada saqlanadi
     init_db()
+    # Avvalgi versiyada nazorat slaydi yoqilgan bo'lsa, uni bir marta yopamiz.
+    try:
+        await review.disable()
+    except Exception:
+        logger.warning("Eski nazorat slaydini yopib bo'lmadi", exc_info=True)
     logger.info("Boshqaruv boti ishga tushdi...")
 
     # MUHIM: sessiya manageri shu yerda ham ishga tushadi. Servis
@@ -4070,7 +3915,7 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
-        # Nazorat slaydlari uchun alohida, qayta ishlatiladigan HTTP sessiya.
+        # Eski nazorat slaydini yopish uchun ishlatilgan HTTP sessiyasini yopish.
         await review.close_api_session()
 
 

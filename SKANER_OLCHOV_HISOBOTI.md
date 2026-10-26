@@ -1848,3 +1848,31 @@ tekshiradi.
 Tekshiruv: matcher 62 + weights 59 + feedback 23 + review 44 + export 8
 + diagnostics 27 + notifier 3 = **226 test — OK**; `compileall` va
 `git diff --check` ham muvaffaqiyatli.
+
+---
+
+## 36. O'rganuvchi navbat o'chirildi
+
+Admin tanlovi: **faqat o'rganuvchi navbat/slaydni o'chirish**. Har bir
+bildirishnoma yuborilgandan keyingi anonim matn nusxasi hamda weight
+rejimidagi chegaraga yaqin xabarlarning navbatga yozilishi to'xtatildi.
+`🎓 Nazorat (baholash)` menyusi va `/nazorat*` handlerlari olib tashlandi.
+Yangilanish paytida avvalgi versiyadan qolgan slayd bo'lsa, bir marta
+bekor qilinadi.
+
+Asosiy skaner, kalitlar va vaznlar o'zgarishsiz. Bildirishnomadagi
+foydalanuvchi feedback tugmalari/statistikasi qoladi; foydalanuvchining
+✅/❌ vazn o'zgartirmaydi, adminning bahosi esa oldingi qoida bo'yicha
+vaznni sozlashi mumkin. Eski anonim o'rganuvchi yozuvlari o'chirilmadi;
+ular uchun yangi nusxa qo'shilmaydi. Bildirishnoma feedbacki uchun
+saqlanadigan topilgan-kalit ro'yxati alohida qoladi.
+
+Sekinlik: olib tashlangan enqueue chaqiruvlari fon tasklari edi, shu
+sabab skanerlashni API javobigacha kutdirmasdi; lekin qo'shimcha DB/API
+ishlarini bajarardi. Oldingi mavjud diagnostikadagi event ishlovi
+213–358 ms edi; bu **joriy server o'lchovi emas**. Hozirgi ishga tushgan
+server tezligini yangi diagnostikasiz tasdiqlab bo'lmaydi.
+
+Tekshiruv: matcher 62 + weights 59 + feedback 23 + bu o'chirish bo'yicha
+6 + export 8 + diagnostics 27 + notifier 3 = **188 test — OK**;
+`compileall` va `git diff --check` ham muvaffaqiyatli.

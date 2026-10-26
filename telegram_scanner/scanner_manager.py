@@ -33,7 +33,6 @@ from database import (
 from login_manager import revoke_session
 from filters import evaluate, summary_line
 from session_crypto import decrypt_session
-import review
 import watch
 from notifier import (
     build_feedback_row,
@@ -45,8 +44,6 @@ from notifier import (
 
 logger = logging.getLogger(__name__)
 
-# Fonda ketayotgan nazorat yozuvlari (GC yeb qo'ymasin).
-_review_tasks: set = set()
 # Hozir ko'tarilayotgan sessiyalar (ikki marta ulanishning oldini oladi)
 _starting: set = set()
 # 👁 Kuzatuv kartalari (admin uchun) — fon vazifalari
@@ -304,38 +301,6 @@ def _queue_watch_card(event, verdict) -> None:
         logger.exception("[WATCH] karta yuborilmadi")
 
 
-def _queue_near_miss(verdict, event) -> None:
-    """⚡ Chegaraga yaqin xabarni o'qitish navbatiga qo'shadi.
-
-    Faqat **kalit so'z bosqichida** to'xtagan xabar hisobga olinadi:
-    emoji, tarif yoki guruh sababli to'xtaganda ball mazmunli emas.
-    Navbat cheksiz o'smasligi uchun ``NEAR_MAX_PENDING`` tekshiriladi.
-    """
-    try:
-        if getattr(verdict, "mode", None) != "weight":
-            return
-        if getattr(verdict, "stage", None) != "keywords":
-            return
-        score = float(getattr(verdict, "score", 0) or 0)
-        threshold = float(getattr(verdict, "threshold", 0) or 0)
-        if not review.near_miss(score, threshold):
-            return
-        if review.review_stats().get("pending", 0) >= review.NEAR_MAX_PENDING:
-            return
-        text = getattr(event, "raw_text", "") or ""
-        task = asyncio.create_task(review.enqueue(
-            text, score, threshold, getattr(verdict, "matched", None)
-        ))
-        _review_tasks.add(task)
-        task.add_done_callback(_review_tasks.discard)
-        logger.info(
-            "[SCAN] ⚡ chegarada owner=chat=%s ball=%g/%g",
-            getattr(event, "chat_id", None), score, threshold,
-        )
-    except Exception:
-        logger.exception("[SCAN] chegaradagi xabarni navbatga qo'shishda xato")
-
-
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
@@ -429,7 +394,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
             rows.append([{"text": "💬 Mijozga yozish (Lichka)", "url": f"tg://user?id={user_id}"}])
         if message_link:
             rows.append([{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}])
-        # Fikr-mulohaza: foydalanuvchi bosganda so'zlar vazni moslashadi.
+        # Fikr-mulohaza statistikasi; vaznni faqat admin baholashi o'zgartiradi.
         review_id = save_lead_review(owner_id, verdict.matched)
         if review_id:
             rows.append(build_feedback_row(review_id))
@@ -442,18 +407,6 @@ def _make_handler(owner_id: int, client: TelegramClient):
         if await send_to_bot_api(text, markup, chat_id=owner_id):
             increment_counter("notifications_sent")
             logger.info("[SCAN] sent owner=%s chat=%s", owner_id, event.chat_id)
-            # Nusxa adminning yopiq nazorat guruhiga (o'qitish uchun).
-            # Faqat matn + ball ketadi: egasi, ismi, telefoni, guruh nomi
-            # saqlanmaydi (review.py). Skanerlashni kutdirmaslik uchun
-            # fonda bajariladi.
-            task = asyncio.create_task(review.enqueue(
-                event.raw_text or "",
-                verdict.score,
-                verdict.threshold,
-                verdict.matched,
-            ))
-            _review_tasks.add(task)
-            task.add_done_callback(_review_tasks.discard)
         else:
             logger.warning("[SCAN] SEND FAILED owner=%s chat=%s", owner_id, event.chat_id)
 

@@ -110,9 +110,8 @@ async def disable() -> None:
             await _api("editMessageText", {
                 "chat_id": chat_id,
                 "message_id": message_id,
-                "text": "🔕 <b>Nazorat o'chirildi</b>\n\n"
-                        "Nusxalar endi navbatga kelmaydi. Qayta ochish uchun "
-                        "🛠 Admin panel → 🎓 Nazorat (baholash) ni bosing.",
+                "text": "🔕 <b>O'rganuvchi nazorati o'chirildi</b>\n\n"
+                        "Yangi xabar nusxalari endi navbatga qo'shilmaydi.",
                 "parse_mode": "HTML",
                 "reply_markup": {"inline_keyboard": []},
             })
