@@ -2020,8 +2020,8 @@ async def words_menu(message: types.Message, state: FSMContext):
         f"{preview_text}\n\n"
         f"{_mode_line()}\n\n"
         "ℹ️ Har so'zning vazni bor: ➕ (mijoz belgisi) yoki ➖ "
-        "(haydovchi belgisi). Vaznni 📋 To'liq ro'yxat dan so'zni "
-        "bosib o'zgartirasiz.\n\n"
+        "(haydovchi belgisi). 📋 To'liq ro'yxatda yonidagi ➖/➕ "
+        "tugmalari bilan 0.5 qadamda o'zgartiring.\n\n"
         "ℹ️ Emoji yoki stikerli xabarlar avtomatik tashlanadi — "
         "bu haydovchi e'lonlari uchun yetarli.",
         parse_mode="HTML",
@@ -2240,7 +2240,10 @@ WORDS_PER_PAGE = 20
 
 def _weight_badge(weight: float, strict: int = 0) -> str:
     """Tugma oldidagi belgi: ``➕3`` (mijoz) / ``➖4`` (haydovchi)."""
-    sign = "➕" if weight > 0 else "➖"
+    if weight == 0:
+        sign = "⚪"
+    else:
+        sign = "➕" if weight > 0 else "➖"
     value = abs(weight)
     shown = f"{value:g}"
     return f"{sign}{shown}" + ("🔒" if strict else "")
@@ -2289,13 +2292,23 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
     page = max(0, min(page, pages - 1))
     start = page * WORDS_PER_PAGE
     chunk = phrases[start:start + WORDS_PER_PAGE]
-    rows = [
-        [InlineKeyboardButton(
-            text=f"{_weight_badge(w, st)} {html.escape(t[:36], quote=False)}",
-            callback_data=f"wcard:{p_id}:{page}",
-        )]
-        for p_id, t, w, st in chunk
-    ]
+    rows = []
+    for p_id, word, weight, strict in chunk:
+        rows.append([
+            InlineKeyboardButton(
+                text="➖0.5",
+                callback_data=f"wqadj:{p_id}:-0.5:{page}",
+            ),
+            InlineKeyboardButton(
+                text=f"{_weight_badge(weight, strict)} "
+                     f"{html.escape(word[:30], quote=False)}",
+                callback_data=f"wcard:{p_id}:{page}",
+            ),
+            InlineKeyboardButton(
+                text="➕0.5",
+                callback_data=f"wqadj:{p_id}:0.5:{page}",
+            ),
+        ])
     if pages > 1:
         nav = []
         if page > 0:
@@ -2323,8 +2336,8 @@ def _words_page(page: int = 0) -> tuple[str, InlineKeyboardMarkup | None]:
         f"📋 <b>Kalit so'zlar — {total} ta</b>\n"
         f"Sahifa {page + 1}/{pages}.\n\n"
         f"{_mode_line()}\n\n"
-        "ℹ️ ➕3 = mijoz belgisi, ➖4 = haydovchi belgisi. "
-        "So'zni bosib vaznini o'zgartirasiz."
+        "ℹ️ Har qatordagi ➖0.5 / ➕0.5 tugmalari vaznni tez o'zgartiradi; "
+        "so'zning o'zini bossangiz, aniq vazn tanlaysiz."
     )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2352,6 +2365,32 @@ async def words_page_callback(callback: types.CallbackQuery):
 @dp.callback_query(AdminFilter(), F.data == "wnav")
 async def words_page_label(callback: types.CallbackQuery):
     await callback.answer("Sahifani ◀️ ▶️ bilan almashtirasiz")
+
+
+@dp.callback_query(AdminFilter(), F.data.startswith("wqadj:"))
+async def word_list_weight_adjust(callback: types.CallbackQuery):
+    """Ro'yxatning o'zida vaznni 0.5 qadam bilan oshiradi/kamaytiradi."""
+    parts = callback.data.split(":")
+    try:
+        pid, delta, page = int(parts[1]), float(parts[2]), int(parts[3])
+    except (ValueError, IndexError):
+        await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    if delta not in (-0.5, 0.5):
+        await callback.answer("Noto'g'ri qadam.", show_alert=True)
+        return
+    row = get_phrase(pid)
+    if not row:
+        await callback.answer("So'z topilmadi.", show_alert=True)
+        return
+    new_weight = round(max(-10.0, min(10.0, row[2] + delta)), 2)
+    if new_weight == row[2]:
+        limit = "+10" if delta > 0 else "−10"
+        await callback.answer(f"Vazn {limit} chegarasida.")
+        return
+    update_phrase(pid, weight=new_weight)
+    await _edit_words_page(callback.message, page)
+    await callback.answer(f"⚖️ {row[1]}: {new_weight:+g}")
 
 
 @dp.callback_query(AdminFilter(), F.data.startswith("del:"))

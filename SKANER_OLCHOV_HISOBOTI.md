@@ -1876,3 +1876,16 @@ server tezligini yangi diagnostikasiz tasdiqlab bo'lmaydi.
 Tekshiruv: matcher 62 + weights 59 + feedback 23 + bu o'chirish bo'yicha
 6 + export 8 + diagnostics 27 + notifier 3 = **188 test — OK**;
 `compileall` va `git diff --check` ham muvaffaqiyatli.
+
+---
+
+## 37. Kalitlar ro'yxatida tezkor +/− vazn tugmalari
+
+Kalitlar ro'yxatidagi har bir qator endi `➖0.5 | vazn + so'z | ➕0.5`
+ko'rinishida: tugmalar so'zni kartochkaga kirmasdan 0.5 qadamda kamaytiradi
+yoki oshiradi, ro'yxat esa shu xabarning o'zida qoladi. So'z nomini bossangiz
+aniq preset/sozlamalar kartochkasi ochiladi. Vazn 0 ga tushishi mumkin va
+neytral `⚪0` deb ko'rsatiladi; chegara ±10 da oshirish/kamaytirish to'xtaydi.
+
+Tekshiruv: yangi `test_word_list.py` 4 ta UI/ball testi; jami **192 test — OK**.
+`compileall` va `git diff --check` ham o'tdi.
