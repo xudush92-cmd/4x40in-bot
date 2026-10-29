@@ -129,6 +129,8 @@ BTN_ADMIN_PANEL = "🛠 Admin panel"
 BTN_SCAN_PANEL = "🎛 Skaner paneli"
 BTN_MAIN_MENU = "↩️ Asosiy menyu"
 BTN_DIAG = "🧾 Diagnostika"            # oxirgi log qatorlari (.txt)
+BTN_VOICE_ARCHIVE_ON = "🎙 Transkript yig'ish: YOQISH"
+BTN_VOICE_ARCHIVE_OFF = "🎙 Transkript yig'ish: O'CHIRISH"
 BTN_SCAN_PAUSE = "🔴 ⏸ Stop"
 BTN_SCAN_RESUME = "🟢 ▶️ Start"
 # Eski nomlar yangi bitta bo'limga yo'naltiriladi
@@ -140,6 +142,7 @@ MENU_BUTTONS = {
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
     BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
     BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_DIAG,
+    BTN_VOICE_ARCHIVE_ON, BTN_VOICE_ARCHIVE_OFF,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
 _LEGACY_BUTTONS = {
@@ -230,11 +233,17 @@ def _close_button() -> InlineKeyboardButton:
 
 
 def admin_panel_keyboard() -> list:
-    """🛠 Admin panel: foydalanuvchilar, arizalar, kalitlar, statistika."""
+    """🛠 Admin panel: kalitlar, foydalanuvchilar va transkript yig'imi."""
+    archive_button = (
+        BTN_VOICE_ARCHIVE_OFF
+        if get_setting("voice_transcript_collection") == "1"
+        else BTN_VOICE_ARCHIVE_ON
+    )
     return [
         [KeyboardButton(text=BTN_WORDS), KeyboardButton(text=BTN_COUNT)],
         [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPLICATIONS)],
         [KeyboardButton(text=BTN_BROADCAST), KeyboardButton(text=BTN_STATS)],
+        [KeyboardButton(text=archive_button)],
         [KeyboardButton(text=BTN_DIAG)],
         [KeyboardButton(text=BTN_MAIN_MENU)],
     ]
@@ -493,9 +502,54 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
         "🛠 <b>Admin panel</b>\n\n"
         "Kalit so'zlar, xabar sharti, foydalanuvchilar, arizalar, "
         "xabar yuborish va statistika.\n\n"
+        "🎙 <b>Transkript yig'ish</b> — faqat faol guruhlardagi ovozli "
+        "xabarlarning Telegram qaytargan matnini admin uchun vaqtinchalik "
+        "faylga yig'adi. Ovozdan mijoz qidirishni o'chirmaydi.\n"
         "🧾 <b>Diagnostika</b> — oxirgi log qatorlari fayl bo'lib keladi.\n"
         "👁 <b>Kuzatuv</b> — <code>/kuzat 15</code>: 15 daqiqa davomida har "
         "bir skanerlangan xabar kartasi shu chatga keladi.",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=admin_panel_keyboard(), resize_keyboard=True
+        ),
+    )
+
+
+@dp.message(
+    AdminFilter(),
+    F.text.in_({BTN_VOICE_ARCHIVE_ON, BTN_VOICE_ARCHIVE_OFF}),
+)
+async def toggle_voice_transcript_collection(message: types.Message, state: FSMContext):
+    """Ovoz transkriptlarini arxivlashni admin yoqadi/o'chiradi.
+
+    Transkripsiya va lead-skanerlash mustaqil: yig'im o'chiq bo'lsa ham
+    ovozli matn mijoz qidirish uchun ishlatiladi, lekin faylga yozilmaydi.
+    """
+    await state.clear()
+    enabled = get_setting("voice_transcript_collection") == "1"
+    new_enabled = not enabled
+    set_setting("voice_transcript_collection", "1" if new_enabled else "0")
+
+    # Yoqish/o'chirishda yuborilmay qolgan partiyalarni bir marta chiqarishga
+    # urinib ko'ramiz. Muvaffaqiyatli bo'lsa faqat serverdagi nusxa o'chadi.
+    try:
+        import scanner_manager
+
+        await scanner_manager.flush_voice_transcripts(force=True)
+    except Exception:
+        logger.exception("Ovoz transkript fayllarini yuborish")
+
+    status = "yoqildi" if new_enabled else "o'chirildi"
+    await message.answer(
+        f"🎙 <b>Transkript yig'ish {status}.</b>\n\n"
+        + (
+            "Faol guruhlardan olingan keyingi voice transkriptlari "
+            "vaqtinchalik, sessiyalar bo'yicha alohida faylga yoziladi. "
+            "Fayl 32 KiB ga yetganda admin'ga yuboriladi."
+            if new_enabled
+            else "Yangi transkriptlar faylga yozilmaydi. Ovozdan mijoz qidirish "
+                 "va yozma xabarlar skaneri davom etadi."
+        ),
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=admin_panel_keyboard(), resize_keyboard=True

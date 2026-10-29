@@ -262,6 +262,38 @@ class TestScore(unittest.TestCase):
         r = score_text("kerak", [("kerak", 2.0)], threshold=2.5)
         self.assertFalse(r.is_match)
 
+    def test_joined_place_name_matches_spaced_form_without_prefix_inflation(self):
+        text = "yangi bozordan urganchga moshina kerak"
+        entries = [
+            ("mashina", 0.5, 0),
+            ("kerak", 0.5, 0),
+            ("urganchga", 0.5, 0),
+            ("yangibozordan", 0.5, 0),
+            ("yangibozorga", 0.5, 0),
+            ("yangibozorda", 0.5, 0),
+            ("yangiyo'ldan", 0.5, 0),
+            ("yangiyo'lga", 0.5, 0),
+            ("yangiyo'lda", 0.5, 0),
+        ]
+        result = score_text(text, entries, threshold=3.0)
+        self.assertEqual(result.positives, {
+            "mashina": 0.5,
+            "kerak": 0.5,
+            "urganchga": 0.5,
+            "yangibozordan": 0.5,
+        })
+        self.assertEqual(result.score, 2.0)
+        self.assertFalse(result.is_match)
+
+    def test_short_common_prefix_does_not_match_longer_place_key(self):
+        result = score_text("yangi", [("yangibozordan", 1.0, 0)], 0.5)
+        self.assertEqual(result.positives, {})
+        self.assertEqual(result.score, 0.0)
+
+    def test_place_suffix_variants_still_match(self):
+        result = score_text("toshkentdan", [("toshkentga", 1.0, 0)], 1.0)
+        self.assertEqual(result.positives, {"toshkentga": 1.0})
+
     def test_zero_weight_ignored(self):
         r = score_text("kerak", [("kerak", 0.0)])
         self.assertEqual(r.score, 0.0)

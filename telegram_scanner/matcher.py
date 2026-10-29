@@ -187,6 +187,21 @@ def normalize_text(text: str) -> str:
     return " ".join(normalize_tokens(text))
 
 
+def _single_word_search_tokens(message_tokens: list[str]) -> list[str]:
+    """Bitta birikkan kalitni xabardagi ikki alohida so'z bilan ham topadi.
+
+    Masalan, ``yangibozordan`` kaliti ``yangi bozordan`` ga mos keladi.
+    Alohida tokenlar ham ro'yxatda qoladi; faqat kalitning umumiy qisqa
+    prefiksga (masalan, ``yangi``) mos kelishi yetarli bo'lmaydi.
+    """
+    out = list(message_tokens)
+    for index in range(len(message_tokens) - 1):
+        left, right = message_tokens[index:index + 2]
+        if len(left) >= 3 and len(right) >= 3:
+            out.append(left + right)
+    return list(dict.fromkeys(out))
+
+
 def parse_key_words(text: str) -> list[str]:
     """Foydalanuvchi yuborgan matndan kalit so'zlarni ajratadi.
 
@@ -290,9 +305,18 @@ def _word_matches_single(
         and len(key_word) - len(message_word) <= 2
     ):
         return True
-    # toshkent ~ toshkentdan / toshkentga: uzun umumiy o'zak
+    # toshkentdan ~ toshkentga: o'zak va qo'shimcha shakllari.
+    # Faqat 5 harfli umumiy so'z (masalan, "yangi") uzun joy nomining
+    # prefiksi ekanligi uchun moslik bermasin; uzunlik farqi ham kichik bo'lsin.
     prefix = _common_prefix_len(key_word, message_word)
-    if prefix >= 5 and prefix >= 0.75 * min(len(key_word), len(message_word)):
+    shorter = min(len(key_word), len(message_word))
+    length_gap = abs(len(key_word) - len(message_word))
+    if (
+        shorter >= 6
+        and length_gap <= 3
+        and prefix >= 5
+        and prefix >= 0.75 * shorter
+    ):
         return True
     # kichik yozuv xatolari: toshkent ~ toshket
     if (
@@ -408,7 +432,7 @@ def _find_weighted_single_matches(
     negative_entries = list(negative_entries)
     strict_positive = set(strict_positive)
     strict_negative = set(strict_negative)
-    message_tokens = normalize_tokens(message_text)
+    message_tokens = _single_word_search_tokens(normalize_tokens(message_text))
     found_positive: set[str] = set()
     found_negative: set[str] = set()
     for token in message_tokens:
@@ -489,7 +513,7 @@ def match_keywords(
 
     exact, prefix, _variants = _build_index(words)
     matched: set[int] = set()
-    for token in message_tokens:
+    for token in _single_word_search_tokens(message_tokens):
         token_matches = [
             idx for idx in _candidate_ids(token, exact, prefix)
             if (
@@ -598,7 +622,7 @@ def _find_entries(
     tokens_by_id, exact, prefix, phrases = _build_entry_index(entries)
 
     found: set[int] = set()
-    for token in message_tokens:
+    for token in _single_word_search_tokens(message_tokens):
         for idx in _candidate_ids(token, exact, prefix):
             if idx in found:
                 continue

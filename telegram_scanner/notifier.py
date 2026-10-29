@@ -81,6 +81,46 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
     return False
 
 
+async def send_document_to_bot_api(file_path, filename: str, chat_id=None) -> bool:
+    """Faylni Bot API orqali yuboradi; faqat muvaffaqiyat tasdiqlansa True.
+
+    Bu helper qayta yuborishga o'zi urinmaydi: tarmoq javobi noaniq bo'lsa,
+    yuqori qatlam nusxani saqlab, keyin ehtiyotkorlik bilan qayta urinishi
+    mumkin. Transcript fayllari faqat admin chatiga yuborilishi kerak.
+    """
+    target = chat_id or ADMIN_ID
+    if not BOT_TOKEN or not target:
+        logger.error("[DOCUMENT] Bot token yoki qabul qiluvchi ID sozlanmagan")
+        return False
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    timeout = aiohttp.ClientTimeout(total=60)
+    try:
+        with open(file_path, "rb") as stream:
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(target))
+            form.add_field(
+                "document",
+                stream,
+                filename=filename,
+                content_type="text/plain; charset=utf-8",
+            )
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, data=form) as resp:
+                    payload = await resp.json(content_type=None)
+                    if resp.status == 200 and payload.get("ok") is True:
+                        logger.info("[DOCUMENT] Yuborildi (chat_id=%s)", target)
+                        return True
+                    logger.warning(
+                        "[DOCUMENT] Bot API xatosi (%s): %s",
+                        resp.status,
+                        payload.get("description", "noma'lum xato"),
+                    )
+    except Exception:
+        logger.exception("[DOCUMENT] Faylni yuborishda xato")
+    return False
+
+
 def build_message_link(chat, chat_id, message_id) -> str | None:
     """Xabarning o'ziga olib boradigan havola.
 

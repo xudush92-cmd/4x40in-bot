@@ -58,6 +58,15 @@ class TestParsingAndForms(unittest.TestCase):
         r = match_keywords("Toshkentga odamlar bor", KEYWORDS, required_count=2)
         self.assertTrue(r.is_match)
 
+    def test_spaced_city_matches_only_the_actual_joined_variant(self):
+        keys = [
+            "yangibozordan", "yangibozorga", "yangibozorda",
+            "yangiyo'ldan", "yangiyo'lga", "yangiyo'lda",
+        ]
+        result = match_keywords("yangi bozordan", keys, required_count=1)
+        self.assertEqual(result.matched_words, ["yangibozordan"])
+        self.assertEqual(match_keywords("yangi", keys, 1).matched_count, 0)
+
     def test_more_specific_key_wins_for_same_token(self):
         r = match_keywords("borm", ["bor", "borm"], required_count=1)
         self.assertEqual(r.matched_words, ["borm"])

@@ -273,5 +273,180 @@ class TestWatch(unittest.TestCase):
         self.assertIn("…", card)
 
 
+class TestVoiceTranscriptionArchive(unittest.IsolatedAsyncioTestCase):
+    """Ovoz arxivi va transkripsiya deduplikatsiyasi."""
+
+    async def asyncSetUp(self):
+        import tempfile
+        import scanner_manager
+        import database
+
+        self.sm = scanner_manager
+        self.db = database
+        self.old_db_name = database.DB_NAME
+        self.db_tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.db_tmp.close()
+        database.DB_NAME = self.db_tmp.name
+        database.init_db()
+        database.set_setting("voice_transcript_collection", "1")
+
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_dir = self.sm.VOICE_TRANSCRIPT_DIR
+        self.sm.VOICE_TRANSCRIPT_DIR = __import__("pathlib").Path(self.tmpdir.name)
+        self.old_batch = self.sm.VOICE_TRANSCRIPT_BATCH_BYTES
+        self.old_owner_limit = self.sm.VOICE_TRANSCRIPT_MAX_OWNER_BYTES
+        self.old_total_limit = self.sm.VOICE_TRANSCRIPT_MAX_TOTAL_BYTES
+        self.old_sender = self.sm.send_document_to_bot_api
+        self.old_transcript_locks = self.sm._transcript_locks.copy()
+        self.sm._transcript_locks.clear()
+        self.sm.VOICE_TRANSCRIPT_BATCH_BYTES = 5
+        self.sm.VOICE_TRANSCRIPT_MAX_OWNER_BYTES = 100
+        self.sm.VOICE_TRANSCRIPT_MAX_TOTAL_BYTES = 200
+
+    async def asyncTearDown(self):
+        import os
+
+        self.sm.VOICE_TRANSCRIPT_DIR = self.old_dir
+        self.sm.VOICE_TRANSCRIPT_BATCH_BYTES = self.old_batch
+        self.sm.VOICE_TRANSCRIPT_MAX_OWNER_BYTES = self.old_owner_limit
+        self.sm.VOICE_TRANSCRIPT_MAX_TOTAL_BYTES = self.old_total_limit
+        self.sm.send_document_to_bot_api = self.old_sender
+        self.sm._transcript_locks.clear()
+        self.sm._transcript_locks.update(self.old_transcript_locks)
+        self.db.DB_NAME = self.old_db_name
+        self.tmpdir.cleanup()
+        try:
+            os.unlink(self.db_tmp.name)
+        except OSError:
+            pass
+
+    async def test_voice_note_detector_excludes_regular_audio(self):
+        from types import SimpleNamespace
+        from telethon.tl.types import DocumentAttributeAudio
+
+        voice = SimpleNamespace(media=SimpleNamespace(document=SimpleNamespace(
+            attributes=[DocumentAttributeAudio(duration=4, voice=True)]
+        )))
+        music = SimpleNamespace(media=SimpleNamespace(document=SimpleNamespace(
+            attributes=[DocumentAttributeAudio(duration=180, voice=False)]
+        )))
+        self.assertTrue(self.sm._is_voice_note(voice))
+        self.assertFalse(self.sm._is_voice_note(music))
+
+    async def test_archive_sends_and_removes_only_local_copy(self):
+        from pathlib import Path
+
+        sent = []
+
+        async def fake_send(path, filename, chat_id=None):
+            sent.append((filename, chat_id, Path(path).read_bytes()))
+            return True
+
+        self.sm.send_document_to_bot_api = fake_send
+        self.assertTrue(await self.sm._append_voice_transcript(123, "ovoz matni"))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][2], "ovoz matni\n\n".encode("utf-8"))
+        self.assertEqual(sent[0][1], 777)
+        self.assertFalse((Path(self.tmpdir.name) / "123.txt").exists())
+
+    async def test_failed_upload_keeps_local_copy(self):
+        from pathlib import Path
+
+        async def fake_send(path, filename, chat_id=None):
+            return False
+
+        self.sm.send_document_to_bot_api = fake_send
+        await self.sm._append_voice_transcript(123, "ovoz matni")
+        self.assertTrue((Path(self.tmpdir.name) / "123.txt").exists())
+
+    async def test_repeated_transcripts_are_kept_verbatim_without_counting(self):
+        from pathlib import Path
+
+        self.sm.VOICE_TRANSCRIPT_BATCH_BYTES = 100
+        await self.sm._append_voice_transcript(123, "kerak")
+        await self.sm._append_voice_transcript(123, "kerak")
+        data = (Path(self.tmpdir.name) / "123.txt").read_text(encoding="utf-8")
+        self.assertEqual(data, "kerak\n\nkerak\n\n")
+
+    async def test_collection_off_does_not_write(self):
+        from pathlib import Path
+
+        self.db.set_setting("voice_transcript_collection", "0")
+        self.assertFalse(await self.sm._append_voice_transcript(123, "matn"))
+        self.assertFalse((Path(self.tmpdir.name) / "123.txt").exists())
+
+    async def test_same_message_is_transcribed_once(self):
+        from types import SimpleNamespace
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            async def __call__(self, request):
+                self.calls += 1
+                return SimpleNamespace(
+                    pending=False, text="mashina kerak", trial_remains_num=1,
+                    trial_remains_until_date=None,
+                )
+
+        client = FakeClient()
+        event = SimpleNamespace(chat_id=-100123, id=45, input_chat=object())
+        first = await self.sm._transcribe_voice(123, client, event)
+        second = await self.sm._transcribe_voice(123, client, event)
+        self.assertEqual(first, "mashina kerak")
+        self.assertIsNone(second)
+        self.assertEqual(client.calls, 1)
+
+    async def test_pending_transcription_uses_telegram_update(self):
+        from types import SimpleNamespace
+
+        class FakeClient:
+            async def __call__(self, request):
+                key = (123, -100124, 46)
+                self_update = SimpleNamespace(
+                    transcription_id=9001, pending=False, text="urganchga kerak"
+                )
+                self.sm._pending_transcriptions[key].put_nowait(self_update)
+                return SimpleNamespace(
+                    pending=True, transcription_id=9001, text="",
+                    trial_remains_num=2, trial_remains_until_date=None,
+                )
+
+        client = FakeClient()
+        client.sm = self.sm
+        event = SimpleNamespace(chat_id=-100124, id=46, input_chat=object())
+        result = await self.sm._transcribe_voice(123, client, event)
+        self.assertEqual(result, "urganchga kerak")
+        self.assertNotIn((123, -100124, 46), self.sm._pending_transcriptions)
+
+    async def test_flood_wait_blocks_other_groups_for_same_owner(self):
+        from types import SimpleNamespace
+        from telethon.errors import FloodWaitError
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = 0
+
+            async def __call__(self, request):
+                self.calls += 1
+                raise FloodWaitError(None, capture=45)
+
+        client = FakeClient()
+
+        async def fake_send(text, chat_id=None, **kwargs):
+            return True
+
+        self.sm.send_to_bot_api = fake_send
+        event = SimpleNamespace(chat_id=-100125, id=47, input_chat=object())
+        self.assertIsNone(await self.sm._transcribe_voice(123, client, event))
+        event_other_group = SimpleNamespace(chat_id=-100126, id=48, input_chat=object())
+        self.assertIsNone(await self.sm._transcribe_voice(123, client, event_other_group))
+        self.assertEqual(client.calls, 1)
+        self.assertGreater(
+            int(self.sm.get_setting(self.sm._voice_key("account_block_until", 123, 0))),
+            int(time.time()),
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
