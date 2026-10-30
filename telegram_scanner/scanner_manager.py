@@ -5,32 +5,22 @@ Telethon client ko'tariladi. Client FAQAT egasining guruhlarini kuzatadi,
 xabar topilsa FAQAT egasiga boradi. Kalitlar va shart — adminniki (global).
 """
 import asyncio
-import calendar
 import datetime
 import html
 import logging
 import time
-from pathlib import Path
 
-from telethon import TelegramClient, events, utils, errors
+from telethon import TelegramClient, events, utils
 from telethon.sessions import StringSession
-from telethon.tl.functions.messages import TranscribeAudioRequest
-from telethon.tl.types import (
-    Channel,
-    Chat,
-    DocumentAttributeAudio,
-    UpdateTranscribedAudio,
-)
+from telethon.tl.types import Channel, Chat
 
-from config import ADMIN_ID, API_HASH, API_ID, BASE_DIR
+from config import ADMIN_ID, API_HASH, API_ID
 from database import (
     get_all_users_full,
     save_lead_review,
     get_owner_active_chat_ids,
     get_pending_user_groups,
     get_user_full,
-    get_setting,
-    set_setting,
     increment_counter,
     increment_user_counter,
     is_subscription_active,
@@ -50,7 +40,6 @@ from notifier import (
     build_notification_text,
     find_phone_text,
     send_to_bot_api,
-    send_document_to_bot_api,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,351 +51,6 @@ _watch_tasks: set = set()
 
 _clients: dict[int, TelegramClient] = {}
 _tasks: list[asyncio.Task] = []
-
-# Voice transcription is intentionally conservative: each Telegram message is
-# requested once, pending results arrive as UpdateTranscribedAudio, and RPC
-# limits are cached per owner+group in the existing settings table.
-VOICE_TRANSCRIPT_BATCH_BYTES = 32 * 1024
-VOICE_TRANSCRIPT_MAX_OWNER_BYTES = 64 * 1024
-VOICE_TRANSCRIPT_MAX_TOTAL_BYTES = 1024 * 1024
-VOICE_TRANSCRIPT_PENDING_TIMEOUT = 60
-VOICE_TRANSCRIPT_RETRY_SECONDS = 300
-VOICE_TRANSCRIPT_WEEK_SECONDS = 7 * 24 * 60 * 60
-VOICE_TRANSCRIPT_DIR = Path(BASE_DIR) / "data" / "voice_transcripts"
-
-_pending_transcriptions: dict[tuple[int, int, int], asyncio.Queue] = {}
-_transcript_locks: dict[int, asyncio.Lock] = {}
-
-
-def _voice_key(name: str, owner_id: int, chat_id: int) -> str:
-    return f"voice_{name}:{owner_id}:{chat_id}"
-
-
-def _transcript_collection_enabled() -> bool:
-    return get_setting("voice_transcript_collection") == "1"
-
-
-def _as_timestamp(value) -> int:
-    if value is None:
-        return 0
-    try:
-        if value.tzinfo is None:
-            return int(calendar.timegm(value.utctimetuple()))
-        return int(value.timestamp())
-    except (AttributeError, OverflowError, OSError, TypeError, ValueError):
-        return 0
-
-
-def _is_voice_note(message) -> bool:
-    """Faqat Telegram voice note (oddiy musiqa/audio fayli emas)."""
-    if message is None:
-        return False
-    if getattr(message, "voice", None):
-        return True
-    document = getattr(getattr(message, "media", None), "document", None)
-    return any(
-        isinstance(attribute, DocumentAttributeAudio)
-        and bool(getattr(attribute, "voice", False))
-        for attribute in (getattr(document, "attributes", None) or [])
-    )
-
-
-def _voice_claim_message(owner_id: int, chat_id: int, message_id: int) -> bool:
-    """Duplicate/update replay bo'lsa, bir xabarga ikkinchi API so'rovi yo'q."""
-    key = _voice_key("last_message_id", owner_id, chat_id)
-    try:
-        previous = int(get_setting(key) or 0)
-    except (TypeError, ValueError):
-        previous = 0
-    if message_id <= previous:
-        return False
-    set_setting(key, message_id)
-    return True
-
-
-async def _notify_voice_block(owner_id: int, chat_id: int, until: int, reason: str) -> None:
-    """Bir owner/guruh holati uchun admin xabarini 6 soatda ko'pi bilan bir marta beradi."""
-    key = _voice_key("notice", owner_id, chat_id)
-    try:
-        last_notice = int(get_setting(key) or 0)
-    except (TypeError, ValueError):
-        last_notice = 0
-    now = int(time.time())
-    if now - last_notice < 6 * 60 * 60:
-        return
-    set_setting(key, now)
-    if not ADMIN_ID:
-        return
-    when = time.strftime("%d.%m.%Y %H:%M UTC", time.gmtime(until)) if until else "qo'lda qayta yoqilguncha"
-    group_line = (
-        "Guruh: barcha guruhlar (akkaunt cheklovi)\n"
-        if chat_id == 0 else f"Guruh: <code>{chat_id}</code>\n"
-    )
-    await send_to_bot_api(
-        "🎙 <b>Ovoz transkripsiyasi vaqtincha to'xtatildi</b>\n\n"
-        f"Sessiya egasi: <code>{owner_id}</code>\n"
-        f"{group_line}"
-        f"Sabab: {html.escape(reason, quote=False)}\n"
-        f"Keyingi tekshiruv: {when}.\n\n"
-        "Yozma xabarlar skaneri davom etadi. Ovoz transkripsiyasi uchun "
-        "qayta-qayta so'rov yuborilmaydi.",
-        chat_id=ADMIN_ID,
-    )
-
-
-async def _set_voice_block(
-    owner_id: int, chat_id: int, until: int, reason: str
-) -> None:
-    set_setting(_voice_key("block_until", owner_id, chat_id), max(0, int(until)))
-    set_setting(_voice_key("block_reason", owner_id, chat_id), reason[:80])
-    await _notify_voice_block(owner_id, chat_id, until, reason)
-
-
-async def _transcribe_voice(owner_id: int, client: TelegramClient, event) -> str | None:
-    """Telegram native STT; per-message once-only, quota/FloodWait aware."""
-    chat_id, message_id = int(event.chat_id), int(event.id)
-    if not _voice_claim_message(owner_id, chat_id, message_id):
-        logger.info("[VOICE] takroriy xabar o'tkazildi owner=%s chat=%s", owner_id, chat_id)
-        return None
-
-    now = int(time.time())
-    account_block_key = _voice_key("account_block_until", owner_id, 0)
-    try:
-        account_blocked_until = int(get_setting(account_block_key) or 0)
-    except (TypeError, ValueError):
-        account_blocked_until = 0
-    if account_blocked_until > now:
-        return None
-    if account_blocked_until:
-        set_setting(account_block_key, 0)
-
-    block_key = _voice_key("block_until", owner_id, chat_id)
-    try:
-        blocked_until = int(get_setting(block_key) or 0)
-    except (TypeError, ValueError):
-        blocked_until = 0
-    if blocked_until > now:
-        return None
-    if blocked_until:
-        set_setting(block_key, 0)
-        set_setting(_voice_key("block_reason", owner_id, chat_id), "")
-
-    key = (owner_id, chat_id, message_id)
-    updates: asyncio.Queue = asyncio.Queue(maxsize=8)
-    _pending_transcriptions[key] = updates
-    try:
-        peer = getattr(event, "input_chat", None)
-        if peer is None:
-            peer = await client.get_input_entity(chat_id)
-        result = await client(TranscribeAudioRequest(peer=peer, msg_id=message_id))
-
-        reset_at = _as_timestamp(getattr(result, "trial_remains_until_date", None))
-        remaining = getattr(result, "trial_remains_num", None)
-        if reset_at:
-            set_setting(_voice_key("trial_reset", owner_id, chat_id), reset_at)
-        if remaining is not None:
-            if int(remaining) <= 0:
-                until = reset_at or now + VOICE_TRANSCRIPT_WEEK_SECONDS
-                await _set_voice_block(
-                    owner_id, chat_id, until,
-                    "Telegram bepul transkripsiya limitini tugatdi",
-                )
-            else:
-                set_setting(block_key, 0)
-                set_setting(_voice_key("block_reason", owner_id, chat_id), "")
-
-        if not getattr(result, "pending", False):
-            return (getattr(result, "text", "") or "") or None
-
-        transcription_id = getattr(result, "transcription_id", None)
-        deadline = asyncio.get_running_loop().time() + VOICE_TRANSCRIPT_PENDING_TIMEOUT
-        while True:
-            remaining_time = deadline - asyncio.get_running_loop().time()
-            if remaining_time <= 0:
-                raise asyncio.TimeoutError("Telegram transkripsiyasi vaqtida tugamadi")
-            update = await asyncio.wait_for(updates.get(), timeout=remaining_time)
-            if getattr(update, "transcription_id", None) != transcription_id:
-                continue
-            if getattr(update, "pending", False):
-                continue
-            return (getattr(update, "text", "") or "") or None
-
-    except errors.FloodWaitError as exc:
-        until = int(time.time()) + max(1, int(getattr(exc, "seconds", 1))) + 5
-        reason = f"Telegram FloodWait ({getattr(exc, 'seconds', '?')} soniya)"
-        set_setting(account_block_key, until)
-        set_setting(block_key, until)
-        set_setting(_voice_key("block_reason", owner_id, chat_id), reason[:80])
-        await _notify_voice_block(owner_id, 0, until, reason)
-        return None
-    except errors.RPCError as exc:
-        message = str(getattr(exc, "message", "") or exc)
-        upper = message.upper()
-        quota_error = any(
-            marker in upper
-            for marker in (
-                "PREMIUM_ACCOUNT_REQUIRED",
-                "TRANSCRIPTION_LIMIT",
-                "TRANSCRIBE_AUDIO_LIMIT",
-                "TRIAL_LIMIT",
-                "QUOTA_EXCEEDED",
-            )
-        )
-        if quota_error:
-            try:
-                until = int(get_setting(_voice_key("trial_reset", owner_id, chat_id)) or 0)
-            except (TypeError, ValueError):
-                until = 0
-            if until <= int(time.time()):
-                until = int(time.time()) + VOICE_TRANSCRIPT_WEEK_SECONDS
-            reason = "Telegram transkripsiya huquqi yoki bepul limiti yo'q"
-            await _set_voice_block(owner_id, chat_id, until, reason)
-        else:
-            # Noma'lum RPC rad javobida ham butun akkaunt uchun cooldown:
-            # boshqa guruhdan shu zahoti qayta so'rov yubormaymiz.
-            until = int(time.time()) + VOICE_TRANSCRIPT_RETRY_SECONDS
-            reason = f"Telegram RPC rad etdi: {message[:60]}"
-            set_setting(account_block_key, until)
-            set_setting(block_key, until)
-            set_setting(_voice_key("block_reason", owner_id, chat_id), reason[:80])
-            await _notify_voice_block(owner_id, 0, until, reason)
-        logger.warning(
-            "[VOICE] RPC rad javobi owner=%s chat=%s type=%s",
-            owner_id, chat_id, type(exc).__name__,
-        )
-        return None
-    except Exception as exc:
-        # Tarmoq/pending xatosida shu xabar qayta so'ralmaydi; yangi xabarlar
-        # uchun qisqa circuit-breaker ham qo'yiladi.
-        until = int(time.time()) + 60
-        reason = f"Transkripsiya vaqtinchalik xatosi: {type(exc).__name__}"
-        set_setting(account_block_key, until)
-        set_setting(block_key, until)
-        set_setting(_voice_key("block_reason", owner_id, chat_id), reason[:80])
-        await _notify_voice_block(owner_id, 0, until, reason)
-        logger.warning(
-            "[VOICE] transkripsiya xatosi owner=%s chat=%s type=%s",
-            owner_id, chat_id, type(exc).__name__,
-        )
-        return None
-    finally:
-        _pending_transcriptions.pop(key, None)
-
-
-def _voice_archive_paths() -> list[Path]:
-    try:
-        return sorted(VOICE_TRANSCRIPT_DIR.glob("*.txt"))
-    except OSError:
-        return []
-
-
-def _voice_archive_total_bytes() -> int:
-    total = 0
-    for path in _voice_archive_paths():
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
-async def _send_voice_archive_locked(owner_id: int, *, force: bool = False) -> bool:
-    path = VOICE_TRANSCRIPT_DIR / f"{owner_id}.txt"
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return True
-    if not size or (not force and size < VOICE_TRANSCRIPT_BATCH_BYTES):
-        return True
-
-    now = int(time.time())
-    retry_key = _voice_key("archive_send_attempt", owner_id, 0)
-    try:
-        last_attempt = int(get_setting(retry_key) or 0)
-    except (TypeError, ValueError):
-        last_attempt = 0
-    if now - last_attempt < VOICE_TRANSCRIPT_RETRY_SECONDS:
-        return False
-    set_setting(retry_key, now)
-    filename = f"ovoz-transkript-{owner_id}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime(now))}.txt"
-    sent = await send_document_to_bot_api(path, filename, chat_id=ADMIN_ID)
-    if not sent:
-        return False
-    try:
-        path.unlink()
-    except OSError:
-        logger.exception("[VOICE_ARCHIVE] yuborilgan nusxani o'chirib bo'lmadi owner=%s", owner_id)
-        return False
-    logger.info("[VOICE_ARCHIVE] yuborildi va lokal nusxa o'chirildi owner=%s bytes=%s", owner_id, size)
-    return True
-
-
-async def _notify_voice_archive_full(owner_id: int) -> None:
-    key = _voice_key("archive_full_notice", owner_id, 0)
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    if get_setting(key) == day:
-        return
-    set_setting(key, day)
-    if ADMIN_ID:
-        await send_to_bot_api(
-            "⚠️ <b>Ovoz transkriptlari vaqtinchalik yig'ilmayapti</b>\n\n"
-            f"Sessiya <code>{owner_id}</code> uchun fayl limiti to'ldi yoki "
-            "oldingi fayl yuborilmadi. Mijoz qidirish davom etadi. Admin "
-            "yig'ishni o'chirib-yoqib, yuborishni qayta tekshirishi mumkin.",
-            chat_id=ADMIN_ID,
-        )
-
-
-async def _append_voice_transcript(owner_id: int, transcript: str) -> bool:
-    """Telegram qaytargan to'liq matnni, sanamasdan, vaqtinchalik faylga qo'shadi."""
-    if not _transcript_collection_enabled() or not transcript:
-        return False
-    lock = _transcript_locks.setdefault(owner_id, asyncio.Lock())
-    async with lock:
-        try:
-            VOICE_TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-            path = VOICE_TRANSCRIPT_DIR / f"{owner_id}.txt"
-            payload = transcript.encode("utf-8") + b"\n\n"
-            current = path.stat().st_size if path.exists() else 0
-            total = _voice_archive_total_bytes()
-
-            if current + len(payload) > VOICE_TRANSCRIPT_MAX_OWNER_BYTES:
-                await _send_voice_archive_locked(owner_id, force=True)
-                current = path.stat().st_size if path.exists() else 0
-                total = _voice_archive_total_bytes()
-            if (
-                len(payload) > VOICE_TRANSCRIPT_MAX_OWNER_BYTES
-                or current + len(payload) > VOICE_TRANSCRIPT_MAX_OWNER_BYTES
-                or total + len(payload) > VOICE_TRANSCRIPT_MAX_TOTAL_BYTES
-            ):
-                await _notify_voice_archive_full(owner_id)
-                return False
-
-            with path.open("ab") as stream:
-                stream.write(payload)
-            current += len(payload)
-            if current >= VOICE_TRANSCRIPT_BATCH_BYTES:
-                await _send_voice_archive_locked(owner_id)
-            return True
-        except OSError:
-            logger.exception("[VOICE_ARCHIVE] yozib bo'lmadi owner=%s", owner_id)
-            return False
-
-
-async def flush_voice_transcripts(*, force: bool = True) -> None:
-    """Kutayotgan sessiya fayllarini admin'ga yuborishga bir marta urinadi."""
-    owners = []
-    for path in _voice_archive_paths():
-        try:
-            owner_id = int(path.stem)
-        except ValueError:
-            continue
-        owners.append(owner_id)
-    for owner_id in owners:
-        lock = _transcript_locks.setdefault(owner_id, asyncio.Lock())
-        async with lock:
-            await _send_voice_archive_locked(owner_id, force=force)
-
 
 def is_client_online(user_id: int) -> bool:
     client = _clients.get(user_id)
@@ -655,24 +299,6 @@ def _queue_watch_card(event, verdict, text: str | None = None) -> None:
 
 
 def _make_handler(owner_id: int, client: TelegramClient):
-    async def _transcribed_update(update):
-        try:
-            chat_id = utils.get_peer_id(update.peer)
-            key = (owner_id, int(chat_id), int(update.msg_id))
-            queue = _pending_transcriptions.get(key)
-            if queue is not None:
-                # Partial update'lar ko'paysa ham oxirgi (yakuniy) natijani
-                # saqlab qolamiz.
-                if queue.full():
-                    queue.get_nowait()
-                queue.put_nowait(update)
-        except Exception:
-            logger.debug("[VOICE] transkripsiya update'i moslashtirilmadi", exc_info=True)
-
-    client.add_event_handler(
-        _transcribed_update, events.Raw(types=UpdateTranscribedAudio)
-    )
-
     @client.on(events.NewMessage)
     async def _handler(event):
         chat_id = getattr(event, "chat_id", None)
@@ -697,28 +323,10 @@ def _make_handler(owner_id: int, client: TelegramClient):
         raw_text = initial_text
         message = getattr(event, "message", None)
         is_sticker = _has_sticker(message)
-        is_voice = _is_voice_note(message)
-        if not raw_text and not is_sticker and not is_voice:
+        if not raw_text and not is_sticker:
             return
 
-        if is_voice:
-            # Avval arzon gate'lar: tizim/tarif/egasining skaneri/guruh.
-            # Bo'sh matn kalit bosqichida to'xtashi kutilgan; boshqa bosqichdagi
-            # rad javobida qimmat MTProto transkripsiya so'rovi yuborilmaydi.
-            gate = evaluate(owner_id, "", chat_id=chat_id)
-            if gate.stage != "keywords":
-                _log_skip(owner_id, chat_id, gate)
-                return
-            transcript = await _transcribe_voice(owner_id, client, event)
-            if not transcript:
-                return
-            if _transcript_collection_enabled():
-                await _append_voice_transcript(owner_id, transcript)
-            # Caption bo'lsa ham saqlab qolamiz; kalitlar ikkala matndan
-            # tekshiriladi. Arxivga esa faqat Telegram transkripti yoziladi.
-            raw_text = "\n".join(part for part in (initial_text, transcript) if part)
-
-        # Matn va ovoz transkripti aynan bitta mavjud filtr zanjiridan o'tadi.
+        # Yozma xabarlar mavjud filtr zanjiridan o'tadi.
         verdict = evaluate(
             owner_id,
             raw_text,
@@ -1046,9 +654,6 @@ def start_background() -> None:
     logger.info("Sessiya manageri ishga tushdi...")
     _tasks.append(asyncio.create_task(_sync_loop()))
     _tasks.append(asyncio.create_task(_expiry_warning_loop()))
-    # Oldingi ishga tushishda yuborilmay qolgan kichik transcript partiyalarini
-    # qayta ko'radi; send helper o'z retry oynasini saqlaydi.
-    _tasks.append(asyncio.create_task(flush_voice_transcripts(force=True)))
 
 
 async def run():

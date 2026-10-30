@@ -92,11 +92,6 @@ def init_db() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('is_active', '1')"
         )
-        # Ovoz transkriptlarini yig'ish alohida boshqariladi va standartda o'chiq.
-        conn.execute(
-            "INSERT OR IGNORE INTO settings (key, value) "
-            "VALUES ('voice_transcript_collection', '0')"
-        )
         # Xabar berish sharti: kamida nechta kalit topilsa xabar beriladi.
         # 2 — amaliy o'lchov bo'yicha eng yaxshi (qisqa mijoz xabarlari
         # odatda 2-3 kalitdan iborat).
