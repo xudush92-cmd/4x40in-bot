@@ -161,7 +161,7 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
             )
 
 
-async def list_user_dialogs(owner_id: int, limit: int = 300):
+async def list_user_dialogs(owner_id: int, limit: int | None = None):
     """Akkaunt ko'radigan GURUHLAR ro'yxati: [(chat_id, title), ...].
 
     Guruh ID sini qo'lda yozishda xato bo'ladi. Bu funksiya sessiya
