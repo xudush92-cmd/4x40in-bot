@@ -11,7 +11,7 @@ os.environ.setdefault("API_ID", "1")
 os.environ.setdefault("API_HASH", "x")
 os.environ.setdefault("BOT_TOKEN", "1:x")
 
-from notifier import build_notification_text  # noqa: E402
+from notifier import build_notification_text, build_profile_link  # noqa: E402
 
 
 class TestNotificationText(unittest.TestCase):
@@ -19,7 +19,7 @@ class TestNotificationText(unittest.TestCase):
         values = {
             "group_title": "Test guruh",
             "sender_name": "Ali",
-            "username": "@ali",
+            "username": "@alice",
             "user_id": 123,
             "phone": "Matnda ko'rsatilmagan",
             "raw_text": "mashina kerak",
@@ -29,6 +29,18 @@ class TestNotificationText(unittest.TestCase):
         }
         values.update(overrides)
         return build_notification_text(**values)
+
+    def test_profile_link_prefers_public_username_https(self):
+        text = self._build()
+        self.assertIn('href="https://t.me/alice"', text)
+        self.assertNotIn("tg://user?id=", text)
+        self.assertEqual(build_profile_link("@ali_123"), "https://t.me/ali_123")
+
+    def test_missing_username_does_not_emit_privacy_sensitive_tg_link(self):
+        text = self._build(username="Yo'q")
+        self.assertNotIn("tg://user?id=", text)
+        self.assertIn("guruhdagi asl xabarni oching", text)
+        self.assertIsNone(build_profile_link("Yo'q"))
 
     def test_count_mode_shows_count_requirement(self):
         text = self._build(match_mode="count", required_count=2)

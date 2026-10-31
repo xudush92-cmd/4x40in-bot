@@ -37,6 +37,7 @@ import watch
 from notifier import (
     build_feedback_row,
     build_message_link,
+    build_profile_link,
     build_notification_text,
     find_phone_text,
     send_to_bot_api,
@@ -389,8 +390,12 @@ def _make_handler(owner_id: int, client: TelegramClient):
             negative_weights=verdict.negatives,
         )
         rows = []
-        if user_id is not None:
-            rows.append([{"text": "💬 Mijozga yozish (Lichka)", "url": f"tg://user?id={user_id}"}])
+        profile_link = build_profile_link(username)
+        if user_id is not None and profile_link:
+            rows.append([{
+                "text": "💬 Mijozga yozish (Lichka)",
+                "url": profile_link,
+            }])
         if message_link:
             rows.append([{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}])
         # Fikr-mulohaza statistikasi; vaznni faqat admin baholashi o'zgartiradi.
