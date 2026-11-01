@@ -135,6 +135,43 @@ def find_phone_text(raw_text: str, sender=None) -> str:
     return "Matnda ko'rsatilmagan"
 
 
+def build_protected_notification_markup(message_link: str | None):
+    """Himoyalangan xabarda faqat asl guruh xabariga havola beradi."""
+    if not message_link:
+        return None
+    return {
+        "inline_keyboard": [[{
+            "text": "↗️ Guruhdagi asl xabarni ochish",
+            "url": message_link,
+        }]]
+    }
+
+
+def build_protected_notification_text(
+    *, group_title: str, message_link: str | None, protected: bool = True,
+) -> str:
+    """Matnni ko'chirmaydigan (himoyalangan yoki aniqlanmagan) ogohlantirish."""
+    esc = html.escape
+    heading = (
+        "🔒 <b>HIMOYALANGAN GURUHDA MOS MATN TOPILDI</b>"
+        if protected else "🔎 <b>GURUHDA MOS MATN TOPILDI</b>"
+    )
+    lines = [
+        heading,
+        "━━━━━━━━━━━━━━━",
+        f"📍 <b>Guruh:</b> {esc(group_title or 'Nomaʼlum guruh')}",
+        "Xabar matni va yuboruvchi ma'lumotlari himoyani saqlash uchun ko'rsatilmaydi.",
+    ]
+    if message_link:
+        lines.append(
+            f'🔗 <a href="{esc(message_link, quote=True)}">'
+            "Guruhdagi asl xabarni ochish</a>"
+        )
+    else:
+        lines.append("Guruhni ochib, mos xabarni o'zingiz ko'ring.")
+    return "\n".join(lines)
+
+
 def build_notification_text(
     *,
     group_title: str,

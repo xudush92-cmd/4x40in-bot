@@ -39,6 +39,8 @@ from notifier import (
     build_message_link,
     build_profile_link,
     build_notification_text,
+    build_protected_notification_markup,
+    build_protected_notification_text,
     find_phone_text,
     send_to_bot_api,
 )
@@ -193,6 +195,14 @@ async def list_user_dialogs(owner_id: int, limit: int | None = None):
     return out
 
 
+def _is_protected_content(chat=None, message=None) -> bool:
+    """Telegram content-protection (noforwards) bayrog'ini aniqlaydi."""
+    return bool(
+        getattr(chat, "noforwards", False)
+        or getattr(message, "noforwards", False)
+    )
+
+
 def _has_sticker(message) -> bool:
     """Telegram xabari stiker ekanini tekshiradi."""
     return bool(message is not None and getattr(message, "sticker", None))
@@ -214,9 +224,8 @@ def _note_event(owner_id: int, private: bool, chat_id, text: str) -> None:
         _seen_private[owner_id] = _seen_private.get(owner_id, 0) + 1
     else:
         _seen_events[owner_id] = _seen_events.get(owner_id, 0) + 1
-        _last_event[owner_id] = (
-            int(time.time()), chat_id, (text or "")[:60]
-        )
+        # Diagnostics keeps the event time and chat, never message content.
+        _last_event[owner_id] = (int(time.time()), chat_id, "")
 
 
 def scan_diagnostics(owner_id: int) -> dict:
@@ -305,7 +314,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
         chat_id = getattr(event, "chat_id", None)
         is_private = bool(getattr(event, "is_private", False))
         initial_text = event.raw_text or ""
-        _note_event(owner_id, is_private, chat_id, initial_text)
+        _note_event(owner_id, is_private, chat_id, "")
         if not is_private:
             # Har bir guruh xabari logga tushadi: "kelmayapti" deganda
             # xabar umuman kelmaganini yoki filtrda to'xtaganini ajratish
@@ -327,6 +336,26 @@ def _make_handler(owner_id: int, client: TelegramClient):
         if not raw_text and not is_sticker:
             return
 
+        chat = None
+        protected = _is_protected_content(message=message)
+        protection_unknown = False
+        watch_active = owner_id == ADMIN_ID and watch.is_active()
+        # Admin kuzatuv kartasi xabar matnini ko'rsatadi; avval himoya
+        # holatini aniqlay olmasak, xom matnli kartani yubormaymiz.
+        if watch_active:
+            try:
+                chat = await event.get_chat()
+                if chat is None:
+                    protection_unknown = True
+                else:
+                    protected = protected or _is_protected_content(chat, message)
+            except Exception:
+                protection_unknown = True
+                logger.warning(
+                    "[SCAN] chat himoyasini aniqlab bo'lmadi owner=%s chat=%s",
+                    owner_id, chat_id, exc_info=True,
+                )
+
         # Yozma xabarlar mavjud filtr zanjiridan o'tadi.
         verdict = evaluate(
             owner_id,
@@ -334,15 +363,53 @@ def _make_handler(owner_id: int, client: TelegramClient):
             is_sticker=is_sticker,
             chat_id=chat_id,
         )
-        if owner_id == ADMIN_ID and watch.is_active():
+        if watch_active and not protected and not protection_unknown:
             _queue_watch_card(event, verdict, raw_text)
         if not verdict.ok:
-            # O'tkazib yuborish sababi logga yoziladi: [SCAN] skip ...
-            # Shu bilan birga: «tizim to'xtatilgan» holati HAR xabar uchun
-            # yozilsa log 2 daqiqada 200 qatorga to'lib ketadi va undan
-            # hech narsa ko'rinmaydi. Shuning uchun bunday takrorlar
-            # daqiqada bir marta, hisob bilan yoziladi.
-            _log_skip(owner_id, event.chat_id, verdict)
+            if protected or protection_unknown:
+                logger.info(
+                    "[SCAN] protected-skip owner=%s chat=%s stage=%s",
+                    owner_id, chat_id, verdict.stage,
+                )
+            else:
+                # Takror skip sabablari daqiqada bir marta yoziladi.
+                _log_skip(owner_id, event.chat_id, verdict)
+            return
+
+        if chat is None:
+            try:
+                chat = await event.get_chat()
+                if chat is None:
+                    protection_unknown = True
+                else:
+                    protected = protected or _is_protected_content(chat, message)
+            except Exception:
+                protection_unknown = True
+                logger.warning(
+                    "[SCAN] chat himoyasini aniqlab bo'lmadi owner=%s chat=%s",
+                    owner_id, chat_id, exc_info=True,
+                )
+        group_title = getattr(chat, "title", None) or "Noma'lum guruh"
+        message_link = build_message_link(chat, event.chat_id, event.id)
+
+        if protected or protection_unknown:
+            logger.info("[SCAN] protected-match owner=%s chat=%s", owner_id, chat_id)
+            text = build_protected_notification_text(
+                group_title=group_title,
+                message_link=message_link,
+                protected=protected,
+            )
+            markup = build_protected_notification_markup(message_link)
+            increment_user_counter(owner_id, "leads_found")
+            set_user_last_found(owner_id)
+            increment_counter("leads_found")
+            if await send_to_bot_api(text, markup, chat_id=owner_id):
+                increment_counter("notifications_sent")
+                logger.info("[SCAN] sent protected owner=%s chat=%s", owner_id, chat_id)
+            else:
+                logger.warning(
+                    "[SCAN] SEND FAILED owner=%s chat=%s", owner_id, chat_id
+                )
             return
         if verdict.mode == "weight":
             # Vazn rejimida "nechta kalit" shart emas — ball va chegara muhim.
@@ -370,9 +437,6 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 username = f"@{sender.username}"
 
         phone = find_phone_text(raw_text, sender)
-        chat = await event.get_chat()
-        group_title = getattr(chat, "title", None) or "Noma'lum guruh"
-        message_link = build_message_link(chat, event.chat_id, event.id)
         text = build_notification_text(
             group_title=group_title,
             sender_name=sender_name,
