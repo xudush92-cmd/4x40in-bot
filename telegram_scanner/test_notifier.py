@@ -11,7 +11,12 @@ os.environ.setdefault("API_ID", "1")
 os.environ.setdefault("API_HASH", "x")
 os.environ.setdefault("BOT_TOKEN", "1:x")
 
-from notifier import build_notification_text  # noqa: E402
+from notifier import (  # noqa: E402
+    build_notification_text,
+    build_profile_link,
+    build_protected_notification_markup,
+    build_protected_notification_text,
+)
 
 
 class TestNotificationText(unittest.TestCase):
@@ -19,7 +24,7 @@ class TestNotificationText(unittest.TestCase):
         values = {
             "group_title": "Test guruh",
             "sender_name": "Ali",
-            "username": "@ali",
+            "username": "@alice",
             "user_id": 123,
             "phone": "Matnda ko'rsatilmagan",
             "raw_text": "mashina kerak",
@@ -29,6 +34,48 @@ class TestNotificationText(unittest.TestCase):
         }
         values.update(overrides)
         return build_notification_text(**values)
+
+    def test_protected_notification_omits_message_content(self):
+        text = build_protected_notification_text(
+            group_title="Himoyalangan guruh",
+            message_link="https://t.me/c/123456/789",
+        )
+        self.assertIn("HIMOYALANGAN GURUHDA MOS MATN TOPILDI", text)
+        self.assertIn('href="https://t.me/c/123456/789"', text)
+        self.assertNotIn("Xabar matni:", text)
+        self.assertNotIn("Telefon:", text)
+        self.assertNotIn("Kalitlar:", text)
+
+    def test_protected_markup_only_opens_original_message(self):
+        markup = build_protected_notification_markup("https://t.me/c/123456/789")
+        self.assertEqual(len(markup["inline_keyboard"]), 1)
+        buttons = markup["inline_keyboard"][0]
+        self.assertEqual(len(buttons), 1)
+        self.assertEqual(buttons[0]["url"], "https://t.me/c/123456/789")
+        self.assertNotIn("callback_data", buttons[0])
+        self.assertIsNone(build_protected_notification_markup(None))
+
+    def test_protected_fallback_heading_is_not_misleading(self):
+        text = build_protected_notification_text(
+            group_title="Guruh",
+            message_link=None,
+            protected=False,
+        )
+        self.assertIn("GURUHDA MOS MATN TOPILDI", text)
+        self.assertNotIn("HIMOYALANGAN GURUHDA", text)
+        self.assertIn("Guruhni ochib", text)
+
+    def test_profile_link_prefers_public_username_https(self):
+        text = self._build()
+        self.assertIn('href="https://t.me/alice"', text)
+        self.assertNotIn("tg://user?id=", text)
+        self.assertEqual(build_profile_link("@ali_123"), "https://t.me/ali_123")
+
+    def test_missing_username_does_not_emit_privacy_sensitive_tg_link(self):
+        text = self._build(username="Yo'q")
+        self.assertNotIn("tg://user?id=", text)
+        self.assertIn("guruhdagi asl xabarni oching", text)
+        self.assertIsNone(build_profile_link("Yo'q"))
 
     def test_count_mode_shows_count_requirement(self):
         text = self._build(match_mode="count", required_count=2)

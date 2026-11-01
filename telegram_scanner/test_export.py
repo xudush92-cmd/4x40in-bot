@@ -165,5 +165,53 @@ class ExportTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Yopish" in label for label in labels), labels)
 
 
+class DialogPickerTest(unittest.TestCase):
+    def setUp(self):
+        self.dialogs = [(i, f"Guruh {i:03d}") for i in range(32)]
+
+    @staticmethod
+    def button_data(markup):
+        return [
+            button.callback_data
+            for row in markup.inline_keyboard
+            for button in row
+        ]
+
+    def test_picker_pages_every_dialog(self):
+        page_count = (len(self.dialogs) + B.DIALOGS_PAGE_SIZE - 1) // B.DIALOGS_PAGE_SIZE
+        seen = []
+        for page in range(page_count):
+            markup = B._dialogs_keyboard(self.dialogs, set(), page=page)
+            visible = [
+                button.text
+                for row in markup.inline_keyboard
+                for button in row
+                if button.callback_data and button.callback_data.startswith("gadd:")
+            ]
+            self.assertLessEqual(len(visible), B.DIALOGS_PAGE_SIZE)
+            seen.extend(visible)
+        self.assertEqual(len(seen), len(self.dialogs))
+        self.assertIn("Guruh 000", seen[0])
+        self.assertIn("Guruh 031", seen[-1])
+
+    def test_picker_navigation_and_search_controls(self):
+        first = self.button_data(B._dialogs_keyboard(self.dialogs, set(), page=0))
+        last = self.button_data(B._dialogs_keyboard(self.dialogs, set(), page=2))
+        self.assertIn("gpage:1", first)
+        self.assertIn("gpage:1", last)
+        self.assertNotIn("gpage:3", last)
+        self.assertIn("gsearch", first)
+        self.assertIn("grefresh", first)
+        self.assertIn("gshowall", self.button_data(
+            B._dialogs_keyboard(self.dialogs, set(), page=0, search_query="test")
+        ))
+
+    def test_search_is_case_insensitive_and_matches_id(self):
+        dialogs = [(101, "Samarqand yo'lovchi"), (202, "Toshkent qatnov")]
+        self.assertEqual(B._filter_dialogs(dialogs, "SAMAR"), [dialogs[0]])
+        self.assertEqual(B._filter_dialogs(dialogs, "202"), [dialogs[1]])
+        self.assertEqual(B._filter_dialogs(dialogs, ""), dialogs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

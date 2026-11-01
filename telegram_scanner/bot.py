@@ -5,6 +5,7 @@ import re
 import time
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -173,6 +174,7 @@ class SetCount(StatesGroup):
 
 class AddGroup(StatesGroup):
     waiting_group = State()  # guruh manzili yoki ID kutilmoqda
+    searching_dialogs = State()  # akkaunt dialoglaridan guruh qidirilmoqda
 
 
 class ImportWords(StatesGroup):
@@ -1242,7 +1244,7 @@ async def user_ask_group(message: types.Message, state: FSMContext):
             reply_markup=user_menu_for(uid),
         )
         return
-    await _show_account_groups(message, uid)
+    await _show_account_groups(message, uid, state)
 
 
 @dp.message(NotAdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
@@ -2789,7 +2791,7 @@ async def admin_ask_group(message: types.Message, state: FSMContext):
             reply_markup=main_menu(admin=True),
         )
         return
-    await _show_account_groups(message, uid)
+    await _show_account_groups(message, uid, state)
 
 
 @dp.message(AdminFilter(), StateFilter(AddGroup.waiting_group), F.text)
@@ -2850,10 +2852,14 @@ async def admin_list_groups(message: types.Message, state: FSMContext):
 # --- Admin: akkauntdagi guruhlarni aniqlash (ID taxmin qilmaslik uchun) ---
 GROUP_PICKER_TEXT = (
     "➕ <b>Guruh qo'shish</b>\n\n"
-    "Akkauntingiz a'zo bo'lgan guruhlar ro'yxati. Nomini bosing — "
-    "ro'yxatga qo'shiladi (✅ — allaqachon qo'shilgan).\n\n"
-    "Ro'yxatda yo'q guruhni <b>✍️ Qo'lda kiritish</b> bilan qo'shasiz."
+    "Akkauntingiz a'zo bo'lgan guruhlar. Nomini bosing — ro'yxatga "
+    "qo'shiladi (✅ — allaqachon qo'shilgan). Sahifalardan o'ting yoki "
+    "nomi bo'yicha qidiring."
 )
+DIALOGS_PAGE_SIZE = 15
+DIALOGS_CACHE_KEY = "dialog_picker_dialogs"
+DIALOGS_SEARCH_KEY = "dialog_picker_search"
+DIALOGS_PAGE_KEY = "dialog_picker_page"
 
 GROUP_MANUAL_TEXT = (
     "✍️ Guruh <b>manzili yoki ID</b> sidan birini yuboring:\n\n"
@@ -2865,13 +2871,10 @@ GROUP_MANUAL_TEXT = (
 )
 
 
-async def _show_account_groups(message: types.Message, uid: int) -> None:
-    """➕ Guruh qo'shish: avval akkauntdagi guruhlar ro'yxati.
-
-    Ro'yxat sessiya ko'rayotgan guruhlardan olinadi — ID yozish shart
-    emas. Ro'yxat bo'sh yoki sessiya offline bo'lsa qo'lda kiritish
-    taklif qilinadi (u har doim ishlaydi).
-    """
+async def _show_account_groups(
+    message: types.Message, uid: int, state: FSMContext
+) -> None:
+    """Akkauntdagi barcha guruhlarni sahifalab tanlash yoki qidirish."""
     menu = menu_for(uid)
     if not user_connected(uid):
         await message.answer(
@@ -2880,62 +2883,244 @@ async def _show_account_groups(message: types.Message, uid: int) -> None:
             reply_markup=menu,
         )
         return
-    if count_user_groups(uid) >= MAX_USER_GROUPS:
-        await message.answer(
-            f"⚠️ Limit: ko'pi bilan {MAX_USER_GROUPS} ta guruh qo'sha olasiz.",
-            reply_markup=menu,
-        )
-        return
-
-    manual_row = [InlineKeyboardButton(
-        text="✍️ Qo'lda kiritish", callback_data="gmanual")]
-    dialogs = None
     try:
         import scanner_manager
 
-        dialogs = await scanner_manager.list_user_dialogs(uid)
+        dialogs = await scanner_manager.list_user_dialogs(uid, limit=None)
     except Exception:
         logger.exception("Dialoglar ro'yxati")
+        dialogs = None
 
+    manual_row = [InlineKeyboardButton(
+        text="✍️ Qo'lda kiritish", callback_data="gmanual")]
+    fallback_markup = InlineKeyboardMarkup(
+        inline_keyboard=[manual_row, [_close_button()]]
+    )
     if dialogs is None:
-        # Sessiya hozir onlayn emas — qo'lda kiritish ishlayveradi.
         await message.answer(
-            "⚠️ Sessiya hozir onlayn emas, guruhlar ro'yxatini ololmadim.\n"
-            "Qo'lda kiritish bilan qo'shishingiz mumkin.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[manual_row]),
+            "⚠️ Sessiya hozir onlayn emas yoki ro'yxat olinmadi.\n"
+            "Guruhni qo'lda kiritishingiz mumkin.",
+            reply_markup=fallback_markup,
         )
         return
     if not dialogs:
         await message.answer(
-            "📭 Akkauntingiz hech qanday guruhda a'zo emas.\n"
+            "📭 Akkauntingizda ko'rinadigan guruh topilmadi.\n"
             "Avval Telegramda guruhga qo'shiling, keyin qayta urining.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[manual_row]),
+            reply_markup=fallback_markup,
         )
         return
 
-    added = {row[3] for row in get_user_groups(uid) if row[3]}
-    kb = _dialogs_keyboard(dialogs, added)
-    rows = list(kb.inline_keyboard) if kb else []
-    rows.append(manual_row)
-    await message.answer(
-        GROUP_PICKER_TEXT,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    await state.update_data(
+        **{
+            DIALOGS_CACHE_KEY: dialogs,
+            DIALOGS_SEARCH_KEY: "",
+            DIALOGS_PAGE_KEY: 0,
+        }
     )
+    await _render_account_groups(message, uid, state, page=0, query="")
 
 
-def _dialogs_keyboard(dialogs, added_ids) -> InlineKeyboardMarkup:
+def _filter_dialogs(dialogs, query: str = "") -> list[tuple[int, str]]:
+    """Guruh nomi yoki ID bo'yicha qidiruv; bo'sh query hammasini qaytaradi."""
+    query = (query or "").strip().casefold()
+    if not query:
+        return list(dialogs)
+    return [
+        (chat_id, title)
+        for chat_id, title in dialogs
+        if query in str(title or "").casefold() or query in str(chat_id)
+    ]
+
+
+def _dialogs_keyboard(
+    dialogs, added_ids, page: int = 0, search_query: str = ""
+) -> InlineKeyboardMarkup:
+    pages = max(1, (len(dialogs) + DIALOGS_PAGE_SIZE - 1) // DIALOGS_PAGE_SIZE)
+    page = min(max(0, page), pages - 1)
+    start = page * DIALOGS_PAGE_SIZE
     rows = []
-    for chat_id, title in dialogs[:25]:
+    for chat_id, title in dialogs[start:start + DIALOGS_PAGE_SIZE]:
         mark = "✅ " if chat_id in added_ids else "➕ "
         label = f"{mark}{_short_text(title or chat_id, 30)}"
         rows.append([
             InlineKeyboardButton(text=label, callback_data=f"gadd:{chat_id}")
         ])
-    if not rows:
-        return None
+
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(
+                text="⬅️ Oldingi", callback_data=f"gpage:{page - 1}"
+            ))
+        nav.append(InlineKeyboardButton(
+            text=f"{page + 1}/{pages}", callback_data=f"gpage:{page}"
+        ))
+        if page + 1 < pages:
+            nav.append(InlineKeyboardButton(
+                text="Keyingi ➡️", callback_data=f"gpage:{page + 1}"
+            ))
+        rows.append(nav)
+
+    controls = [
+        InlineKeyboardButton(text="🔎 Qidirish", callback_data="gsearch"),
+        InlineKeyboardButton(text="🔄 Yangilash", callback_data="grefresh"),
+    ]
+    if search_query:
+        controls.append(InlineKeyboardButton(
+            text="📃 Barchasi", callback_data="gshowall"
+        ))
+    rows.append(controls)
+    rows.append([InlineKeyboardButton(
+        text="✍️ Qo'lda kiritish", callback_data="gmanual"
+    )])
     rows.append([_close_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _picker_dialogs(uid: int, state: FSMContext, refresh: bool = False):
+    data = await state.get_data()
+    dialogs = data.get(DIALOGS_CACHE_KEY)
+    if dialogs is None or refresh:
+        try:
+            import scanner_manager
+
+            dialogs = await scanner_manager.list_user_dialogs(uid, limit=None)
+        except Exception:
+            logger.exception("Dialoglar ro'yxatini yangilash")
+            return None
+        if dialogs is None:
+            return None
+        await state.update_data(**{DIALOGS_CACHE_KEY: dialogs})
+    return dialogs
+
+
+def _dialog_picker_text(total: int, found: int, page: int, pages: int, query: str):
+    text = GROUP_PICKER_TEXT
+    if query:
+        text += f"\n\n🔎 Qidiruv: <code>{html.escape(query)}</code>"
+        text += f"\nMos guruhlar: {found} ta"
+    else:
+        text += f"\n\nJami guruhlar: {total} ta"
+    if found:
+        text += f"\nSahifa: {page + 1}/{pages}"
+    else:
+        text += "\n\nBu so'rovga mos guruh topilmadi."
+    return text
+
+
+async def _render_account_groups(
+    target, uid: int, state: FSMContext, page: int = 0,
+    query: str | None = None, edit: bool = False, refresh: bool = False,
+) -> None:
+    dialogs = await _picker_dialogs(uid, state, refresh=refresh)
+    if dialogs is None:
+        text = "⚠️ Guruhlar ro'yxatini hozir olib bo'lmadi. Qayta urinib ko'ring."
+        if edit:
+            await target.edit_text(text)
+        else:
+            await target.answer(text)
+        return
+
+    data = await state.get_data()
+    if query is None:
+        query = data.get(DIALOGS_SEARCH_KEY, "")
+    filtered = _filter_dialogs(dialogs, query)
+    pages = max(1, (len(filtered) + DIALOGS_PAGE_SIZE - 1) // DIALOGS_PAGE_SIZE)
+    page = min(max(0, page), pages - 1)
+    await state.update_data(**{
+        DIALOGS_SEARCH_KEY: query,
+        DIALOGS_PAGE_KEY: page,
+    })
+    added = set()
+    for group_row in get_user_groups(uid):
+        if group_row[3]:
+            added.add(group_row[3])
+        try:
+            added.add(int(group_row[2]))
+        except (TypeError, ValueError):
+            pass
+    markup = _dialogs_keyboard(filtered, added, page, query)
+    text = _dialog_picker_text(len(dialogs), len(filtered), page, pages, query)
+    if count_user_groups(uid) >= MAX_USER_GROUPS:
+        text += (
+            f"\n\n⚠️ {MAX_USER_GROUPS} ta guruh limiti to'lgan. "
+            "Yangisini qo'shish uchun avval bittasini o'chiring."
+        )
+    if edit:
+        try:
+            await target.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=markup)
+
+
+@dp.callback_query(F.data.startswith("gpage:"))
+async def dialog_picker_page_callback(
+    callback: types.CallbackQuery, state: FSMContext
+):
+    try:
+        page = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Sahifa ma'lumoti noto'g'ri.", show_alert=True)
+        return
+    await callback.answer()
+    await _render_account_groups(
+        callback.message, callback.from_user.id, state, page=page, edit=True
+    )
+
+
+@dp.callback_query(F.data == "gsearch")
+async def dialog_picker_search_callback(
+    callback: types.CallbackQuery, state: FSMContext
+):
+    await state.set_state(AddGroup.searching_dialogs)
+    await callback.answer()
+    await callback.message.answer(
+        "🔎 Qidirish uchun guruh nomidan bir qismini yuboring.\n"
+        "Bekor qilish: /cancel",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[_close_button()]]
+        ),
+    )
+
+
+@dp.message(StateFilter(AddGroup.searching_dialogs), F.text)
+async def search_account_dialogs(message: types.Message, state: FSMContext):
+    query = (message.text or "").strip()
+    if query.lower() in {"/cancel", "bekor"}:
+        await state.clear()
+        await message.answer("Qidiruv bekor qilindi.", reply_markup=menu_for(message.from_user.id))
+        return
+    await state.set_state(None)
+    await _render_account_groups(
+        message, message.from_user.id, state, page=0, query=query
+    )
+
+
+@dp.callback_query(F.data == "gshowall")
+async def dialog_picker_show_all_callback(
+    callback: types.CallbackQuery, state: FSMContext
+):
+    await callback.answer()
+    await _render_account_groups(
+        callback.message, callback.from_user.id, state,
+        page=0, query="", edit=True,
+    )
+
+
+@dp.callback_query(F.data == "grefresh")
+async def dialog_picker_refresh_callback(
+    callback: types.CallbackQuery, state: FSMContext
+):
+    data = await state.get_data()
+    await callback.answer("Ro'yxat yangilanmoqda")
+    await _render_account_groups(
+        callback.message, callback.from_user.id, state,
+        page=data.get(DIALOGS_PAGE_KEY, 0), refresh=True, edit=True,
+    )
 
 
 @dp.message(F.text == BTN_SCAN_GROUPS)
@@ -2946,7 +3131,7 @@ async def scan_groups_alias(message: types.Message, state: FSMContext):
     ko'rsatadi), lekin eski klaviaturalarda qolib ketgan bo'lsa ishlaydi.
     """
     await state.clear()
-    await _show_account_groups(message, message.from_user.id)
+    await _show_account_groups(message, message.from_user.id, state)
 
 
 @dp.callback_query(F.data == "gmanual")
@@ -2959,17 +3144,32 @@ async def group_manual_callback(callback: types.CallbackQuery, state: FSMContext
         )
         return
     await state.set_state(AddGroup.waiting_group)
-    await callback.message.answer(GROUP_MANUAL_TEXT, parse_mode="HTML")
+    await callback.message.answer(
+        GROUP_MANUAL_TEXT,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[_close_button()]]
+        ),
+    )
     await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("gadd:"))
-async def admin_add_dialog_group(callback: types.CallbackQuery):
+async def admin_add_dialog_group(
+    callback: types.CallbackQuery, state: FSMContext
+):
     uid = callback.from_user.id
     try:
         chat_id = int(callback.data.split(":", 1)[1])
     except (ValueError, IndexError):
         await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    if count_user_groups(uid) >= MAX_USER_GROUPS:
+        await callback.answer(
+            f"Limit: avval mavjud guruhlardan birini o'chiring "
+            f"({MAX_USER_GROUPS} ta).",
+            show_alert=True,
+        )
         return
     ok, err = add_user_group(uid, str(chat_id))
     if not ok:
@@ -2986,6 +3186,11 @@ async def admin_add_dialog_group(callback: types.CallbackQuery):
         logger.exception("Guruhni darhol hal qilish")
     row = next((g for g in get_user_groups(uid) if g[3] == chat_id), None)
     await callback.answer("✅ Qo'shildi")
+    data = await state.get_data()
+    await _render_account_groups(
+        callback.message, uid, state,
+        page=data.get(DIALOGS_PAGE_KEY, 0), edit=True,
+    )
     if row:
         await callback.message.answer(
             _user_group_text(row),

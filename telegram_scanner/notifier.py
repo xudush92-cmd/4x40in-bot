@@ -64,21 +64,46 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
                     logger.info("[NOTIFY] Yuborildi (chat_id=%s)", target)
                     return True
                 logger.warning("[NOTIFY] Bot API xatosi (%s): %s", resp.status, body)
-            # Zaxira: tugmalarsiz va HTMLsiz oddiy matn
+            # Avval inline tugmalarsiz, lekin HTML havolalarini saqlab yuboramiz.
+            # Reply markupdagi bitta yaroqsiz URL butun klaviaturani yo'qotmasin.
+            html_fallback = {
+                "chat_id": target,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            async with session.post(url, json=html_fallback) as resp2:
+                if resp2.status == 200:
+                    logger.info("[NOTIFY] HTML havolali zaxira xabar yuborildi")
+                    return True
+                logger.warning(
+                    "[NOTIFY] HTML zaxira xatosi (%s): %s",
+                    resp2.status, await resp2.text(),
+                )
+
+            # Oxirgi zaxira: HTMLsiz oddiy matn.
             plain = re.sub(r"<[^>]+>", "", text)
             async with session.post(
                 url, json={"chat_id": target, "text": plain}
-            ) as resp2:
-                if resp2.status == 200:
-                    logger.info("[NOTIFY] Zaxira matn yuborildi")
+            ) as resp3:
+                if resp3.status == 200:
+                    logger.info("[NOTIFY] Oddiy matnli zaxira yuborildi")
                     return True
                 logger.error(
                     "[NOTIFY] Zaxira ham yuborilmadi (%s): %s",
-                    resp2.status, await resp2.text(),
+                    resp3.status, await resp3.text(),
                 )
     except Exception:
         logger.exception("[NOTIFY] Yuborishda tarmoq xatosi")
     return False
+
+
+def build_profile_link(username: str | None) -> str | None:
+    """Username mavjud bo'lsa, Telegram profilining xavfsiz HTTPS havolasi."""
+    value = (username or "").strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", value):
+        return None
+    return f"https://t.me/{value}"
 
 
 def build_message_link(chat, chat_id, message_id) -> str | None:
@@ -110,6 +135,43 @@ def find_phone_text(raw_text: str, sender=None) -> str:
     return "Matnda ko'rsatilmagan"
 
 
+def build_protected_notification_markup(message_link: str | None):
+    """Himoyalangan xabarda faqat asl guruh xabariga havola beradi."""
+    if not message_link:
+        return None
+    return {
+        "inline_keyboard": [[{
+            "text": "↗️ Guruhdagi asl xabarni ochish",
+            "url": message_link,
+        }]]
+    }
+
+
+def build_protected_notification_text(
+    *, group_title: str, message_link: str | None, protected: bool = True,
+) -> str:
+    """Matnni ko'chirmaydigan (himoyalangan yoki aniqlanmagan) ogohlantirish."""
+    esc = html.escape
+    heading = (
+        "🔒 <b>HIMOYALANGAN GURUHDA MOS MATN TOPILDI</b>"
+        if protected else "🔎 <b>GURUHDA MOS MATN TOPILDI</b>"
+    )
+    lines = [
+        heading,
+        "━━━━━━━━━━━━━━━",
+        f"📍 <b>Guruh:</b> {esc(group_title or 'Nomaʼlum guruh')}",
+        "Xabar matni va yuboruvchi ma'lumotlari himoyani saqlash uchun ko'rsatilmaydi.",
+    ]
+    if message_link:
+        lines.append(
+            f'🔗 <a href="{esc(message_link, quote=True)}">'
+            "Guruhdagi asl xabarni ochish</a>"
+        )
+    else:
+        lines.append("Guruhni ochib, mos xabarni o'zingiz ko'ring.")
+    return "\n".join(lines)
+
+
 def build_notification_text(
     *,
     group_title: str,
@@ -131,20 +193,23 @@ def build_notification_text(
     sep = "━━━━━━━━━━━━━━━"
     esc = html.escape
 
-    if user_id is not None:
+    profile_link = build_profile_link(username)
+    if user_id is not None and profile_link:
+        safe_profile_link = esc(profile_link, quote=True)
         sender_block = (
             f'👤 <b>Yuboruvchi:</b> '
-            f'<a href="tg://user?id={user_id}">{esc(sender_name)}</a>'
+            f'<a href="{safe_profile_link}">{esc(sender_name)}</a>'
         )
-        if username and username != "Yo'q":
-            sender_block += f"\n({esc(username)})"
+        sender_block += f"\n({esc(username)})"
         profile_line = (
-            f'👉 <a href="tg://user?id={user_id}">'
+            f'👉 <a href="{safe_profile_link}">'
             "Mijoz profiliga o'tish (Lichkasi)</a>"
         )
     else:
         sender_block = f"👤 <b>Yuboruvchi:</b> {esc(sender_name)}"
-        profile_line = "💡 (Mijoz profiliga o'tish uchun asl xabarni oching)"
+        if username and username != "Yo'q":
+            sender_block += f"\n({esc(username)})"
+        profile_line = "💡 (Profil havolasi yo'q — guruhdagi asl xabarni oching)"
 
     lines = [
         "🚕 <b>YANGI BUYURTMA / MIJOZ TOPILDI!</b>",

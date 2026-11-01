@@ -9,6 +9,8 @@ import os
 import sys
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -215,6 +217,97 @@ class TestSkipLogThrottle(unittest.TestCase):
         self.sm._log_skip(777, -1002, verdict)
         self.sm._log_skip(777, -1001, verdict)
         self.assertEqual(len(self.records), 2)
+
+
+class TestProtectedContent(unittest.TestCase):
+    def setUp(self):
+        import scanner_manager
+
+        self.sm = scanner_manager
+
+    def test_chat_level_protection_is_detected(self):
+        self.assertTrue(self.sm._is_protected_content(
+            chat=SimpleNamespace(noforwards=True),
+            message=SimpleNamespace(noforwards=False),
+        ))
+
+    def test_message_level_protection_is_detected(self):
+        self.assertTrue(self.sm._is_protected_content(
+            chat=SimpleNamespace(noforwards=False),
+            message=SimpleNamespace(noforwards=True),
+        ))
+
+    def test_unprotected_content_is_not_flagged(self):
+        self.assertFalse(self.sm._is_protected_content(
+            chat=SimpleNamespace(noforwards=False),
+            message=SimpleNamespace(noforwards=False),
+        ))
+
+    def test_diagnostics_never_store_message_text(self):
+        self.sm._note_event(777, False, -100123, "protected text should not persist")
+        self.assertEqual(self.sm._last_event[777][2], "")
+        self.sm.reset_diagnostics(777)
+
+
+class _HandlerClient:
+    def on(self, _builder):
+        def register(handler):
+            self.handler = handler
+            return handler
+        return register
+
+
+class _ProtectedEvent:
+    def __init__(self):
+        self.chat_id = -100123456789
+        self.is_private = False
+        self.raw_text = "secret message: passenger phone 998901234567"
+        self.out = False
+        self.id = 50
+        self.message = SimpleNamespace(noforwards=False, sticker=None)
+        self.sender_calls = 0
+
+    async def get_chat(self):
+        return SimpleNamespace(
+            title="Protected group", username=None, noforwards=True
+        )
+
+    async def get_sender(self):
+        self.sender_calls += 1
+        return SimpleNamespace(first_name="Private Sender", id=321)
+
+
+class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
+    async def test_match_alert_does_not_copy_protected_text(self):
+        import scanner_manager
+
+        event = _ProtectedEvent()
+        client = _HandlerClient()
+        verdict = SimpleNamespace(ok=True)
+        with (
+            patch.object(scanner_manager, "evaluate", return_value=verdict),
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+            patch.object(scanner_manager, "increment_user_counter"),
+            patch.object(scanner_manager, "set_user_last_found"),
+            patch.object(scanner_manager, "increment_counter"),
+            patch.object(scanner_manager, "save_lead_review") as save_review,
+        ):
+            scanner_manager._make_handler(123, client)
+            await client.handler(event)
+
+        send.assert_awaited_once()
+        text, markup = send.await_args.args[:2]
+        self.assertIn("HIMOYALANGAN GURUHDA MOS MATN TOPILDI", text)
+        self.assertIn("Protected group", text)
+        self.assertNotIn(event.raw_text, text)
+        self.assertNotIn("998901234567", text)
+        self.assertNotIn("Private Sender", text)
+        self.assertEqual(event.sender_calls, 0)
+        save_review.assert_not_called()
+        self.assertEqual(len(markup["inline_keyboard"]), 1)
+        button = markup["inline_keyboard"][0][0]
+        self.assertEqual(button["url"], "https://t.me/c/123456789/50")
+        self.assertNotIn("callback_data", button)
 
 
 class TestWatch(unittest.TestCase):
