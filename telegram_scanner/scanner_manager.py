@@ -394,12 +394,42 @@ def _make_handler(owner_id: int, client: TelegramClient):
 
         if protected or protection_unknown:
             logger.info("[SCAN] protected-match owner=%s chat=%s", owner_id, chat_id)
+            # Faqat himoya holati aniq bo'lsa, cheklangan ko'rinadigan
+            # ma'lumotni ko'rsatamiz. Xabar matnini yoki profilning yashirin
+            # telefon raqamini bildirishnomaga ko'chirmaymiz.
+            include_details = protected and not protection_unknown
+            sender_name, username = None, None
+            if include_details:
+                try:
+                    sender = await event.get_sender()
+                    if sender is not None:
+                        sender_name = (
+                            f"{getattr(sender, 'first_name', '') or ''} "
+                            f"{getattr(sender, 'last_name', '') or ''}"
+                        ).strip() or getattr(sender, "title", "") or None
+                        username = getattr(sender, "username", None)
+                except Exception:
+                    logger.warning(
+                        "[SCAN] protected-match yuboruvchi olinmadi "
+                        "owner=%s chat=%s",
+                        owner_id, chat_id, exc_info=True,
+                    )
+            phone = find_phone_text(raw_text) if include_details else None
+            matched_words = getattr(verdict, "matched", []) if include_details else []
             text = build_protected_notification_text(
                 group_title=group_title,
                 message_link=message_link,
                 protected=protected,
+                include_details=include_details,
+                sender_name=sender_name,
+                username=username,
+                phone=phone,
+                matched_words=matched_words,
             )
-            markup = build_protected_notification_markup(message_link)
+            markup = build_protected_notification_markup(
+                message_link,
+                username=username if include_details else None,
+            )
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
             increment_counter("leads_found")

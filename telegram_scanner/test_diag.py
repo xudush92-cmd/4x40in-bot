@@ -261,7 +261,7 @@ class _ProtectedEvent:
     def __init__(self):
         self.chat_id = -100123456789
         self.is_private = False
-        self.raw_text = "secret message: passenger phone 998901234567"
+        self.raw_text = "Toshkentdan odam bor, telefon 998901234567"
         self.out = False
         self.id = 50
         self.message = SimpleNamespace(noforwards=False, sticker=None)
@@ -274,16 +274,22 @@ class _ProtectedEvent:
 
     async def get_sender(self):
         self.sender_calls += 1
-        return SimpleNamespace(first_name="Private Sender", id=321)
+        return SimpleNamespace(
+            first_name="Visible Sender",
+            last_name="Name",
+            username="visible_user",
+            id=321,
+            phone="998991112233",
+        )
 
 
 class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
-    async def test_match_alert_does_not_copy_protected_text(self):
+    async def test_match_alert_shows_only_selected_visible_details(self):
         import scanner_manager
 
         event = _ProtectedEvent()
         client = _HandlerClient()
-        verdict = SimpleNamespace(ok=True)
+        verdict = SimpleNamespace(ok=True, matched=["odam bor"])
         with (
             patch.object(scanner_manager, "evaluate", return_value=verdict),
             patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
@@ -300,14 +306,20 @@ class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HIMOYALANGAN GURUHDA MOS MATN TOPILDI", text)
         self.assertIn("Protected group", text)
         self.assertNotIn(event.raw_text, text)
-        self.assertNotIn("998901234567", text)
-        self.assertNotIn("Private Sender", text)
-        self.assertEqual(event.sender_calls, 0)
+        self.assertIn("Visible Sender Name", text)
+        self.assertIn("@visible_user", text)
+        self.assertIn("998901234567", text)
+        self.assertNotIn("998991112233", text)
+        self.assertIn("odam bor", text)
+        self.assertNotIn("Ball:", text)
+        self.assertEqual(event.sender_calls, 1)
         save_review.assert_not_called()
-        self.assertEqual(len(markup["inline_keyboard"]), 1)
-        button = markup["inline_keyboard"][0][0]
-        self.assertEqual(button["url"], "https://t.me/c/123456789/50")
-        self.assertNotIn("callback_data", button)
+        self.assertEqual(len(markup["inline_keyboard"]), 2)
+        profile_button, message_button = [row[0] for row in markup["inline_keyboard"]]
+        self.assertEqual(profile_button["url"], "https://t.me/visible_user")
+        self.assertEqual(message_button["url"], "https://t.me/c/123456789/50")
+        self.assertNotIn("callback_data", profile_button)
+        self.assertNotIn("callback_data", message_button)
 
 
 class TestWatch(unittest.TestCase):
