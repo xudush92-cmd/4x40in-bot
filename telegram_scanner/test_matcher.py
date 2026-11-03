@@ -130,6 +130,40 @@ class TestCyrillic(unittest.TestCase):
         self.assertTrue(r.is_match)
 
 
+class TestReformedUzbekLatin(unittest.TestCase):
+    """Yangi rasmiy lotin harflari eski lotin va kirill bilan mos."""
+
+    FORMS = (
+        ("Şahar", "shahar", "шаҳар"),
+        ("Çoy", "choy", "чой"),
+        ("Özbek", "o'zbek", "ўзбек"),
+        ("Ğalaba", "g'alaba", "ғалаба"),
+    )
+
+    def test_new_latin_keyword_matches_old_latin_and_cyrillic(self):
+        for new, old, cyrillic in self.FORMS:
+            with self.subTest(new=new):
+                self.assertTrue(match_keywords(new, [old], 1).is_match)
+                self.assertTrue(match_keywords(old, [new], 1).is_match)
+                self.assertTrue(match_keywords(cyrillic, [new], 1).is_match)
+
+    def test_uppercase_and_mixed_script(self):
+        text = "ŞAHAR çOY ÖZBEK ğalaba"
+        keys = ["shahar", "choy", "o'zbek", "g'alaba"]
+        self.assertEqual(match_keywords(text, keys, 4).matched_count, 4)
+
+    def test_new_script_forms_canonicalize_to_old_keys(self):
+        aliases = (("Şahar", "shahar"), ("Çoy", "choy"),
+                   ("Özbek", "o'zbek"), ("Ğalaba", "g'alaba"))
+        for new, old in aliases:
+            with self.subTest(new=new):
+                self.assertEqual(canonical_entry(new), canonical_entry(old))
+
+    def test_ng_remains_a_normal_letter_sequence(self):
+        for text in ("ko'ngil", "кўнгил"):
+            self.assertTrue(match_keywords(text, ["köngil"], 1).is_match, text)
+
+
 class TestDriverFilter(unittest.TestCase):
     """Suratlardagi haydovchi e'lonlari bloklanishi, mijoz o'tishi kerak."""
 

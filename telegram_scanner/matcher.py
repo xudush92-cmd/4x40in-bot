@@ -14,6 +14,8 @@ Qo'shimcha imkoniyatlar:
     "toshkent" ~ "toshkentdan" / "toshkentga" (umumiy o'zak bo'yicha);
   * lotin/kirill alifbosi farqi hisobga olinmaydi, shu jumladan
     "dangasa" yozilgan kirill (ў→у, қ→к, ғ→г, ҳ→х) ham;
+  * yangi lotin harflari ö/ğ/ş/ç eski o'/g'/sh/ch yozuvlariga
+    normallashtiriladi — kalitlarni alohida nusxalash shart emas;
   * fe'l shaxsi ajratiladi: "jo'naymiz" (biz) "jo'naysiz" (siz) bilan
     aralashtirilmaydi;
   * so'roq shaklini qat'iy ajratish imkoniyati bor (ixtiyoriy):
@@ -29,6 +31,11 @@ from functools import lru_cache
 
 _TOKEN_RE = re.compile(r"[^\W_]+(?:['’ʻʼ][^\W_]+)*", re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`": "'"})
+# O‘RQ-1184 bilan kiritilayotgan yangi lotin harflari eski yozuvning
+# matcher uchun yagona shakliga o'tkaziladi. Avval text.lower() qilinadi.
+_NEW_UZBEK_LATIN = str.maketrans({
+    "ö": "o'", "ğ": "g'", "ş": "sh", "ç": "ch",
+})
 
 # --- Lotin <-> kirill transliteratsiya (faqat SOLISHTIRISH uchun) ---
 # Bitta kalit ikkala alifbodagi xabarni ham topishi uchun har bir so'z
@@ -177,10 +184,11 @@ class MatchResult:
 
 
 def normalize_tokens(text: str) -> list[str]:
-    """Matnni kichik harfli so'zlar ro'yxatiga aylantiradi."""
+    """Matnni kichik harfli, alifbo variantlari bir xil so'zlarga aylantiradi."""
     if not text:
         return []
-    return _TOKEN_RE.findall(text.lower().translate(_APOSTROPHES))
+    normalized = text.lower().translate(_APOSTROPHES).translate(_NEW_UZBEK_LATIN)
+    return _TOKEN_RE.findall(normalized)
 
 
 def normalize_text(text: str) -> str:
@@ -1056,8 +1064,9 @@ def canonical_entry(text: str | None) -> str:
 
     Katta-kichik harf, ortiqcha bo'shliq, tinish belgilari va
     lotin/kirill farqi hisobga olinmaydi: ``ТОШКЕНТ`` bilan
-    ``toshkent`` bitta yozuv hisoblanadi. "Dangasa" yozilgan kirill
-    (``қарши`` / ``карши``) ham bitta yozuv sifatida qaraladi.
+    ``toshkent`` bitta yozuv hisoblanadi. Yangi lotindagi ``ö/ğ/ş/ç``
+    ham eski ``o'/g'/sh/ch`` shakllari bilan bir xil hisoblanadi.
+    "Dangasa" yozilgan kirill (``қарши`` / ``карши``) ham bitta yozuv.
     """
     tokens = normalize_tokens(text or "")
     out = []

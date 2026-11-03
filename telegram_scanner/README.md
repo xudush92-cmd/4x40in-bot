@@ -169,7 +169,9 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   yetarli. Skaner kirill alifbosini ham, "dangasa" yozilgan kirillni
   ham (ў→у, қ→к, ғ→г, ҳ→х) tanidi: `qarshi` = `қарши` = `карши`,
   `jo'naymiz` = `жўнаймиз` =
-  `жунаймиз`. Apostrof muhim: `bo'sh` to'g'ri, `bosh` — boshqa so'z.
+  `жунаймиз`. Yangi lotin harflari ham eski kalitlarga tenglashtiriladi:
+  `ö` = `o'`, `ğ` = `g'`, `ş` = `sh`, `ç` = `ch`.
+  Apostrof muhim: `bo'sh` to'g'ri, `bosh` — boshqa so'z.
   Fe'l shakllari ham mos keladi: `olamiz`/`olaman` (bir shaxs),
   `odam`/`odamlar`.
 - **Tezlik**: kalitlar prefiks indeksi bo'yicha qidiriladi. 5000 ta
