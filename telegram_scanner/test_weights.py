@@ -196,6 +196,39 @@ class TestWeightedInput(unittest.TestCase):
         self.assertEqual(result.score, 3.0)
         self.assertEqual(result.positives, {"shahar": 3.0})
 
+    def test_fuzzy_single_word_aliases_only_score_once_per_token(self):
+        entries = [("pochta", 3.0), ("pocta", 3.0), ("pochto", 3.0)]
+        result = score_text("pocht", entries, threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+        self.assertEqual(len(result.positives), 1)
+
+    def test_fuzzy_phrase_aliases_only_score_once_per_occurrence(self):
+        entries = [
+            ("pochta bor", 3.0),
+            ("pocta bor", 3.0),
+            ("pochto bor", 3.0),
+            ("moshin borm", 3.0),
+        ]
+        first = score_text("Moshina bormi\n\npochta bor", entries, threshold=3.0)
+        second = score_text("pochta bor xizmati bor", entries, threshold=3.0)
+        repeated = score_text("pochta bor va pocta bor", entries, threshold=3.0)
+        self.assertEqual(first.score, 6.0)
+        self.assertEqual(first.positives, {"pochta bor": 3.0, "moshin borm": 3.0})
+        self.assertEqual(second.score, 3.0)
+        self.assertEqual(second.positives, {"pochta bor": 3.0})
+        self.assertEqual(repeated.score, 3.0)
+        self.assertEqual(repeated.positives, {"pochta bor": 3.0})
+
+    def test_distinct_phrase_occurrences_keep_independent_scores(self):
+        entries = [
+            ("pochta bor", 3.0),
+            ("pocta bor", 3.0),
+            ("odam bor", 2.0),
+        ]
+        result = score_text("pochta bor odam bor", entries, threshold=3.0)
+        self.assertEqual(result.score, 5.0)
+        self.assertEqual(result.positives, {"pochta bor": 3.0, "odam bor": 2.0})
+
     def test_empty_and_blank(self):
         self.assertEqual(parse_weighted_entries(""), [])
         self.assertEqual(parse_weighted_entries("\n\n  \n"), [])
