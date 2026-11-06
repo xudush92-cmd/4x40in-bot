@@ -36,6 +36,7 @@ from database import (
     get_user_match_count,
     get_user,
     get_user_scanner_enabled,
+    read_connection,
 )
 from matcher import contains_emoji, match_keywords, score_text
 
@@ -93,7 +94,28 @@ def evaluate(
     chat_id: int | None = None,
     check_group: bool = True,
 ) -> Verdict:
-    """Xabar egasiga yuboriladimi — to'liq zanjir bo'yicha.
+    """Xabar egasiga yuboriladimi — to'liq zanjir bo'yicha."""
+    with read_connection() as conn:
+        return _evaluate_with_connection(
+            owner_id,
+            text,
+            conn=conn,
+            is_sticker=is_sticker,
+            chat_id=chat_id,
+            check_group=check_group,
+        )
+
+
+def _evaluate_with_connection(
+    owner_id: int,
+    text: str,
+    *,
+    conn,
+    is_sticker: bool = False,
+    chat_id: int | None = None,
+    check_group: bool = True,
+) -> Verdict:
+    """Bitta SQLite ulanishini zanjirning barcha DB o'qishlarida ishlatadi.
 
     ``check_group=False`` — test rejimi: guruh noma'lum, shu bosqich
     ma'lumot sifatida ko'rsatiladi (xabar guruhdan kelmagan).
@@ -118,7 +140,7 @@ def evaluate(
         return verdict
 
     # 1. Tizim
-    if get_setting("is_active") != "1":
+    if get_setting("is_active", conn=conn) != "1":
         return finish("system", "tizim admin tomonidan ⏸ to'xtatilgan")
     add("system", OK, "🟢 yoniq")
 
@@ -126,7 +148,7 @@ def evaluate(
     if owner_id == ADMIN_ID:
         add("tariff", INFO, "admin — tarif talab qilinmaydi")
     else:
-        row = get_user(owner_id)
+        row = get_user(owner_id, conn=conn)
         if row and row[3]:
             # Bloklangan foydalanuvchiga xabar ketmasligi shart.
             return finish("tariff", "hisobingiz bloklangan")
@@ -141,13 +163,15 @@ def evaluate(
         add("tariff", OK, f"faol, {days} kun qoldi")
 
     # 3. Umumiy Stop/Start
-    if not get_user_scanner_enabled(owner_id):
+    if not get_user_scanner_enabled(owner_id, conn=conn):
         return finish("scanner", "🔴 to'xtatilgan — menyudagi ▶️ Start ni bosing")
     add("scanner", OK, "🟢 yoniq")
 
     # 4. Guruh egasiniki mi
     if check_group:
-        if chat_id is None or chat_id not in get_owner_active_chat_ids(owner_id):
+        if chat_id is None or chat_id not in get_owner_active_chat_ids(
+            owner_id, conn=conn
+        ):
             return finish(
                 "group", "bu guruh sizning faol guruhlaringiz ro'yxatida yo'q"
             )
@@ -155,7 +179,7 @@ def evaluate(
     else:
         # Test rejimi: aniq guruh noma'lum, LEKIN umuman faol guruh
         # bo'lmasa hech qanday xabar kelmaydi — buni yashirmaymiz.
-        active_ids = get_owner_active_chat_ids(owner_id)
+        active_ids = get_owner_active_chat_ids(owner_id, conn=conn)
         if not active_ids:
             return finish(
                 "group",
@@ -172,18 +196,18 @@ def evaluate(
     add("emoji", OK, "toza")
 
     # 6. Kalit so'zlar (yagona ro'yxat) — ikki rejim
-    mode = get_match_mode()
+    mode = get_match_mode(conn=conn)
     verdict.mode = mode
     if mode == "weight":
-        return _evaluate_weighted(owner_id, text, verdict, stages, add, finish)
+        return _evaluate_weighted(owner_id, text, verdict, stages, add, finish, conn)
 
-    keywords = get_keywords()
-    required = get_user_match_count(owner_id)
+    keywords = get_keywords(conn=conn)
+    required = get_user_match_count(owner_id, conn=conn)
     verdict.required, verdict.total_keywords = required, len(keywords)
     if not keywords:
         return finish("keywords", "ro'yxat bo'sh — admin kalit so'z kiritmagan")
     strict_words = [
-        word for word, _weight, strict in get_keywords_weighted() if strict
+        word for word, _weight, strict in get_keywords_weighted(conn=conn) if strict
     ]
     result = match_keywords(
         text, keywords, required, strict_words=strict_words
@@ -208,7 +232,7 @@ def evaluate(
     return verdict
 
 
-def _evaluate_weighted(owner_id, text, verdict, stages, add, finish) -> Verdict:
+def _evaluate_weighted(owner_id, text, verdict, stages, add, finish, conn) -> Verdict:
     """6-bosqich, vaznli rejim: ball yig'indisi chegaradan o'tadimi.
 
     Har bir kalit so'zning bazada vazni bor (musbat — mijoz, manfiy —
@@ -216,11 +240,11 @@ def _evaluate_weighted(owner_id, text, verdict, stages, add, finish) -> Verdict:
     uchun "xizmat kerak" (mijoz) kabi xabar "xizmat ko'rsatamiz"
     (haydovchi) belgisi bilan o'chirilmaydi.
     """
-    entries = get_keywords_weighted()
+    entries = get_keywords_weighted(conn=conn)
     # Har foydalanuvchi o'z chegarasini tanlashi mumkin; belgilamagan
     # bo'lsa — adminning umumiy chegarasi ishlatiladi.
-    admin_threshold = get_score_threshold()
-    threshold = get_user_score_threshold(owner_id)
+    admin_threshold = get_score_threshold(conn=conn)
+    threshold = get_user_score_threshold(owner_id, conn=conn)
     verdict.own_threshold = threshold != admin_threshold
     verdict.threshold = threshold
     verdict.total_keywords = len(entries)

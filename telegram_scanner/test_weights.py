@@ -762,6 +762,32 @@ class TestSignupGroupScanIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertIn("odam bor", text)
         self.assertEqual(db.get_user_counter(self.OWNER, "leads_found"), 3)
 
+    def test_filter_modes_reuse_one_database_connection(self):
+        import filters
+
+        db.add_keyword_checked("kerak", weight=2.0)
+        db.set_setting("match_count", "1")
+        db.set_score_threshold(1.75)
+
+        original_connect = db._connect
+        for mode in ("count", "weight"):
+            db.set_match_mode(mode)
+            calls = 0
+
+            def counted_connect():
+                nonlocal calls
+                calls += 1
+                return original_connect()
+
+            db._connect = counted_connect
+            try:
+                verdict = filters.evaluate(ADMIN, "kerak", check_group=False)
+            finally:
+                db._connect = original_connect
+
+            self.assertTrue(verdict.ok, (mode, verdict.detail))
+            self.assertEqual(calls, 1, mode)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
