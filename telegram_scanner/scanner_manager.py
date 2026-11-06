@@ -8,7 +8,6 @@ import asyncio
 import datetime
 import html
 import logging
-import secrets
 import time
 
 from telethon import TelegramClient, events, utils
@@ -312,46 +311,6 @@ def _queue_watch_card(event, verdict, text: str | None = None) -> None:
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
-        handler_started = time.monotonic()
-        received_at = datetime.datetime.now(datetime.timezone.utc)
-        trace_id = secrets.token_hex(4)
-        event_time_utc = None
-        event_age_ms = None
-        event_date = getattr(event, "date", None)
-        if isinstance(event_date, datetime.datetime):
-            try:
-                if event_date.tzinfo is None:
-                    event_date = event_date.replace(tzinfo=datetime.timezone.utc)
-                event_date = event_date.astimezone(datetime.timezone.utc)
-                event_time_utc = event_date.isoformat(timespec="milliseconds")
-                event_age_ms = round((received_at - event_date).total_seconds() * 1000)
-            except (OverflowError, OSError, ValueError):
-                event_time_utc = None
-                event_age_ms = None
-
-        if event_age_ms is not None and event_age_ms >= 5000:
-            logger.info(
-                "[SCAN_TIMING] trace=%s stage=received event_utc=%s "
-                "received_utc=%s lag_ms=%s",
-                trace_id, event_time_utc, received_at.isoformat(timespec="milliseconds"),
-                event_age_ms,
-            )
-
-        async def _send_with_timing(text, markup):
-            logger.info(
-                "[SCAN_TIMING] trace=%s stage=notify_start event_age_ms=%s "
-                "handler_ms=%.1f",
-                trace_id, event_age_ms,
-                (time.monotonic() - handler_started) * 1000,
-            )
-            send_started = time.monotonic()
-            ok = await send_to_bot_api(text, markup, chat_id=owner_id)
-            logger.info(
-                "[SCAN_TIMING] trace=%s stage=notify_done elapsed_ms=%.1f ok=%s",
-                trace_id, (time.monotonic() - send_started) * 1000, ok,
-            )
-            return ok
-
         chat_id = getattr(event, "chat_id", None)
         is_private = bool(getattr(event, "is_private", False))
         initial_text = event.raw_text or ""
@@ -361,8 +320,8 @@ def _make_handler(owner_id: int, client: TelegramClient):
             # xabar umuman kelmaganini yoki filtrda to'xtaganini ajratish
             # oson bo'ladi.
             logger.info(
-                "[SCAN] event owner=%s chat=%s out=%s trace=%s",
-                owner_id, chat_id, bool(getattr(event, "out", False)), trace_id,
+                "[SCAN] event owner=%s chat=%s out=%s",
+                owner_id, chat_id, bool(getattr(event, "out", False)),
             )
         # Shaxsiy yozishmalar skanerlanmaydi. get_peer_id ijobiy bo'lsa —
         # bu PeerUser (lichka). Ilgari bunday xabarlar ham logga tushib,
@@ -474,7 +433,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
             increment_counter("leads_found")
-            if await _send_with_timing(text, markup):
+            if await send_to_bot_api(text, markup, chat_id=owner_id):
                 increment_counter("notifications_sent")
                 logger.info("[SCAN] sent protected owner=%s chat=%s", owner_id, chat_id)
             else:
@@ -543,7 +502,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
         increment_user_counter(owner_id, "leads_found")
         set_user_last_found(owner_id)
         increment_counter("leads_found")
-        if await _send_with_timing(text, markup):
+        if await send_to_bot_api(text, markup, chat_id=owner_id):
             increment_counter("notifications_sent")
             logger.info("[SCAN] sent owner=%s chat=%s", owner_id, event.chat_id)
         else:
