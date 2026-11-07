@@ -44,6 +44,7 @@ from notifier import (
     find_phone_text,
     send_to_bot_api,
 )
+from scan_diagnostics import scan_diagnostics as scan_delay_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,7 @@ def _queue_watch_card(event, verdict, text: str | None = None) -> None:
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
+        handler_started = time.monotonic()
         chat_id = getattr(event, "chat_id", None)
         is_private = bool(getattr(event, "is_private", False))
         initial_text = event.raw_text or ""
@@ -332,6 +334,24 @@ def _make_handler(owner_id: int, client: TelegramClient):
             return
         raw_text = initial_text
         message = getattr(event, "message", None)
+        trace = scan_delay_diagnostics.begin_trace(
+            owner_id=owner_id,
+            chat_id=chat_id,
+            message_id=getattr(event, "id", 0) or 0,
+            message_date=getattr(message, "date", None),
+            received_monotonic=handler_started,
+        )
+
+        async def _send_notification(text, markup=None):
+            send_started = time.monotonic()
+            sent = await send_to_bot_api(text, markup, chat_id=owner_id)
+            scan_delay_diagnostics.record_notification(
+                trace,
+                success=sent,
+                duration_ms=(time.monotonic() - send_started) * 1000,
+            )
+            return sent
+
         is_sticker = _has_sticker(message)
         if not raw_text and not is_sticker:
             return
@@ -357,11 +377,18 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 )
 
         # Yozma xabarlar mavjud filtr zanjiridan o'tadi.
+        filter_started = time.monotonic()
         verdict = evaluate(
             owner_id,
             raw_text,
             is_sticker=is_sticker,
             chat_id=chat_id,
+        )
+        scan_delay_diagnostics.record_evaluation(
+            trace,
+            matched=verdict.ok,
+            filter_duration_ms=(time.monotonic() - filter_started) * 1000,
+            handler_to_filter_ms=(filter_started - handler_started) * 1000,
         )
         if watch_active and not protected and not protection_unknown:
             _queue_watch_card(event, verdict, raw_text)
@@ -433,7 +460,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
             increment_counter("leads_found")
-            if await send_to_bot_api(text, markup, chat_id=owner_id):
+            if await _send_notification(text, markup):
                 increment_counter("notifications_sent")
                 logger.info("[SCAN] sent protected owner=%s chat=%s", owner_id, chat_id)
             else:
@@ -502,7 +529,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
         increment_user_counter(owner_id, "leads_found")
         set_user_last_found(owner_id)
         increment_counter("leads_found")
-        if await send_to_bot_api(text, markup, chat_id=owner_id):
+        if await _send_notification(text, markup):
             increment_counter("notifications_sent")
             logger.info("[SCAN] sent owner=%s chat=%s", owner_id, event.chat_id)
         else:
