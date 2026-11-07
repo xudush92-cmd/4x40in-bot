@@ -44,7 +44,10 @@ from notifier import (
     find_phone_text,
     send_to_bot_api,
 )
-from scan_diagnostics import scan_diagnostics as scan_delay_diagnostics
+from scan_diagnostics import (
+    instrument_telethon_client,
+    scan_diagnostics as scan_delay_diagnostics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +624,7 @@ async def _start_user_client(owner_id: int) -> bool:
         await _notify_session_problem(owner_id, invalid=True)
         return False
     client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+    instrument_telethon_client(client, owner_id)
     try:
         await client.connect()
         if not await client.is_user_authorized():
@@ -688,6 +692,27 @@ async def stop_user_client(owner_id: int, revoke: bool = False) -> None:
         row = get_user_full(owner_id)
         if row and row[8]:
             await revoke_session(decrypt_session(row[8]))
+
+
+async def _event_loop_lag_loop():
+    """Har soniyada event loopni tekshiradi; faqat 250 ms dan oshganini yozadi."""
+    loop = asyncio.get_running_loop()
+    interval = 1.0
+    deadline = loop.time() + interval
+    while True:
+        await asyncio.sleep(max(0.0, deadline - loop.time()))
+        now = loop.time()
+        lag_ms = max(0.0, (now - deadline) * 1000)
+        if lag_ms >= 250:
+            for owner_id, client in tuple(_clients.items()):
+                try:
+                    if client.is_connected():
+                        scan_delay_diagnostics.record_loop_lag(owner_id, lag_ms)
+                except Exception:
+                    continue
+        deadline += interval
+        if deadline <= now:
+            deadline = now + interval
 
 
 async def _sync_loop():
@@ -780,6 +805,7 @@ def start_background() -> None:
     logger.info("Sessiya manageri ishga tushdi...")
     _tasks.append(asyncio.create_task(_sync_loop()))
     _tasks.append(asyncio.create_task(_expiry_warning_loop()))
+    _tasks.append(asyncio.create_task(_event_loop_lag_loop()))
 
 
 async def run():

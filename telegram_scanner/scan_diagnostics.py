@@ -193,8 +193,122 @@ class ScanDiagnostics:
             "success": bool(success),
         })
 
+    def record_loop_lag(self, owner_id: int, lag_ms: float) -> None:
+        """Faqat sezilarli asyncio event-loop kechikishini qayd etadi."""
+        if lag_ms < 250:
+            return
+        self._write(owner_id, {
+            "stage": "event_loop_lag",
+            "lag_ms": round(max(0.0, lag_ms), 1),
+        })
+
+    def record_channel_difference(
+        self,
+        owner_id: int,
+        *,
+        channel_id: int,
+        request_pts: int | None,
+        started_at: dt.datetime,
+        duration_ms: float,
+        response: Any = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Xabar mazmunisiz channel-difference RPC natijasini qayd etadi."""
+        messages = getattr(response, "new_messages", ()) or ()
+        other_updates = getattr(response, "other_updates", ()) or ()
+        now = dt.datetime.now(dt.timezone.utc)
+        ages_ms = []
+        for message in messages:
+            message_date = getattr(message, "date", None)
+            if isinstance(message_date, dt.datetime):
+                if message_date.tzinfo is None:
+                    message_date = message_date.replace(tzinfo=dt.timezone.utc)
+                ages_ms.append(int((now - message_date.astimezone(dt.timezone.utc)).total_seconds() * 1000))
+        oldest_message_age_ms = max(ages_ms, default=None)
+        duration_ms = max(0.0, duration_ms)
+
+        # Oddiy, tez va bo'sh difference so'rovlarini yozmaymiz.
+        if not error_type and duration_ms < 1000 and (oldest_message_age_ms or 0) < self.threshold_seconds * 1000:
+            return
+
+        self._write(owner_id, {
+            "stage": "channel_difference",
+            "channel_id": int(channel_id),
+            "request_pts": request_pts,
+            "started_at_utc": _utc_iso(started_at),
+            "completed_at_utc": _utc_iso(now),
+            "duration_ms": round(duration_ms, 1),
+            "response_type": type(response).__name__ if response is not None else None,
+            "new_message_count": len(messages),
+            "other_update_count": len(other_updates),
+            "oldest_message_age_ms": oldest_message_age_ms,
+            "server_timeout_s": getattr(response, "timeout", None),
+            "error_type": error_type,
+        })
+
 
 # Config papkasidagi diagnostics/ ichida, egasi bo'yicha alohida fayllar.
 from config import BASE_DIR  # noqa: E402  (module init stays dependency-light above)
 
 scan_diagnostics = ScanDiagnostics(BASE_DIR / "diagnostics")
+
+
+def instrument_telethon_client(client, owner_id: int) -> bool:
+    """Safely time GetChannelDifference RPCs for this client only.
+
+    Uses the pinned Telethon 1.34 ``_call`` hook, but records only request
+    metadata and response counts/types; never serializes update objects.
+    """
+    if getattr(client, "_scan_difference_timing_attached", False):
+        return False
+    try:
+        from telethon.tl.functions.updates import GetChannelDifferenceRequest
+    except Exception:
+        return False
+
+    original_call = client._call
+
+    async def _timed_call(sender, request, ordered=False, flood_sleep_threshold=None):
+        if not isinstance(request, GetChannelDifferenceRequest):
+            return await original_call(
+                sender,
+                request,
+                ordered=ordered,
+                flood_sleep_threshold=flood_sleep_threshold,
+            )
+
+        started_at = dt.datetime.now(dt.timezone.utc)
+        started_monotonic = time.monotonic()
+        channel_id = getattr(getattr(request, "channel", None), "channel_id", 0)
+        request_pts = getattr(request, "pts", None)
+        try:
+            response = await original_call(
+                sender,
+                request,
+                ordered=ordered,
+                flood_sleep_threshold=flood_sleep_threshold,
+            )
+        except Exception as exc:
+            scan_diagnostics.record_channel_difference(
+                owner_id,
+                channel_id=channel_id,
+                request_pts=request_pts,
+                started_at=started_at,
+                duration_ms=(time.monotonic() - started_monotonic) * 1000,
+                error_type=type(exc).__name__,
+            )
+            raise
+
+        scan_diagnostics.record_channel_difference(
+            owner_id,
+            channel_id=channel_id,
+            request_pts=request_pts,
+            started_at=started_at,
+            duration_ms=(time.monotonic() - started_monotonic) * 1000,
+            response=response,
+        )
+        return response
+
+    client._call = _timed_call
+    client._scan_difference_timing_attached = True
+    return True

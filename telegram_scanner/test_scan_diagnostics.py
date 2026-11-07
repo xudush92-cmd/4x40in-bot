@@ -6,7 +6,10 @@ import time
 import unittest
 from pathlib import Path
 
-from scan_diagnostics import ScanDiagnostics
+from scan_diagnostics import (
+    ScanDiagnostics,
+    instrument_telethon_client,
+)
 
 
 class TestScanDiagnostics(unittest.TestCase):
@@ -84,6 +87,66 @@ class TestScanDiagnostics(unittest.TestCase):
             )
             self.assertIsNone(trace)
             self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
+    def test_loop_lag_only_records_above_threshold(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            diagnostics = ScanDiagnostics(temp_dir)
+            diagnostics.record_loop_lag(987654324, 249)
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+            diagnostics.record_loop_lag(987654324, 251)
+            path = Path(temp_dir) / "owner_987654324.jsonl"
+            row = json.loads(path.read_text().splitlines()[0])
+            self.assertEqual(row["stage"], "event_loop_lag")
+            self.assertEqual(row["lag_ms"], 251)
+
+    def test_channel_difference_timing_stores_only_metadata(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from telethon.tl import types
+        from telethon.tl.functions.updates import GetChannelDifferenceRequest
+
+        class FakeClient:
+            async def _call(self, sender, request, ordered=False, flood_sleep_threshold=None):
+                now = dt.datetime.now(dt.timezone.utc)
+                return SimpleNamespace(
+                    new_messages=[SimpleNamespace(
+                        date=now - dt.timedelta(seconds=35),
+                        message="DO NOT LOG MESSAGE CONTENT",
+                    )],
+                    other_updates=[],
+                    timeout=30,
+                )
+
+        async def run_test(temp_dir):
+            import asyncio
+
+            diagnostics = ScanDiagnostics(temp_dir)
+            request = GetChannelDifferenceRequest(
+                channel=types.InputChannel(123456789, 999),
+                filter=types.ChannelMessagesFilterEmpty(),
+                pts=77,
+                limit=100,
+            )
+            client = FakeClient()
+            with patch("scan_diagnostics.scan_diagnostics", diagnostics):
+                self.assertTrue(instrument_telethon_client(client, 987654325))
+                result = await client._call(None, request)
+            self.assertIsNotNone(result)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            import asyncio
+
+            asyncio.run(run_test(temp_dir))
+            path = Path(temp_dir) / "owner_987654325.jsonl"
+            row = json.loads(path.read_text().splitlines()[0])
+            self.assertEqual(row["stage"], "channel_difference")
+            self.assertEqual(row["channel_id"], 123456789)
+            self.assertEqual(row["request_pts"], 77)
+            self.assertEqual(row["new_message_count"], 1)
+            self.assertGreaterEqual(row["oldest_message_age_ms"], 35000)
+            self.assertNotIn("DO NOT LOG MESSAGE CONTENT", path.read_text())
+            self.assertNotIn("message", row)
 
 
 if __name__ == "__main__":
