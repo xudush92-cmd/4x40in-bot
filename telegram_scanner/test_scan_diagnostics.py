@@ -7,7 +7,10 @@ import unittest
 from pathlib import Path
 
 from scan_diagnostics import (
+    DEFAULT_NO_UPDATES_TIMEOUT_SECONDS,
+    NO_UPDATES_TIMEOUT_ENV,
     ScanDiagnostics,
+    configure_telethon_no_updates_timeout,
     instrument_telethon_client,
 )
 
@@ -98,6 +101,24 @@ class TestScanDiagnostics(unittest.TestCase):
             row = json.loads(path.read_text().splitlines()[0])
             self.assertEqual(row["stage"], "event_loop_lag")
             self.assertEqual(row["lag_ms"], 251)
+
+    def test_no_updates_timeout_override_is_bounded_and_reversible(self):
+        from unittest.mock import patch
+        from telethon._updates import messagebox
+
+        original = messagebox.NO_UPDATES_TIMEOUT
+        try:
+            with patch.dict(os.environ, {NO_UPDATES_TIMEOUT_ENV: "60"}):
+                self.assertEqual(configure_telethon_no_updates_timeout(), 60)
+            self.assertEqual(messagebox.NO_UPDATES_TIMEOUT, 60)
+            with patch.dict(os.environ, {NO_UPDATES_TIMEOUT_ENV: "10"}):
+                self.assertEqual(
+                    configure_telethon_no_updates_timeout(),
+                    DEFAULT_NO_UPDATES_TIMEOUT_SECONDS,
+                )
+            self.assertEqual(messagebox.NO_UPDATES_TIMEOUT, 60)
+        finally:
+            messagebox.NO_UPDATES_TIMEOUT = original
 
     def test_channel_difference_timing_stores_only_metadata(self):
         from types import SimpleNamespace

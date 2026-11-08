@@ -45,11 +45,17 @@ from notifier import (
     send_to_bot_api,
 )
 from scan_diagnostics import (
+    configure_telethon_no_updates_timeout,
     instrument_telethon_client,
     scan_diagnostics as scan_delay_diagnostics,
 )
 
 logger = logging.getLogger(__name__)
+_TELETHON_NO_UPDATES_TIMEOUT_SECONDS = configure_telethon_no_updates_timeout()
+logger.info(
+    "[DIAG] Telethon no-updates timeout=%ss",
+    _TELETHON_NO_UPDATES_TIMEOUT_SECONDS,
+)
 
 # Hozir ko'tarilayotgan sessiyalar (ikki marta ulanishning oldini oladi)
 _starting: set = set()

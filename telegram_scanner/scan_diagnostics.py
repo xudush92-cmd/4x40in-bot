@@ -18,6 +18,10 @@ from typing import Any
 
 
 DELAY_THRESHOLD_SECONDS = 10.0
+DEFAULT_NO_UPDATES_TIMEOUT_SECONDS = 15 * 60
+MIN_NO_UPDATES_TIMEOUT_SECONDS = 60
+MAX_NO_UPDATES_TIMEOUT_SECONDS = 15 * 60
+NO_UPDATES_TIMEOUT_ENV = "SCANNER_TELETHON_NO_UPDATES_TIMEOUT_SECONDS"
 _MAX_FILE_BYTES = 256 * 1024
 _BACKUP_COUNT = 2
 
@@ -251,6 +255,40 @@ class ScanDiagnostics:
 from config import BASE_DIR  # noqa: E402  (module init stays dependency-light above)
 
 scan_diagnostics = ScanDiagnostics(BASE_DIR / "diagnostics")
+
+
+def configure_telethon_no_updates_timeout() -> int:
+    """Temporarily tune Telethon's shared no-updates deadline via env.
+
+    This affects channel and account update deadlines. The 60-second floor
+    avoids an overly aggressive poll loop; default behavior remains 15 minutes.
+    """
+    raw_value = os.getenv(NO_UPDATES_TIMEOUT_ENV, "").strip()
+    if not raw_value:
+        return DEFAULT_NO_UPDATES_TIMEOUT_SECONDS
+    try:
+        seconds = int(raw_value)
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "%s yaroqsiz; Telethon default muddati ishlatiladi",
+            NO_UPDATES_TIMEOUT_ENV,
+        )
+        return DEFAULT_NO_UPDATES_TIMEOUT_SECONDS
+    if not MIN_NO_UPDATES_TIMEOUT_SECONDS <= seconds <= MAX_NO_UPDATES_TIMEOUT_SECONDS:
+        logging.getLogger(__name__).warning(
+            "%s 60..900 oralig'ida bo'lishi kerak; default ishlatiladi",
+            NO_UPDATES_TIMEOUT_ENV,
+        )
+        return DEFAULT_NO_UPDATES_TIMEOUT_SECONDS
+    try:
+        from telethon._updates import messagebox
+        messagebox.NO_UPDATES_TIMEOUT = seconds
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Telethon no-updates muddati sozlanmadi; default ishlatiladi"
+        )
+        return DEFAULT_NO_UPDATES_TIMEOUT_SECONDS
+    return seconds
 
 
 def instrument_telethon_client(client, owner_id: int) -> bool:
