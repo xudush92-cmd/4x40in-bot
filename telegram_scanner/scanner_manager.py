@@ -434,7 +434,10 @@ def _make_handler(owner_id: int, client: TelegramClient):
             # ma'lumotni ko'rsatamiz. Xabar matnini yoki profilning yashirin
             # telefon raqamini bildirishnomaga ko'chirmaymiz.
             include_details = protected and not protection_unknown
-            sender_name, username, sender_user_id = None, None, None
+            sender_name, username = None, None
+            # Telethon ma'lumoti entity keshida bo'lmasa get_sender() None qaytarishi
+            # mumkin. Eventning sender_id si profil havolasi uchun fallback bo'ladi.
+            sender_user_id = getattr(event, "sender_id", None)
             if include_details:
                 try:
                     sender = await event.get_sender()
@@ -444,7 +447,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
                             f"{getattr(sender, 'last_name', '') or ''}"
                         ).strip() or getattr(sender, "title", "") or None
                         username = getattr(sender, "username", None)
-                        sender_user_id = getattr(sender, "id", None)
+                        sender_user_id = getattr(sender, "id", None) or sender_user_id
                 except Exception:
                     logger.warning(
                         "[SCAN] protected-match yuboruvchi olinmadi "
