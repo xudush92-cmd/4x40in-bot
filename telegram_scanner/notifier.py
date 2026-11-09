@@ -99,11 +99,27 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
 
 
 def build_profile_link(username: str | None) -> str | None:
-    """Username mavjud bo'lsa, Telegram profilining xavfsiz HTTPS havolasi."""
+    """Username mavjud bo'lsa, Telegram profilining HTTPS havolasi."""
     value = (username or "").strip().lstrip("@")
     if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", value):
         return None
     return f"https://t.me/{value}"
+
+
+def build_protected_sender_link(
+    username: str | None, user_id: int | str | None = None,
+) -> str | None:
+    """Protected lead egasi uchun public username yoki Telegram ID havolasi."""
+    public_link = build_profile_link(username)
+    if public_link:
+        return public_link
+    try:
+        numeric_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    if numeric_id <= 0:
+        return None
+    return f"tg://user?id={numeric_id}"
 
 
 def build_message_link(chat, chat_id, message_id) -> str | None:
@@ -136,11 +152,13 @@ def find_phone_text(raw_text: str, sender=None) -> str:
 
 
 def build_protected_notification_markup(
-    message_link: str | None, username: str | None = None,
+    message_link: str | None,
+    username: str | None = None,
+    user_id: int | str | None = None,
 ):
-    """Himoyalangan xabarda faqat ochiq profil va asl xabar havolalari."""
+    """Himoyalangan lead uchun profil/ID va asl xabar havolalari."""
     rows = []
-    profile_link = build_profile_link(username)
+    profile_link = build_protected_sender_link(username, user_id)
     if profile_link:
         rows.append([{
             "text": "👤 Yuboruvchi profilini ochish",
@@ -162,6 +180,7 @@ def build_protected_notification_text(
     include_details: bool = False,
     sender_name: str | None = None,
     username: str | None = None,
+    user_id: int | str | None = None,
     phone: str | None = None,
     matched_words=None,
 ) -> str:
@@ -184,15 +203,22 @@ def build_protected_notification_text(
     ]
     if include_details:
         safe_username = (username or "").strip()
-        profile_link = build_profile_link(safe_username)
+        profile_link = build_protected_sender_link(safe_username, user_id)
         lines.append(
             f"👤 <b>Yuboruvchi:</b> {esc(sender_name or 'Nomaʼlum')}"
         )
-        if profile_link:
+        if user_id is not None:
+            lines.append(f"🆔 <b>Telegram ID:</b> <code>{esc(str(user_id))}</code>")
+        if profile_link and build_profile_link(safe_username):
             lines.append(
                 f'🔗 <b>Ochiq username:</b> '
                 f'<a href="{esc(profile_link, quote=True)}">'
                 f"{esc('@' + safe_username.lstrip('@'))}</a>"
+            )
+        elif profile_link:
+            lines.append(
+                f'🔗 <a href="{esc(profile_link, quote=True)}">'
+                "Yuboruvchi profilini ochish</a>"
             )
         else:
             lines.append("🔗 <b>Username:</b> ochiq emas")

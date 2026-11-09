@@ -14,6 +14,7 @@ os.environ.setdefault("BOT_TOKEN", "1:x")
 from notifier import (  # noqa: E402
     build_notification_text,
     build_profile_link,
+    build_protected_sender_link,
     build_protected_notification_markup,
     build_protected_notification_text,
 )
@@ -78,7 +79,7 @@ class TestNotificationText(unittest.TestCase):
         self.assertNotIn("odam bor", text)
         self.assertNotIn("+998901234567", text)
 
-    def test_protected_markup_has_only_public_profile_and_source_links(self):
+    def test_protected_markup_has_public_profile_and_source_links(self):
         markup = build_protected_notification_markup(
             "https://t.me/c/123456/789", "@ali_user"
         )
@@ -88,6 +89,26 @@ class TestNotificationText(unittest.TestCase):
         self.assertEqual(buttons[1][0]["url"], "https://t.me/c/123456/789")
         self.assertTrue(all("callback_data" not in row[0] for row in buttons))
         self.assertIsNone(build_protected_notification_markup(None))
+
+    def test_protected_profile_falls_back_to_user_id_when_no_username(self):
+        text = build_protected_notification_text(
+            group_title="Himoyalangan guruh",
+            message_link=None,
+            include_details=True,
+            sender_name="Ali",
+            user_id=123456789,
+        )
+        self.assertIn("Telegram ID:</b> <code>123456789</code>", text)
+        self.assertIn('href="tg://user?id=123456789"', text)
+        self.assertEqual(
+            build_protected_sender_link(None, 123456789),
+            "tg://user?id=123456789",
+        )
+        markup = build_protected_notification_markup(None, user_id=123456789)
+        self.assertEqual(
+            markup["inline_keyboard"][0][0]["url"], "tg://user?id=123456789"
+        )
+        self.assertIsNone(build_protected_sender_link(None, -1))
 
     def test_protected_fallback_heading_is_not_misleading(self):
         text = build_protected_notification_text(

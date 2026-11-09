@@ -434,7 +434,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
             # ma'lumotni ko'rsatamiz. Xabar matnini yoki profilning yashirin
             # telefon raqamini bildirishnomaga ko'chirmaymiz.
             include_details = protected and not protection_unknown
-            sender_name, username = None, None
+            sender_name, username, sender_user_id = None, None, None
             if include_details:
                 try:
                     sender = await event.get_sender()
@@ -444,6 +444,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
                             f"{getattr(sender, 'last_name', '') or ''}"
                         ).strip() or getattr(sender, "title", "") or None
                         username = getattr(sender, "username", None)
+                        sender_user_id = getattr(sender, "id", None)
                 except Exception:
                     logger.warning(
                         "[SCAN] protected-match yuboruvchi olinmadi "
@@ -459,12 +460,14 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 include_details=include_details,
                 sender_name=sender_name,
                 username=username,
+                user_id=sender_user_id,
                 phone=phone,
                 matched_words=matched_words,
             )
             markup = build_protected_notification_markup(
                 message_link,
                 username=username if include_details else None,
+                user_id=sender_user_id if include_details else None,
             )
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
