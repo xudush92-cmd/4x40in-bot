@@ -89,7 +89,9 @@ def init_db() -> None:
                             is_active INTEGER DEFAULT 1,
                             status TEXT DEFAULT 'pending',
                             last_error TEXT,
+                            created_at INTEGER DEFAULT 0,
                             UNIQUE(owner_user_id, input_value))""")
+        _migrate_user_group_columns(conn)
         # Bildirishnoma ustidan fikr-mulohaza (feedback): «foydali / keraksiz».
         # Har bir yuborilgan xabar va unda topilgan so'zlar saqlanadi —
         # foydalanuvchi tugma bosganda o'sha so'zlarning vazni moslashadi.
@@ -162,6 +164,15 @@ def _migrate_user_columns(conn) -> None:
     for name, ddl in additions.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+
+
+def _migrate_user_group_columns(conn) -> None:
+    """Mavjud guruh yozuvlari saqlanib, yangi yozuvlar vaqt belgisi oladi."""
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(user_groups)")]
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE user_groups ADD COLUMN created_at INTEGER DEFAULT 0"
+        )
 
 
 SETS_SPLIT_FLAG = "legacy_sets_split"
@@ -846,8 +857,9 @@ def add_user_group(owner_user_id: int, input_value: str):
     try:
         with closing(_connect()) as conn, conn:
             conn.execute(
-                "INSERT INTO user_groups (owner_user_id, input_value) VALUES (?, ?)",
-                (owner_user_id, input_value),
+                "INSERT INTO user_groups (owner_user_id, input_value, created_at) "
+                "VALUES (?, ?, ?)",
+                (owner_user_id, input_value, int(time.time())),
             )
         return True, ""
     except sqlite3.IntegrityError:
@@ -936,6 +948,40 @@ def mark_user_group_error(group_id: int, error: str) -> None:
             "UPDATE user_groups SET status = 'error', last_error = ? WHERE id = ?",
             (str(error)[:300], group_id),
         )
+
+
+def mark_user_group_left(group_id: int) -> bool:
+    """A'zo bo'lmagan guruhni vaqtincha faol ro'yxatdan chiqaradi."""
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE user_groups SET status = 'left', last_error = ? "
+            "WHERE id = ? AND status = 'ok'",
+            ("Ulangan akkaunt bu guruh a'zosi emas", group_id),
+        )
+        return cur.rowcount > 0
+
+
+def mark_user_group_duplicate(group_id: int, chat_id: int, title: str) -> None:
+    """Takror yozuvni kuzatuvdan chiqarib, topilgan chat ma'lumotini saqlaydi."""
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE user_groups SET chat_id = ?, title = ?, status = 'duplicate', "
+            "is_active = 0, last_error = ? WHERE id = ?",
+            (
+                chat_id,
+                title,
+                "Bu guruh shu foydalanuvchiga avval qo'shilgan",
+                group_id,
+            ),
+        )
+
+
+def get_user_group_created_at(group_id: int) -> int:
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT created_at FROM user_groups WHERE id = ?", (group_id,)
+        ).fetchone()
+    return int(row[0] or 0) if row else 0
 
 
 def requeue_user_group(group_id: int) -> None:

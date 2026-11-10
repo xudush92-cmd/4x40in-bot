@@ -322,6 +322,134 @@ class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("callback_data", message_button)
 
 
+class TestGroupMembershipAudit(unittest.IsolatedAsyncioTestCase):
+    CHAT_ID = -1001234567890
+    OWNER_ID = 12345
+
+    async def test_left_group_is_paused_and_owner_notified_once(self):
+        import scanner_manager
+
+        group = (
+            1, self.OWNER_ID, str(self.CHAT_ID), self.CHAT_ID,
+            "Test group", 1, "ok", None,
+        )
+        client = SimpleNamespace(get_dialogs=AsyncMock(return_value=[]))
+        with (
+            patch.object(scanner_manager, "get_user_groups", return_value=[group]),
+            patch.object(scanner_manager, "mark_user_group_left", return_value=True) as mark_left,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            self.assertTrue(
+                await scanner_manager._audit_owner_group_membership(self.OWNER_ID, client)
+            )
+        mark_left.assert_called_once_with(1)
+        send.assert_awaited_once()
+        self.assertEqual(send.await_args.kwargs["chat_id"], self.OWNER_ID)
+        self.assertIn("guruhdan chiqib ketilgani", send.await_args.args[0].lower())
+
+    async def test_rejoining_group_restores_watch(self):
+        import scanner_manager
+
+        group = (
+            1, self.OWNER_ID, str(self.CHAT_ID), self.CHAT_ID,
+            "Old title", 1, "left", "a'zo emas",
+        )
+        entity = SimpleNamespace(peer_id=self.CHAT_ID, title="Current title")
+        client = SimpleNamespace(
+            get_dialogs=AsyncMock(return_value=[SimpleNamespace(entity=entity)])
+        )
+        with (
+            patch.object(scanner_manager, "get_user_groups", return_value=[group]),
+            patch.object(scanner_manager.utils, "get_peer_id", side_effect=lambda e: e.peer_id),
+            patch.object(scanner_manager, "resolve_user_group", return_value=True) as restore,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            self.assertTrue(
+                await scanner_manager._audit_owner_group_membership(self.OWNER_ID, client)
+            )
+        restore.assert_called_once_with(1, self.CHAT_ID, "Current title")
+        send.assert_awaited_once()
+        self.assertIn("qayta tiklandi", send.await_args.args[0])
+
+    async def test_dialog_fetch_failure_does_not_mark_group_left(self):
+        import scanner_manager
+
+        group = (
+            1, self.OWNER_ID, str(self.CHAT_ID), self.CHAT_ID,
+            "Test group", 1, "ok", None,
+        )
+        client = SimpleNamespace(get_dialogs=AsyncMock(side_effect=RuntimeError("offline")))
+        with (
+            patch.object(scanner_manager, "get_user_groups", return_value=[group]),
+            patch.object(scanner_manager, "mark_user_group_left") as mark_left,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            self.assertFalse(
+                await scanner_manager._audit_owner_group_membership(self.OWNER_ID, client)
+            )
+        mark_left.assert_not_called()
+        send.assert_not_awaited()
+
+
+class TestGroupResolutionDedup(unittest.IsolatedAsyncioTestCase):
+    OWNER_ID = 12345
+    CHAT_ID = -1001234567890
+
+    async def _resolve_duplicate(self, *, old_created, new_created):
+        import scanner_manager
+
+        class FakeChat:
+            def __init__(self):
+                self.chat_id = TestGroupResolutionDedup.CHAT_ID
+                self.title = "Same group"
+                self.username = "same_group"
+
+        class FakeChannel:
+            pass
+
+        old = (1, self.OWNER_ID, "@same_group", self.CHAT_ID, "Same group", 1, "ok", None)
+        new = (2, self.OWNER_ID, "-1001234567890", None, None, 1, "pending", None)
+        entity = FakeChat()
+        client = SimpleNamespace(
+            get_dialogs=AsyncMock(return_value=[SimpleNamespace(entity=entity)])
+        )
+        with (
+            patch.object(scanner_manager, "get_pending_user_groups", return_value=[
+                (2, self.OWNER_ID, new[2], None, "pending")
+            ]),
+            patch.object(scanner_manager, "get_user_groups", return_value=[old, new]),
+            patch.object(
+                scanner_manager, "get_user_group_created_at",
+                side_effect={1: old_created, 2: new_created}.__getitem__,
+            ),
+            patch.object(scanner_manager, "delete_user_group") as delete,
+            patch.object(scanner_manager, "mark_user_group_duplicate") as mark_dup,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock),
+            patch.object(scanner_manager, "Chat", FakeChat),
+            patch.object(scanner_manager, "Channel", FakeChannel),
+            patch.object(scanner_manager.utils, "get_peer_id", side_effect=lambda e: e.chat_id),
+        ):
+            await scanner_manager._resolve_owner_groups(self.OWNER_ID, client)
+        return delete, mark_dup
+
+    async def test_new_alias_duplicate_is_removed(self):
+        import time
+
+        now = int(time.time())
+        delete, mark_dup = await self._resolve_duplicate(
+            old_created=now - 1, new_created=now
+        )
+        delete.assert_called_once_with(2, self.OWNER_ID)
+        mark_dup.assert_not_called()
+
+    async def test_old_duplicate_is_not_auto_deleted(self):
+        delete, mark_dup = await self._resolve_duplicate(
+            old_created=0, new_created=0
+        )
+        delete.assert_not_called()
+        mark_dup.assert_called_once_with(2, self.CHAT_ID, "Same group")
+
+
 class TestWatch(unittest.TestCase):
     def tearDown(self):
         watch.disable()

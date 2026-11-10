@@ -762,6 +762,22 @@ class TestSignupGroupScanIntegration(unittest.IsolatedAsyncioTestCase):
             self.assertIn("odam bor", text)
         self.assertEqual(db.get_user_counter(self.OWNER, "leads_found"), 3)
 
+    def test_exact_group_duplicate_is_rejected_and_timestamped(self):
+        group = db.get_user_groups(self.OWNER)[0]
+        self.assertGreater(db.get_user_group_created_at(group[0]), 0)
+        added, error = db.add_user_group(self.OWNER, str(self.CHAT_ID))
+        self.assertFalse(added)
+        self.assertIn("allaqachon", error)
+        self.assertEqual(len(db.get_user_groups(self.OWNER)), 1)
+
+    async def test_leaving_pauses_group_and_rejoining_restores_it(self):
+        group_id = db.get_user_groups(self.OWNER)[0][0]
+        self.assertTrue(db.mark_user_group_left(group_id))
+        self.assertEqual(db.get_owner_active_chat_ids(self.OWNER), [])
+        self.assertFalse(db.mark_user_group_left(group_id))
+        self.assertTrue(db.resolve_user_group(group_id, self.CHAT_ID, "Sinov guruhi"))
+        self.assertEqual(db.get_owner_active_chat_ids(self.OWNER), [self.CHAT_ID])
+
     def test_filter_modes_reuse_one_database_connection(self):
         import filters
 

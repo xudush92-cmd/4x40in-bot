@@ -21,10 +21,15 @@ from database import (
     get_owner_active_chat_ids,
     get_pending_user_groups,
     get_user_full,
+    get_user_groups,
+    get_user_group_created_at,
+    delete_user_group,
     increment_counter,
     increment_user_counter,
     is_subscription_active,
     mark_user_group_error,
+    mark_user_group_left,
+    mark_user_group_duplicate,
     mark_warned_today,
     resolve_user_group,
     set_session_status,
@@ -64,6 +69,9 @@ _watch_tasks: set = set()
 
 _clients: dict[int, TelegramClient] = {}
 _tasks: list[asyncio.Task] = []
+_GROUP_MEMBERSHIP_AUDIT_SECONDS = 10 * 60
+_last_group_membership_audit: dict[int, float] = {}
+_resolving_owner_groups: set[int] = set()
 
 def is_client_online(user_id: int) -> bool:
     client = _clients.get(user_id)
@@ -76,6 +84,17 @@ def online_user_ids() -> list[int]:
 
 
 async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
+    """Bir egaga parallel ravishda bir nechta guruh resolve qilishni oldini oladi."""
+    if owner_id in _resolving_owner_groups:
+        return
+    _resolving_owner_groups.add(owner_id)
+    try:
+        await _resolve_owner_groups_once(owner_id, client)
+    finally:
+        _resolving_owner_groups.discard(owner_id)
+
+
+async def _resolve_owner_groups_once(owner_id: int, client: TelegramClient) -> None:
     """Tekshiruvdagi guruhlarni hal qiladi va egasiga natijani aytadi.
 
     Xabar yuborilmasa foydalanuvchi "guruh qo'shdim" deb kutib qoladi va
@@ -157,13 +176,67 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
             isinstance(entity, Channel) and entity.megagroup
         ):
             title = getattr(entity, "title", "") or value
-            resolve_user_group(gid, utils.get_peer_id(entity), title)
+            resolved_chat_id = utils.get_peer_id(entity)
+            same_group_rows = [
+                group for group in get_user_groups(owner_id)
+                if group[0] != gid and group[3] == resolved_chat_id
+            ]
+            if same_group_rows:
+                canonical = min(
+                    same_group_rows,
+                    key=lambda group: (
+                        {"ok": 0, "left": 1, "pending": 2, "error": 3}.get(
+                            group[6], 4
+                        ),
+                        group[0],
+                    ),
+                )
+                if canonical[6] == "left":
+                    resolve_user_group(canonical[0], resolved_chat_id, title)
+                    await send_to_bot_api(
+                        "✅ <b>Guruhga qayta a'zo bo'lgansiz</b>\n\n"
+                        f"👥 {html.escape(title, quote=False)}\n"
+                        "Kuzatuv tiklandi.",
+                        chat_id=owner_id,
+                    )
+                new_created = get_user_group_created_at(gid)
+                old_keys = [
+                    (get_user_group_created_at(group[0]), group[0])
+                    for group in same_group_rows
+                ]
+                is_new_duplicate = (
+                    new_created > 0 and (new_created, gid) > max(old_keys)
+                )
+                if is_new_duplicate:
+                    # Faqat hozirgina qo'shilgan takror yozuvni olib tashlaymiz;
+                    # avvaldan mavjud yozuvlarga tegmaymiz.
+                    delete_user_group(gid, owner_id)
+                    await send_to_bot_api(
+                        "ℹ️ Bu guruh allaqachon ro'yxatda bor edi. "
+                        "Takror qo'shilgani bekor qilindi.",
+                        chat_id=owner_id,
+                    )
+                else:
+                    mark_user_group_duplicate(gid, resolved_chat_id, title)
+                    await send_to_bot_api(
+                        "⚠️ Guruh uchun avvaldan boshqa yozuv bor. "
+                        "Bu qator kuzatuvga qo'shilmadi; 📋 Guruhlarimda "
+                        "takror qatorni qo'lda o'chirishingiz mumkin.",
+                        chat_id=owner_id,
+                    )
+                continue
+
+            if not resolve_user_group(gid, resolved_chat_id, title):
+                await _fail(
+                    gid, value, "guruh yozuvini yangilab bo'lmadi", prev_status
+                )
+                continue
             logger.info("[GROUP] owner=%s ulandi: %s", owner_id, value)
             if prev_status != "ok":
                 await send_to_bot_api(
                     "✅ <b>Guruh ulandi!</b>\n\n"
                     f"👥 {html.escape(title, quote=False)}\n"
-                    f"🆔 <code>{utils.get_peer_id(entity)}</code>\n\n"
+                    f"🆔 <code>{resolved_chat_id}</code>\n\n"
                     "Endi bu guruh skanerlanadi. To'xtatish: menyudagi "
                     "🔴 ⏸ Stop",
                     chat_id=owner_id,
@@ -172,6 +245,69 @@ async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
             await _fail(
                 gid, value, "bu guruh emas (kanal yoki foydalanuvchi)", prev_status
             )
+
+
+async def _audit_owner_group_membership(
+    owner_id: int, client: TelegramClient,
+) -> bool:
+    """A'zolikni davriy tekshiradi; tark etilgan guruhni o'chirmaydi."""
+    tracked = [
+        group for group in get_user_groups(owner_id)
+        if group[3] is not None and group[6] in {"ok", "left"}
+    ]
+    if not tracked:
+        return True
+    try:
+        dialogs = await client.get_dialogs(limit=None)
+    except Exception:
+        logger.warning("[GROUP] a'zolik tekshiruvi xato owner=%s", owner_id, exc_info=True)
+        return False
+
+    dialog_by_id = {}
+    for dialog in dialogs:
+        try:
+            dialog_by_id[utils.get_peer_id(dialog.entity)] = dialog.entity
+        except Exception:
+            continue
+
+    checked_ids = set()
+    for group in tracked:
+        group_id, _owner, _input, chat_id, old_title, _active, status, _error = group
+        if chat_id in checked_ids:
+            continue
+        checked_ids.add(chat_id)
+        same_chat = [item for item in tracked if item[3] == chat_id]
+        entity = dialog_by_id.get(chat_id)
+        if status == "ok" and entity is None:
+            changed = False
+            for item in same_chat:
+                if item[6] == "ok":
+                    changed = mark_user_group_left(item[0]) or changed
+            if changed:
+                title = old_title or "Guruh"
+                await send_to_bot_api(
+                    "⚠️ <b>Guruhdan chiqib ketilgani aniqlandi</b>\n\n"
+                    f"👥 {html.escape(title, quote=False)}\n"
+                    "Bu guruhdan yangi xabarlar kuzatilmaydi. Guruh yozuvi "
+                    "o'chirilmadi; akkaunt qayta a'zo bo'lsa, kuzatuv avtomatik tiklanadi.",
+                    chat_id=owner_id,
+                )
+                logger.info("[GROUP] owner=%s a'zolik yo'qoldi chat=%s", owner_id, chat_id)
+        elif status == "left" and entity is not None:
+            title = getattr(entity, "title", "") or old_title or "Guruh"
+            changed = False
+            for item in same_chat:
+                if item[6] == "left":
+                    changed = resolve_user_group(item[0], chat_id, title) or changed
+            if changed:
+                await send_to_bot_api(
+                    "✅ <b>Guruh kuzatuvi qayta tiklandi</b>\n\n"
+                    f"👥 {html.escape(title, quote=False)}\n"
+                    "Ulangan akkaunt yana guruh a'zosi.",
+                    chat_id=owner_id,
+                )
+                logger.info("[GROUP] owner=%s a'zolik tiklandi chat=%s", owner_id, chat_id)
+    return True
 
 
 async def list_user_dialogs(owner_id: int, limit: int | None = None):
@@ -692,6 +828,7 @@ async def restart_user_client(owner_id: int) -> bool:
 
 async def stop_user_client(owner_id: int, revoke: bool = False) -> None:
     client = _clients.pop(owner_id, None)
+    _last_group_membership_audit.pop(owner_id, None)
     if client:
         try:
             if revoke:
@@ -750,21 +887,33 @@ async def _sync_loop():
             # Ulangan client uzilib qolgan bo'lsa (tarmoq, Telegram) —
             # qayta ulanishga urinamiz, bo'lmasa egasini ogohlantiramiz.
             for uid, client in list(_clients.items()):
-                try:
-                    if client.is_connected():
+                if not client.is_connected():
+                    try:
+                        logger.warning("[SESSION] owner=%s uzilgan, qayta ulanmoqda", uid)
+                        await client.connect()
+                        if not client.is_connected():
+                            raise ConnectionError("ulanmadi")
+                    except Exception:
+                        logger.warning("[SESSION] owner=%s qayta tiklanmadi", uid)
+                        _clients.pop(uid, None)
+                        _last_group_membership_audit.pop(uid, None)
+                        set_session_status(uid, "error")
+                        await _notify_session_problem(uid, invalid=False)
                         continue
-                    logger.warning("[SESSION] owner=%s uzilgan, qayta ulanmoqda", uid)
-                    await client.connect()
-                    if not client.is_connected():
-                        raise ConnectionError("ulanmadi")
-                except Exception:
-                    logger.warning("[SESSION] owner=%s qayta tiklanmadi", uid)
-                    _clients.pop(uid, None)
-                    set_session_status(uid, "error")
-                    await _notify_session_problem(uid, invalid=False)
-                    continue
-                # Har bir onlayn clientda egasining pending guruhlarini tekshirish
+                # Pending guruhlarni har syncda, a'zolikni esa 10 daqiqada bir tekshiramiz.
                 await _resolve_owner_groups(uid, client)
+                now_mono = time.monotonic()
+                if uid not in _last_group_membership_audit:
+                    # 50-100 akkauntning get_dialogs so'rovlari bir paytga
+                    # to'planmasligi uchun birinchi auditni yoyib yuboramiz.
+                    offset = abs(uid) % _GROUP_MEMBERSHIP_AUDIT_SECONDS
+                    _last_group_membership_audit[uid] = now_mono - offset
+                if (
+                    now_mono - _last_group_membership_audit[uid]
+                    >= _GROUP_MEMBERSHIP_AUDIT_SECONDS
+                ):
+                    _last_group_membership_audit[uid] = now_mono
+                    await _audit_owner_group_membership(uid, client)
             _last_sync_ts = int(time.time())
             from database import set_setting as _ss
             _ss("userbot_last_seen", _last_sync_ts)

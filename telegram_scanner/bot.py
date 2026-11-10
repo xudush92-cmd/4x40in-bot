@@ -1278,6 +1278,13 @@ def _user_group_text(row) -> str:
         line = "✅ Kuzatuvda (umumiy Stop menyuda)"
     elif status == "pending":
         line = "⏳ Tekshirilmoqda..."
+    elif status == "left":
+        line = (
+            "🚪 Ulangan akkaunt guruhdan chiqqan — kuzatuv pauzada. "
+            "Qayta a'zo bo'lsangiz, avtomatik tiklanadi."
+        )
+    elif status == "duplicate":
+        line = "🔁 Takror yozuv — bu guruh boshqa qatorda bor, bu yozuv kuzatilmaydi."
     else:
         line = f"⚠️ Xato: {last_error or 'nomaʼlum'}"
     return f"👥 <b>{html.escape(name or '')}</b>\n{line}"
@@ -1288,7 +1295,7 @@ def _user_group_keyboard(row) -> InlineKeyboardMarkup:
     # faqat o'chirish (va xato bo'lsa qayta tekshirish) qoladi.
     gid, owner, input_value, chat_id, title, is_active, status, last_error = row
     rows = []
-    if status == "ok":
+    if status in {"ok", "duplicate"}:
         rows.append([
             InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"ugdel:{gid}"),
         ])
@@ -3163,6 +3170,16 @@ async def admin_add_dialog_group(
         chat_id = int(callback.data.split(":", 1)[1])
     except (ValueError, IndexError):
         await callback.answer("Xato ma'lumot.", show_alert=True)
+        return
+    existing = next(
+        (
+            group for group in get_user_groups(uid)
+            if group[3] == chat_id or str(group[2]) == str(chat_id)
+        ),
+        None,
+    )
+    if existing:
+        await callback.answer("Bu guruh sizning ro'yxatingizda allaqachon bor.", show_alert=True)
         return
     if count_user_groups(uid) >= MAX_USER_GROUPS:
         await callback.answer(
