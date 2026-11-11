@@ -109,17 +109,20 @@ def _fold_variants(word: str) -> tuple[str, ...]:
     """
     is_cyr = _is_cyrillic(word)
     base = cyr_to_lat(word) if is_cyr else word
-    variants = [base]
-    # ``o'``->``u`` almashtirish kirillda doim, lotinda esa faqat so'z
-    # yetarlicha uzun bo'lsa qo'llanadi (qisqa so'zlarda u boshqa haqiqiy
-    # so'z bilan to'qnashadi: yo'q ~ yuk, to'q ~ tuk, so'z ~ suz).
-    long_enough = len(base.replace("'", "")) >= 4
-    lazy = _lazy_latin(base, fold_apostrophe=is_cyr or long_enough)
-    if lazy not in variants:
-        variants.append(lazy)
-    plain = base.replace("o'", "o").replace("g'", "g")
-    if plain not in variants:
-        variants.append(plain)
+    # Chatlarda ``w`` ko'pincha ``sh`` o'rniga ishlatiladi. Asl shaklni
+    # ham qoldiramiz: inglizcha va boshqa so'zlardagi w yo'qolmasin.
+    bases = (base, base.replace("w", "sh")) if "w" in base else (base,)
+    variants = []
+    for form in bases:
+        # Qisqa so'zlarda o' -> u boshqa so'z bilan to'qnashishi mumkin.
+        long_enough = len(form.replace("'", "")) >= 4
+        for variant in (
+            form,
+            _lazy_latin(form, fold_apostrophe=is_cyr or long_enough),
+            form.replace("o'", "o").replace("g'", "g"),
+        ):
+            if variant not in variants:
+                variants.append(variant)
     return tuple(variants)
 
 

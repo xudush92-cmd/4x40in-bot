@@ -80,7 +80,6 @@ from database import (
 import feedback as fb
 import logbuffer
 import review  # eski nazorat slaydini yangilanishda o'chirish uchun
-import watch
 
 from login_manager import (
     LoginError,
@@ -359,7 +358,7 @@ def account_status_text(user_id: int) -> str:
     elif status_code == "mismatch":
         conn = "⚠️ boshqa akkauntga tegishli — qayta ulash kerak"
     elif status_code == "temporary":
-        conn = "⏳ vaqtincha uzilgan — birozdan keyin o'zi tiklanadi"
+        conn = "⏳ vaqtincha uzilgan — qayta ulanishga uriniladi"
     else:
         conn = "✅ Telegram akkaunt ulangan"
     phone_text = phone or "—"
@@ -374,8 +373,10 @@ def account_status_text(user_id: int) -> str:
         f"👤 Ism: <b>{html.escape(full_name or _name or '—')}</b>\n"
         f"📞 Telefon: <b>{html.escape(phone_text)}</b>\n"
         f"🔐 Sessiya: {conn}\n"
-        f"📡 Skaner: {'▶️ yoniq' if _scanner_on else '⏸ oʻchirilgan'}\n"
-        f"🔔 Xabar sharti: kamida <b>{get_user_match_count(_uid)}</b> ta kalit\n\n"
+        f"📡 Skaner sozlamasi: {'▶️ yoniq' if _scanner_on else '⏸ oʻchirilgan'}\n"
+        + (f"🔔 Ball chegarasi: <b>{get_user_score_threshold(_uid):g}</b>\n\n"
+           if get_match_mode() == "weight" else
+           f"🔔 Xabar sharti: kamida <b>{get_user_match_count(_uid)}</b> ta kalit\n\n")
         + (
             "💳 Tarif: 👑 admin — tarif talab qilinmaydi"
             if is_admin(user_id)
@@ -399,8 +400,9 @@ def current_status_text() -> str:
     """Menyudagi qisqa holat + to'xtatilgan bo'lsa ogohlantirish."""
     text = (
         f"🔑 Kalitlar soni: <b>{len(get_keywords())}</b> ta\n"
-        f"🔔 Xabar sharti: kamida <b>{get_match_count()}</b> ta kalit so'z "
-        "topilsa xabar beriladi"
+        + (f"🔔 Standart ball chegarasi: <b>{get_score_threshold():g}</b>"
+           if get_match_mode() == "weight" else
+           f"🔔 Xabar sharti: kamida <b>{get_match_count()}</b> ta kalit")
     )
     if get_setting("is_active") != "1":
         # Eng ko'p uchraydigan chalg'ituvchi holat: tizim o'chirilgan,
@@ -495,9 +497,7 @@ async def open_admin_panel(message: types.Message, state: FSMContext):
         "🛠 <b>Admin panel</b>\n\n"
         "Kalit so'zlar, xabar sharti, foydalanuvchilar, arizalar, "
         "xabar yuborish va statistika.\n\n"
-        "🧾 <b>Diagnostika</b> — oxirgi log qatorlari fayl bo'lib keladi.\n"
-        "👁 <b>Kuzatuv</b> — <code>/kuzat 15</code>: 15 daqiqa davomida har "
-        "bir skanerlangan xabar kartasi shu chatga keladi.",
+        "🧾 <b>Diagnostika</b> — oxirgi log qatorlari fayl bo'lib keladi.",
         parse_mode="HTML",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=admin_panel_keyboard(), resize_keyboard=True
@@ -531,7 +531,6 @@ def state_header() -> str:
             f"kalitlar: {keywords} ta · chegara: {threshold:g} · "
             f"rejim: {get_match_mode()}\n"
             f"faol guruhlar: {len(groups)} ta · sessiyalar: {online} ta\n"
-            f"kuzatuv: {'🟢' if watch.is_active() else '—'} · "
             f"ko'rilgan xabar: {events}\n"
         )
     except Exception:
@@ -565,35 +564,6 @@ async def send_diagnostics(message: types.Message, state: FSMContext):
         caption="🧾 Oxirgi log qatorlari (telefon raqamlar [raqam] ga "
                 "almashtirilgan).",
     )
-
-
-@dp.message(AdminFilter(), Command("kuzat"))
-async def watch_start(message: types.Message, state: FSMContext):
-    """👁 Kuzatuv: vaqtincha har bir xabar kartasi shu chatga keladi."""
-    await state.clear()
-    parts = (message.text or "").split()
-    minutes = watch.DEFAULT_MINUTES
-    if len(parts) > 1:
-        try:
-            minutes = int(parts[1])
-        except ValueError:
-            minutes = watch.DEFAULT_MINUTES
-    minutes = watch.enable(minutes)
-    await message.answer(
-        f"👁 <b>Kuzatuv yoqildi — {minutes} daqiqa.</b>\n\n"
-        "Shu vaqt ichida <b>har bir</b> skanerlangan xabar kartasi shu "
-        "chatga keladi: matn, ball, ishlagan so'zlar va natija.\n\n"
-        "Faqat sizning akkauntingiz guruhlari ko'rsatiladi.\n"
-        "To'xtatish: /kuzat_ochir",
-        parse_mode="HTML",
-    )
-
-
-@dp.message(AdminFilter(), Command("kuzat_ochir"))
-async def watch_stop(message: types.Message, state: FSMContext):
-    await state.clear()
-    watch.disable()
-    await message.answer("👁 Kuzatuv o'chirildi.")
 
 
 @dp.message(AdminFilter(), F.text == BTN_SCAN_PANEL)
@@ -1387,7 +1357,7 @@ async def user_stats(message: types.Message, state: FSMContext):
     await message.answer(
         "📊 <b>Sizning statistikangiz</b>\n\n"
         f"👥 Guruhlaringiz: <b>{len(groups)}</b> ta (faol: {active_groups} ta)\n"
-        f"🚖 Topilgan xabarlar (jami): <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
+        f"🚖 Filtrdan o‘tgan xabarlar (jami): <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
         f"🕐 Oxirgi topilgan: {last_found}\n\n"
         + subscription_text(get_user(uid)),
         parse_mode="HTML",
@@ -1451,12 +1421,12 @@ def _scan_diag_lines(uid: int) -> list[str]:
         if last_sync:
             ago = max(0, int(time.time()) - last_sync)
             lines.append(
-                f"   Sync loop: oxirgi tekshiruv {ago} soniya oldin (ishlayapti)"
+                f"   Sync loop: oxirgi tekshiruv {ago} soniya oldin"
             )
         else:
             lines.append(
-                "   Sync loop: hali ishlamagan — server qayta ishga "
-                "tushirilishi kerak"
+                "   Sync loop: hali tekshiruv qayd etilmagan; server yaqinda "
+                "ishga tushgan bo‘lishi mumkin."
             )
         lines.append(
             "   📱 Akkaunt holati → 🔄 Skanerni qayta yuklash bilan "
@@ -1478,7 +1448,7 @@ def _scan_diag_lines(uid: int) -> list[str]:
             time.strftime("%d.%m %H:%M:%S", time.localtime(ts)) if ts else "—"
         )
         lines.append(
-            f"📥 Ko'rilgan guruh xabarlari: <b>{seen}</b> ta "
+            f"📥 Hisoblagich tiklangandan beri ko‘rilgan guruh xabarlari: <b>{seen}</b> ta "
             f"(oxirgisi: {when}, chat <code>{info.get('last_chat')}</code>)"
         )
         last_chat = info.get("last_chat")
@@ -1489,14 +1459,13 @@ def _scan_diag_lines(uid: int) -> list[str]:
             )
     else:
         lines.append(
-            "📥 Ko'rilgan guruh xabarlari: <b>0</b> ta — sessiya guruh "
-            "xabarlarini umuman ko'rmayapti."
+            "📥 Shu ishga tushishdan yoki hisoblagich tiklanganidan beri "
+            "ko‘rilgan guruh xabarlari: <b>0</b> ta."
         )
         lines.append(
-            "Sabablari: akkauntda bildirishnomalar o'chirilgan, akkaunt "
-            "cheklangan, yoki xabar boshqa akkauntdan yozilgan. "
-            "Telefonda Telegram → Sozlamalar → Bildirishnomalar ni "
-            "tekshiring."
+            "Guruhlarda hali yangi xabar bo‘lmagan bo‘lishi mumkin. "
+            "Xabar borligiga ishonch hosil qilib, sessiya va guruh holatini "
+            "tekshiring; bu raqamning o‘zi sababni aniqlamaydi."
         )
     return lines
 
@@ -1542,9 +1511,9 @@ def scan_test_report(uid: int, text: str) -> str:
     if session_note:
         lines += [session_note, ""]
     if verdict.ok:
-        lines.append("🎯 <b>NATIJA: xabar KELADI</b>")
+        lines.append("🎯 <b>NATIJA: matn filtrdan O‘TDI</b>")
     else:
-        lines.append(f"❌ <b>NATIJA: xabar KELMAYDI</b>")
+        lines.append(f"❌ <b>NATIJA: matn filtrdan O‘TMADI</b>")
         lines.append(f"Sabab: <b>{html.escape(verdict.detail, quote=False)}</b>")
     lines.append("")
 
@@ -1557,7 +1526,7 @@ def scan_test_report(uid: int, text: str) -> str:
             f"{html.escape(stage.text, quote=False)}"
         )
 
-    warn = count_warning(verdict.required)
+    warn = count_warning(verdict.required) if verdict.mode == "count" else ""
     if warn:
         lines += ["", warn]
 
@@ -1566,12 +1535,12 @@ def scan_test_report(uid: int, text: str) -> str:
     lines.append("")
     if verdict.ok:
         lines.append(
-            "Shu xabar guruhga kelsa, bildirishnoma aynan sizga keladi."
+            "Bu faqat filtr tekshiruvi. Guruhga tegishlilik, sessiya "
+            "va Telegram orqali yetkazilish alohida tekshirilishi kerak."
         )
     else:
         lines.append(
-            "Bu xabar guruhga kelsa ham bildirishnoma kelmaydi — "
-            "sabab yuqorida ko'rsatilgan."
+            "Namuna matn joriy filtr shartidan o‘tmadi; sabab yuqorida."
         )
     return "\n".join(lines)
 
@@ -1690,7 +1659,7 @@ def _threshold_advice(uid: int) -> str:
     return (
         "Chegara qancha <b>past</b> bo'lsa — shuncha ko'p xabar keladi "
         "(lekin keraksizlari ham).\n"
-        "Qancha <b>yuqori</b> bo'lsa — faqat ishonchli xabarlar keladi, "
+        "Qancha <b>yuqori</b> bo'lsa — kamroq xabar o‘tadi, "
         "lekin ba'zi mijozlar o'tkazib yuborilishi mumkin.\n\n"
         "Maslahat: boshlanishiga <b>1.75</b>, shovqin ko'p bo'lsa "
         "— <b>2.5</b>."
@@ -1746,7 +1715,7 @@ async def user_set_threshold_callback(callback: types.CallbackQuery,
     if value:
         text = (
             f"✅ Chegarangiz o'rnatildi: <b>{value:g}</b>\n\n"
-            f"Ball shu qiymatdan yuqori bo'lsa xabar keladi. "
+            f"Ball shu qiymatga yetsa yoki oshsa filtrdan o‘tadi. "
             f"Admin standarti: {admin:g}."
         )
         if value < LOW_THRESHOLD_WARN:
@@ -1832,8 +1801,8 @@ async def help_user(message: types.Message, state: FSMContext):
         "tugmalarda teriladi) va skaneringizni yoqasiz/to'xtatasiz.\n"
         "• ➕ Guruh qo'shish — o'z guruhlaringizni kuzatuvga qo'shasiz; "
         "xabarlar faqat sizga keladi.\n"
-        "• 🔔 Xabar sharti — xabarda nechta kalit topilsa sizga xabar "
-        "kelishini o'zingiz belgilaysiz (faqat sizga ta'sir qiladi).\n"
+        "• 🔔 Xabar sharti — faol rejimga qarab kalitlar soni yoki ball "
+        "chegarasini o‘zingiz belgilaysiz (faqat sizga taʼsir qiladi).\n"
         "• 🧪 Skaner testi — xabar nima uchun kelayotganini/kelmayotganini "
         "qadamma-qadam ko'rsatadi.\n"
         "• Tarif admin bilan og'zaki kelishiladi — botda to'lov yo'q.\n"
@@ -3269,6 +3238,9 @@ def _admin_user_card_text(row) -> str:
     if not keywords:
         condition_line = "❌ Kalit so'zlar kiritilmagan"
         condition_ok = False
+    elif get_match_mode() == "weight":
+        condition_line = f"✅ Ball chegarasi: {get_user_score_threshold(uid):g} (kalitlar: {len(keywords)} ta)"
+        condition_ok = True
     elif required > len(keywords):
         condition_line = (
             f"⚠️ Kamida {required} ta kalit kerak, lekin kalitlar "
@@ -3295,12 +3267,12 @@ def _admin_user_card_text(row) -> str:
         working_line = "❌ Ishlamaydi — foydalanuvchi umumiy Stop bosgan"
     elif not client_online:
         working_line = "⚠️ Ishlamayapti — sessiya clienti hozir offline"
-    elif not ok_groups:
-        working_line = "❌ Ishlamaydi — tayyor ulangan guruh yo'q"
+    elif not any(g[5] == 1 for g in ok_groups):
+        working_line = "❌ Ishlamaydi — faol tayyor guruh yo'q"
     elif not condition_ok:
         working_line = "❌ Ishlamaydi — xabar sharti bajarilmaydigan holatda"
     else:
-        working_line = "✅ Ishlayapti — guruhlar kuzatilmoqda"
+        working_line = "✅ Sozlamalar tayyor, sessiya ulangan"
 
     if groups:
         group_lines = []
@@ -3346,7 +3318,7 @@ def _admin_user_card_text(row) -> str:
         f"xato: {len(error_groups)})\n"
         f"{groups_text}\n\n"
         "📊 <b>Statistikasi</b>\n"
-        f"🚖 Topilgan xabarlar: <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
+        f"🚖 Filtrdan o‘tgan xabarlar: <b>{get_user_counter(uid, 'leads_found')}</b> ta\n"
         f"🕐 Oxirgi topilgan xabar: {last_found_text}"
     )
 
@@ -3826,7 +3798,7 @@ def _word_stats_text(min_total: int = STATS_MIN_TOTAL) -> str:
             "Hozircha baholangan xabar yo'q.\n\n"
             "Bildirishnomalardagi <b>✅ Foydali</b> / <b>❌ Keraksiz</b> "
             "tugmalarini bosing — 10–15 ta bosishdan keyin bu yerda "
-            "qaysi so'z noto'g'ri ishlayotgani ko'rinadi."
+            "qaysi so‘zlar baholangan xabarlarda uchragani ko‘rinadi."
         )
 
     lines = [
@@ -3840,7 +3812,7 @@ def _word_stats_text(min_total: int = STATS_MIN_TOTAL) -> str:
 
     if bad:
         lines.append("❌ <b>Ko'p «keraksiz» bo'lgan so'zlar</b> "
-                     "— vaznni pasaytirish kerak:")
+                     "— tekshirish uchun:")
         for word, useless, count, rate in bad:
             pid = word_id_by_text(word)
             weight = get_phrase(pid)[2] if pid else 0.0
@@ -3854,7 +3826,7 @@ def _word_stats_text(min_total: int = STATS_MIN_TOTAL) -> str:
     if good:
         lines.append("")
         lines.append("✅ <b>Ko'p «foydali» bo'lgan so'zlar</b> "
-                     "— ishonchli belgilar:")
+                     "— tekshirish uchun:")
         for word, useful, count, rate in good:
             lines.append(
                 f"  • <b>{html.escape(word, quote=False)}</b> — "
@@ -3863,6 +3835,8 @@ def _word_stats_text(min_total: int = STATS_MIN_TOTAL) -> str:
 
     lines += [
         "",
+        "ℹ️ Baholar so‘zning o‘zi sabab bo‘lganini isbotlamaydi. "
+        "Vaznni o‘zgartirishdan avval xabarlarni tekshiring.\n"
         "ℹ️ Quyidagi tugmalar vaznni <b>0.25</b> ga pasaytiradi "
         "(bir bosish = bir qadam). Kerak bo'lsa qayta bosing.",
         "ℹ️ Kamida "
@@ -3976,11 +3950,11 @@ def _admin_stats_text() -> str:
         f"✅ Faol tarif: <b>{active_users}</b> ta\n"
         f"⏰ 3 kun ichida tugaydi: <b>{expiring}</b> ta\n"
         f"⛔ Bloklangan: <b>{blocked_users}</b> ta\n\n"
-        f"🚖 Topilgan mijozlar (jami): <b>{get_counter('leads_found')}</b> ta\n"
-        f"📨 Yuborilgan bildirishnomalar: <b>{get_counter('notifications_sent')}</b> ta\n"
+        f"🚖 Filtrdan o‘tgan xabarlar (jami): <b>{get_counter('leads_found')}</b> ta\n"
+        f"📨 Telegram qabul qilgan bildirishnomalar: <b>{get_counter('notifications_sent')}</b> ta\n"
         + _feedback_stats_line()
         + f"\n🔑 Kalitlar: <b>{len(get_keywords())}</b> ta\n"
-        f"👥 Faol guruhlar: <b>{active_groups}</b> / {len(groups)} ta\n"
+        f"👥 Sozlamada faol guruhlar: <b>{active_groups}</b> / {len(groups)} ta\n"
         f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ toʻxtatilgan'}"
     )
 
@@ -4016,9 +3990,8 @@ def count_warning(required: int) -> str:
         return ""
     return (
         f"⚠️ <b>Shart juda yuqori: {required} ta.</b>\n"
-        "Qisqa mijoz xabarlarida odatda 2-3 ta kalit bo'ladi — "
-        f"{required} ta talab qilinsa, ularning deyarli barchasi kelmaydi.\n"
-        "👉 <b>2</b> ni tanlash tavsiya etiladi."
+        "Qisqa xabarlar bu shartdan o‘tmasligi mumkin. "
+        "Chegarani o‘z xabarlaringiz bilan sinab ko‘ring."
     )
 
 
@@ -4043,7 +4016,7 @@ def scanner_status_text() -> str:
     if online_ids:
         session_line = (
             f"📡 Faol sessiyalar: <b>{len(online_ids)}</b> ta "
-            "(skaner ishlayapti)"
+            "(Telegramga ulangan; guruhlar alohida tekshiriladi)"
         )
     else:
         session_line = (
@@ -4058,9 +4031,11 @@ def scanner_status_text() -> str:
         f"⚙️ Tizim: {'▶️ ishlayapti' if get_setting('is_active') == '1' else '⏸ TOʻXTATILGAN — ▶️ yoqish kerak'}",
         session_line,
         f"🔑 Kalitlar: <b>{len(get_keywords())}</b> ta",
-        f"🔔 Shart: kamida <b>{get_match_count()}</b> ta kalit topilsa"
-        + ("  ⚠️ juda yuqori" if get_match_count() >= TOO_HIGH_COUNT else ""),
-        f"👥 Faol guruhlar: <b>{len(active)}</b> ta",
+        (f"🔔 Standart ball chegarasi: <b>{get_score_threshold():g}</b>"
+         if get_match_mode() == "weight" else
+         f"🔔 Shart: kamida <b>{get_match_count()}</b> ta kalit topilsa"
+         + ("  ⚠️ yuqori" if get_match_count() >= TOO_HIGH_COUNT else "")),
+        f"👥 Sozlamada faol guruhlar: <b>{len(active)}</b> ta",
     ]
     if pending:
         lines.append(f"⏳ Tekshiruvdagi guruhlar: {len(pending)} ta")
@@ -4074,8 +4049,8 @@ def scanner_status_text() -> str:
         lines.append("📭 Faol guruh yo'q — guruh ulanganini tekshiring")
     lines += [
         "",
-        "📬 <b>Bildirishnomalar aynan shu chatga keladi</b> (Secrets dagi "
-        "ADMIN_ID — boshqa joyga yuborilmaydi).",
+        "📬 Mos xabar bildirishnomasi guruh egasiga yuboriladi; "
+        "Telegram qabul qilishi va ko‘rsatilishi alohida holatlarga bog‘liq.",
     ]
     return "\n".join(lines)
 

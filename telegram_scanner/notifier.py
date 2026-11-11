@@ -321,7 +321,6 @@ def build_notification_text(
     lines.extend([
         sep,
         profile_line,
-        "✍️ (Lichkasiga xabar yozish uchun ushbu xabarga «Reply / Javob» qiling)",
     ])
     if message_link:
         lines.append(

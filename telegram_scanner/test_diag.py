@@ -1,4 +1,4 @@
-"""🧾 Diagnostika va 👁 Kuzatuv testlari.
+"""🧾 Diagnostika testlari.
 
 `python test_diag.py`
 """
@@ -20,7 +20,6 @@ os.environ.setdefault("API_HASH", "x")
 os.environ.setdefault("BOT_TOKEN", "1:x")
 
 import logbuffer  # noqa: E402
-import watch  # noqa: E402
 
 
 class TestLogBuffer(unittest.TestCase):
@@ -283,6 +282,25 @@ class _ProtectedEvent:
         )
 
 
+class TestScannerWithoutObservation(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_nonmatching_message_does_not_send_a_card(self):
+        import scanner_manager
+
+        event = _ProtectedEvent()
+        event.get_chat = AsyncMock()
+        client = _HandlerClient()
+        verdict = SimpleNamespace(ok=False, stage="keywords")
+        with (
+            patch.object(scanner_manager, "evaluate", return_value=verdict),
+            patch.object(scanner_manager, "_log_skip"),
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            scanner_manager._make_handler(scanner_manager.ADMIN_ID, client)
+            await client.handler(event)
+        send.assert_not_awaited()
+        event.get_chat.assert_not_awaited()
+
+
 class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
     async def test_match_alert_shows_only_selected_visible_details(self):
         import scanner_manager
@@ -448,62 +466,6 @@ class TestGroupResolutionDedup(unittest.IsolatedAsyncioTestCase):
         )
         delete.assert_not_called()
         mark_dup.assert_called_once_with(2, self.CHAT_ID, "Same group")
-
-
-class TestWatch(unittest.TestCase):
-    def tearDown(self):
-        watch.disable()
-
-    def test_disabled_by_default(self):
-        watch.disable()
-        self.assertFalse(watch.is_active())
-        self.assertEqual(watch.remaining(), 0)
-
-    def test_enable_and_disable(self):
-        watch.enable(5)
-        self.assertTrue(watch.is_active())
-        self.assertEqual(watch.remaining(), 5)
-        watch.disable()
-        self.assertFalse(watch.is_active())
-
-    def test_minutes_are_clamped(self):
-        self.assertEqual(watch.enable(0), 1)
-        self.assertEqual(watch.enable(9999), watch.MAX_MINUTES)
-
-    def test_expires(self):
-        watch.enable(1)
-        watch._until = time.time() - 1
-        self.assertFalse(watch.is_active())
-        self.assertEqual(watch.remaining(), 0)
-
-    def test_card_for_passed_message(self):
-        verdict = _Verdict(4.0, 1.75, True, "ok",
-                           {"kerak": 3.0, "mashina": 1.0}, {})
-        card = watch.card_text("mashina kerak", verdict)
-        self.assertIn("mashina kerak", card)
-        self.assertIn("ball <b>4</b> / 1.75", card)
-        self.assertIn("+3 kerak", card)
-        self.assertIn("yuborildi", card)
-
-    def test_card_for_near_miss(self):
-        verdict = _Verdict(1.5, 1.75, False, "keywords", {"odam": 1.0}, {})
-        card = watch.card_text("odam bor", verdict)
-        self.assertIn("chegarada", card)
-
-    def test_card_for_emoji_block(self):
-        verdict = _Verdict(0.0, 1.75, False, "emoji")
-        card = watch.card_text("🚖 reys", verdict)
-        self.assertIn("emoji", card)
-
-    def test_card_escapes_html(self):
-        verdict = _Verdict(4.0, 1.75, True, "ok", {"kerak": 3.0}, {})
-        card = watch.card_text("<b>yomon</b> matn", verdict)
-        self.assertIn("&lt;b&gt;", card)
-
-    def test_card_truncates_long_text(self):
-        verdict = _Verdict(4.0, 1.75, True, "ok", {}, {})
-        card = watch.card_text("so'z " * 300, verdict)
-        self.assertIn("…", card)
 
 
 if __name__ == "__main__":

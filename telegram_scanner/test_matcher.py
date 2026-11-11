@@ -164,6 +164,18 @@ class TestReformedUzbekLatin(unittest.TestCase):
             self.assertTrue(match_keywords(text, ["köngil"], 1).is_match, text)
 
 
+class TestChatShorthand(unittest.TestCase):
+    def test_w_and_sh_match_in_both_directions_and_cyrillic(self):
+        for text, keyword in (("mawina", "mashina"), ("mashina", "mawina"),
+                              ("машина", "mawina"), ("MAWINA", "машина"),
+                              ("wahar", "shahar"), ("shahar", "wahar")):
+            with self.subTest(text=text, keyword=keyword):
+                self.assertTrue(match_keywords(text, [keyword], 1).is_match)
+
+    def test_w_remains_matchable_as_written(self):
+        self.assertTrue(match_keywords("wifi", ["wifi"], 1).is_match)
+
+
 class TestDriverFilter(unittest.TestCase):
     """Suratlardagi haydovchi e'lonlari bloklanishi, mijoz o'tishi kerak."""
 

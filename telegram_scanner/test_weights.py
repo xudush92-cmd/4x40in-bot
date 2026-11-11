@@ -189,6 +189,22 @@ class TestWeightedInput(unittest.TestCase):
             parse_weighted_entries("reys\n-3 reys"), [("reys", -3.0)]
         )
 
+    def test_w_sh_variants_in_weighted_phrases_and_negative_entries(self):
+        for text in ("mawina kerak", "mashina kerak", "машина керак"):
+            with self.subTest(text=text):
+                result = score_text(text, [("mashina kerak", 3.0)], threshold=3.0)
+                self.assertEqual(result.score, 3.0)
+        result = score_text("mawina bor", [("mashina bor", -4.0)], threshold=1.0)
+        self.assertEqual(result.score, -4.0)
+        result = score_text("mashina kerak", [("mawina kerak", 3.0)], threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+
+    def test_w_sh_phrase_aliases_score_once(self):
+        result = score_text("mawina kerak", [("mawina kerak", 3.0),
+                                             ("mashina kerak", 3.0)], threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+        self.assertEqual(len(result.positives), 1)
+
     def test_new_alphabet_aliases_do_not_duplicate_weighted_keys(self):
         entries = parse_weighted_entries("+3: shahar\n+3: şahar\n+3: шаҳар")
         self.assertEqual(entries, [("shahar", 3.0)])

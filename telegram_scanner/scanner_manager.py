@@ -38,7 +38,6 @@ from database import (
 from login_manager import revoke_session
 from filters import evaluate, summary_line
 from session_crypto import decrypt_session
-import watch
 from notifier import (
     build_feedback_row,
     build_message_link,
@@ -64,8 +63,6 @@ logger.info(
 
 # Hozir ko'tarilayotgan sessiyalar (ikki marta ulanishning oldini oladi)
 _starting: set = set()
-# 👁 Kuzatuv kartalari (admin uchun) — fon vazifalari
-_watch_tasks: set = set()
 
 _clients: dict[int, TelegramClient] = {}
 _tasks: list[asyncio.Task] = []
@@ -440,20 +437,6 @@ def _log_skip(owner_id: int, chat_id, verdict) -> None:
     )
 
 
-def _queue_watch_card(event, verdict, text: str | None = None) -> None:
-    """👁 Kuzatuv kartasini adminga yuboradi (faqat o'z akkaunti)."""
-    try:
-        card = watch.card_text(
-            text if text is not None else (getattr(event, "raw_text", "") or ""),
-            verdict,
-        )
-        task = asyncio.create_task(send_to_bot_api(card, None, chat_id=ADMIN_ID))
-        _watch_tasks.add(task)
-        task.add_done_callback(_watch_tasks.discard)
-    except Exception:
-        logger.exception("[WATCH] karta yuborilmadi")
-
-
 def _make_handler(owner_id: int, client: TelegramClient):
     @client.on(events.NewMessage)
     async def _handler(event):
@@ -504,23 +487,6 @@ def _make_handler(owner_id: int, client: TelegramClient):
         chat = None
         protected = _is_protected_content(message=message)
         protection_unknown = False
-        watch_active = owner_id == ADMIN_ID and watch.is_active()
-        # Admin kuzatuv kartasi xabar matnini ko'rsatadi; avval himoya
-        # holatini aniqlay olmasak, xom matnli kartani yubormaymiz.
-        if watch_active:
-            try:
-                chat = await event.get_chat()
-                if chat is None:
-                    protection_unknown = True
-                else:
-                    protected = protected or _is_protected_content(chat, message)
-            except Exception:
-                protection_unknown = True
-                logger.warning(
-                    "[SCAN] chat himoyasini aniqlab bo'lmadi owner=%s chat=%s",
-                    owner_id, chat_id, exc_info=True,
-                )
-
         # Yozma xabarlar mavjud filtr zanjiridan o'tadi.
         filter_started = time.monotonic()
         verdict = evaluate(
@@ -535,8 +501,6 @@ def _make_handler(owner_id: int, client: TelegramClient):
             filter_duration_ms=(time.monotonic() - filter_started) * 1000,
             handler_to_filter_ms=(filter_started - handler_started) * 1000,
         )
-        if watch_active and not protected and not protection_unknown:
-            _queue_watch_card(event, verdict, raw_text)
         if not verdict.ok:
             if protected or protection_unknown:
                 logger.info(
@@ -693,6 +657,8 @@ def _make_handler(owner_id: int, client: TelegramClient):
 # Kalit — user_id, qiymat — oxirgi xabar yuborilgan vaqt (time.time()).
 _NOTIFY_COOLDOWN = 6 * 3600  # 6 soat
 _last_session_notice: dict[int, float] = {}
+_last_session_notice_attempt: dict[int, float] = {}
+_SESSION_NOTICE_RETRY = 300  # muvaffaqiyatsiz urinishdan keyin 5 daqiqa
 
 
 async def _notify_session_problem(owner_id: int, *, invalid: bool) -> None:
@@ -702,9 +668,11 @@ async def _notify_session_problem(owner_id: int, *, invalid: bool) -> None:
     xabar jimgina yo'qoladi. Shuning uchun aniq sabab va yechim yoziladi.
     """
     now = time.time()
-    if now - _last_session_notice.get(owner_id, 0) < _NOTIFY_COOLDOWN:
+    if owner_id in _last_session_notice and now - _last_session_notice[owner_id] < _NOTIFY_COOLDOWN:
         return
-    _last_session_notice[owner_id] = now
+    if owner_id in _last_session_notice_attempt and now - _last_session_notice_attempt[owner_id] < _SESSION_NOTICE_RETRY:
+        return
+    _last_session_notice_attempt[owner_id] = now
     if invalid:
         text = (
             "⚠️ <b>Telegram sessiyangiz uzilgan.</b>\n\n"
@@ -721,10 +689,15 @@ async def _notify_session_problem(owner_id: int, *, invalid: bool) -> None:
             "Muammo davom etsa 🔑 <b>Login</b> dan qayta kiring."
         )
     try:
-        await send_to_bot_api(text, chat_id=owner_id)
+        sent = await send_to_bot_api(text, chat_id=owner_id)
     except Exception:
-        logger.warning("Sessiya ogohlantirishi yuborilmadi owner=%s", owner_id)
-    logger.warning("[SESSION] ogohlantirish yuborildi owner=%s invalid=%s", owner_id, invalid)
+        sent = False
+        logger.exception("Sessiya ogohlantirishida xato owner=%s", owner_id)
+    if sent:
+        _last_session_notice[owner_id] = now
+        logger.warning("[SESSION] ogohlantirish yuborildi owner=%s invalid=%s", owner_id, invalid)
+    else:
+        logger.warning("[SESSION] ogohlantirish yuborilmadi owner=%s", owner_id)
 
 
 async def start_user_client(owner_id: int) -> bool:
@@ -922,27 +895,38 @@ async def _sync_loop():
         await asyncio.sleep(60)
 
 
+async def _send_expiry_warnings(bot_send=send_to_bot_api):
+    """Bugungi ogohlantirishni faqat muvaffaqiyatli yuborilganda qayd etadi."""
+    from database import get_expiring_users
+
+    today = datetime.date.today().isoformat()
+    for row in get_expiring_users(3):
+        uid, expires, last_warn = row[0], row[4], row[12]
+        if last_warn == today:
+            continue
+        days_left = max(1, (expires - int(time.time()) + 86399) // 86400)
+        date_text = time.strftime("%d.%m.%Y", time.localtime(expires))
+        try:
+            sent = await bot_send(
+                "⏰ <b>Tarif muddatingiz tugayapti!</b>\n\n"
+                f"📅 Tugash sanasi: <b>{date_text}</b>\n"
+                f"⏳ Qolgan muddat: <b>{days_left} kun</b>\n\n"
+                "Davom ettirish uchun admin bilan bog'laning.",
+                chat_id=uid,
+            )
+            if sent:
+                mark_warned_today(uid)
+            else:
+                logger.warning("Tarif ogohlantirishi yuborilmadi owner=%s", uid)
+        except Exception:
+            logger.exception("Tarif ogohlantirishida xato owner=%s", uid)
+
+
 async def _expiry_warning_loop(bot_send=send_to_bot_api):
-    """Tugashga <=3 kun: har kuni faqat 1 marta ogohlantirish."""
+    """Tugashga <=3 kun: yuborilsa har kuni bir marta, aks holda qayta urinadi."""
     while True:
         try:
-            from database import get_expiring_users
-
-            today = datetime.date.today().isoformat()
-            for row in get_expiring_users(3):
-                uid, expires, last_warn = row[0], row[4], row[12]
-                if last_warn == today:
-                    continue
-                days_left = max(1, (expires - int(time.time()) + 86399) // 86400)
-                date_text = time.strftime("%d.%m.%Y", time.localtime(expires))
-                await bot_send(
-                    "⏰ <b>Tarif muddatingiz tugayapti!</b>\n\n"
-                    f"📅 Tugash sanasi: <b>{date_text}</b>\n"
-                    f"⏳ Qolgan muddat: <b>{days_left} kun</b>\n\n"
-                    "Davom ettirish uchun admin bilan bog'laning.",
-                    chat_id=uid,
-                )
-                mark_warned_today(uid)
+            await _send_expiry_warnings(bot_send)
         except Exception:
             logger.exception("Expiry warning xato")
         await asyncio.sleep(3600)

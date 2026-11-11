@@ -36,6 +36,11 @@ class TestNotificationText(unittest.TestCase):
         values.update(overrides)
         return build_notification_text(**values)
 
+    def test_notification_does_not_instruct_reply_to_bot(self):
+        text = self._build()
+        self.assertNotIn('Reply / Javob', text)
+        self.assertIn('https://t.me/alice', text)
+
     def test_protected_notification_omits_details_by_default(self):
         text = build_protected_notification_text(
             group_title="Himoyalangan guruh",
