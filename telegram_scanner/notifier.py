@@ -2,8 +2,9 @@
 
 Bu modul faqat Telegram Bot API orqali xabar yuboradi va xabar matnini
 tayyorlaydi. Skanerlash butunlay ``scanner_manager`` da: har bir
-foydalanuvchi o'z sessiyasi bilan ishlaydi va topilgan xabar FAQAT
-shu guruh egasiga boradi — boshqa foydalanuvchilarga tarqatilmaydi.
+foydalanuvchi o'z sessiyasi bilan ishlaydi va topilgan xabar dastlab
+faqat shu guruh egasiga boradi. Egasi ❌ Keraksiz desa, oddiy
+bildirishnoma nusxasi ko'rib chiqish uchun adminga ham yuboriladi.
 
 Eski "markaziy userbot" rejimi (bitta akkaunt, barcha oluvchilarga
 tarqatish) ataylab olib tashlangan: u foydalanuvchilar ma'lumotini

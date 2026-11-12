@@ -1805,6 +1805,8 @@ async def help_user(message: types.Message, state: FSMContext):
         "chegarasini o‘zingiz belgilaysiz (faqat sizga taʼsir qiladi).\n"
         "• 🧪 Skaner testi — xabar nima uchun kelayotganini/kelmayotganini "
         "qadamma-qadam ko'rsatadi.\n"
+        "• ❌ Keraksiz bosilsa, bildirishnoma ko‘rib chiqish uchun "
+        "adminga yuboriladi; kalit vazni avtomatik o‘zgarmaydi.\n"
         "• Tarif admin bilan og'zaki kelishiladi — botda to'lov yo'q.\n"
         "• Savollar bo'lsa adminga yozing.",
         parse_mode="HTML",
@@ -2610,9 +2612,52 @@ async def word_card_delete(callback: types.CallbackQuery):
     )
 
 
+async def _send_useless_feedback_to_admin(callback: types.CallbackQuery, owner_id: int) -> bool:
+    """Faqat egasining oddiy bildirishnomasini tugmalarsiz adminga nusxalaydi."""
+    message = callback.message
+    chat = getattr(message, "chat", None)
+    text = getattr(message, "text", None) or ""
+    # Himoyalangan xabarlar kartasida feedback bo'lmaydi; eski yoki boshqa
+    # turdagi xabarlarni ham tasodifan nusxalamaymiz.
+    if (getattr(chat, "id", None) != owner_id
+            or getattr(chat, "type", None) != "private"
+            or not text.startswith("🚕 YANGI BUYURTMA / MIJOZ TOPILDI!")):
+        logger.warning("[FEEDBACK] adminga nusxa yuborilmadi: xabar mos emas")
+        return False
+    try:
+        copied = await callback.bot.copy_message(
+            chat_id=ADMIN_ID, from_chat_id=owner_id, message_id=message.message_id,
+        )
+        actor = callback.from_user
+        name = html.escape(getattr(actor, "full_name", None) or "Nomaʼlum")
+        await callback.bot.send_message(
+            ADMIN_ID,
+            f"❌ <b>Keraksiz deb baholandi</b>\n"
+            f"👤 Foydalanuvchi: {name} (<code>{owner_id}</code>)\n"
+            "Kalit vaznlari avtomatik o‘zgarmadi.",
+            parse_mode="HTML", reply_to_message_id=copied.message_id,
+        )
+        return True
+    except Exception:
+        logger.exception("[FEEDBACK] adminga yuborish amalga oshmadi")
+        return False
+
+
+def _feedback_remaining_markup(message):
+    """Baho tugmalarini olib, profil va asl xabar havolalarini saqlaydi."""
+    markup = getattr(message, "reply_markup", None)
+    rows = []
+    for row in getattr(markup, "inline_keyboard", ()) or ():
+        kept = [button for button in row
+                if not (getattr(button, "callback_data", None) or "").startswith("fb:")]
+        if kept:
+            rows.append(kept)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 @dp.callback_query(F.data.startswith("fb:"))
 async def feedback_callback(callback: types.CallbackQuery):
-    """«✅ Foydali / ❌ Keraksiz» — faqat statistika, vazn o'zgarmaydi.
+    """«✅ Foydali / ❌ Keraksiz» — statistika va admin tekshiruvi, vazn o'zgarmaydi.
 
     Kalitlar umumiy bo'lgani uchun vaznni faqat admin kalitlar menyusidagi
     qo'lda boshqaruv tugmalari bilan o'zgartiradi. Fikr bildirishga esa
@@ -2646,15 +2691,20 @@ async def feedback_callback(callback: types.CallbackQuery):
         text = "👍 Fikringiz statistikaga yozildi. Kalit vazni o'zgarmadi."
     await callback.answer(text[:190], show_alert=(status != "ok"))
     if status == "ok":
+        admin_sent = None
+        if not useful and actor != ADMIN_ID:
+            admin_sent = await _send_useless_feedback_to_admin(callback, owner_id)
         try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-            note = (
-                "ℹ️ Fikringiz faqat statistikada hisobga olinadi. Vaznni "
-                "admin 🔑 Kalit so'zlar menyusida qo'lda o'zgartiradi."
+            await callback.message.edit_reply_markup(
+                reply_markup=_feedback_remaining_markup(callback.message)
             )
-            await callback.message.answer(
-                f"{text}\n\n{note}", parse_mode="HTML"
-            )
+            note = "ℹ️ Kalit vaznini faqat admin qo‘lda o‘zgartiradi."
+            if admin_sent is True:
+                note += " Keraksiz bildirishnoma adminga yuborildi."
+            elif admin_sent is False:
+                note += (" ⚠️ Adminga to‘liq yuborib bo‘lmadi; baho statistikaga yozildi. "
+                         "Kerak bo‘lsa, adminga o‘zingiz xabar bering.")
+            await callback.message.answer(f"{text}\n\n{note}", parse_mode="HTML")
         except Exception:
             logger.exception("Feedback javobi yuborilmadi")
 

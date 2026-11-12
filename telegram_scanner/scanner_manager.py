@@ -638,6 +638,10 @@ def _make_handler(owner_id: int, client: TelegramClient):
         review_id = save_lead_review(owner_id, verdict.matched)
         if review_id:
             rows.append(build_feedback_row(review_id))
+            text += (
+                "\n\nℹ️ ❌ Keraksiz bosilsa, ushbu bildirishnoma "
+                "ko‘rib chiqish uchun adminga yuboriladi."
+            )
         markup = {"inline_keyboard": rows} if rows else None
 
         # Bildirishnoma FAQAT guruh egasiga yuboriladi (chat_id=owner_id)
