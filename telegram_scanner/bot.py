@@ -20,6 +20,7 @@ from aiogram.types import (
 from config import ADMIN_ID, BOT_TOKEN, missing_settings
 from database import (
     MAX_USER_GROUPS,
+    block_sender, unblock_sender, list_blocked_senders,
     SCORE_THRESHOLDS,
     add_keyword_checked,
     add_user_group,
@@ -123,6 +124,7 @@ BTN_SCAN_GROUPS = "🔎 Akkauntdagi guruhlar"
 BTN_LOGIN = "🔑 Login"
 BTN_ACCOUNT = "📱 Akkaunt holati"
 BTN_HELP = "ℹ️ Yordam"
+BTN_BLOCKED = "🚫 Bloklanganlar"
 # Foydalanuvchining UMUMIY skaner boshqaruvi (bitta tugma, menyuda)
 # Ikki alohida panel: admin boshqaruvi va skanerning O'Z ishlari
 BTN_ADMIN_PANEL = "🛠 Admin panel"
@@ -138,7 +140,7 @@ MENU_BUTTONS = {
     BTN_GROUPS, BTN_COUNT, BTN_TOGGLE, BTN_TOGGLE_OLD, BTN_TEST,
     BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
-    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
+    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_BLOCKED, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
     BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_DIAG,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
@@ -251,7 +253,7 @@ def scan_panel_keyboard(uid: int) -> list:
     return [
         [KeyboardButton(text=toggle)],
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
-        [KeyboardButton(text=BTN_TEST)],
+        [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_BLOCKED)],
         [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -270,7 +272,7 @@ def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
         [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_COUNT)],
-        [KeyboardButton(text=BTN_HELP)],
+        [KeyboardButton(text=BTN_BLOCKED), KeyboardButton(text=BTN_HELP)],
     ]
 
 
@@ -1805,6 +1807,8 @@ async def help_user(message: types.Message, state: FSMContext):
         "chegarasini o‘zingiz belgilaysiz (faqat sizga taʼsir qiladi).\n"
         "• 🧪 Skaner testi — xabar nima uchun kelayotganini/kelmayotganini "
         "qadamma-qadam ko'rsatadi.\n"
+        "• 🚫 Bloklanganlar — faqat sizga tegishli shaxsiy ro‘yxat; "
+        "xohlasangiz odamni blokdan chiqarasiz.\n"
         "• ❌ Keraksiz bosilsa, bildirishnoma ko‘rib chiqish uchun "
         "adminga yuboriladi; kalit vazni avtomatik o‘zgarmaydi.\n"
         "• Tarif admin bilan og'zaki kelishiladi — botda to'lov yo'q.\n"
@@ -2653,6 +2657,128 @@ def _feedback_remaining_markup(message):
         if kept:
             rows.append(kept)
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def _block_callback_owner(callback) -> int | None:
+    """Shaxsiy chatda faqat o'z ro'yxatini boshqarish mumkin."""
+    actor = getattr(getattr(callback, "from_user", None), "id", None)
+    chat = getattr(getattr(callback, "message", None), "chat", None)
+    if actor and getattr(chat, "type", None) == "private" and getattr(chat, "id", None) == actor:
+        return actor
+    return None
+
+
+def _blocked_page(owner_id: int, page: int = 0):
+    page = max(0, min(page, 1_000_000))
+    ids, total = list_blocked_senders(owner_id, 10, page * 10)
+    if page and not ids:
+        page = max(0, (total - 1) // 10)
+        ids, total = list_blocked_senders(owner_id, 10, page * 10)
+    text = ("🚫 <b>Bloklanganlar</b>\n\n"
+            "Bu ro‘yxat faqat sizga tegishli. Shaxs Telegram ID bo‘yicha "
+            "saqlanadi. Blokdan chiqarish uchun ID tugmasini bosing.\n\n"
+            f"Jami: <b>{total}</b> ta")
+    rows = [[InlineKeyboardButton(text=f"✅ Blokdan chiqarish: {sid}",
+                                  callback_data=f"bsu:{sid}:{page}")]
+            for sid in ids]
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"bsl:{page-1}"))
+    if (page + 1) * 10 < total:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"bsl:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([_close_button()])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.message(F.text == BTN_BLOCKED)
+async def show_blocked_senders(message: types.Message, state: FSMContext):
+    await state.clear()
+    text, markup = _blocked_page(message.from_user.id)
+    await message.answer(text, reply_markup=markup, parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("bsp:"))
+async def ask_block_sender(callback: types.CallbackQuery):
+    owner = _block_callback_owner(callback)
+    try:
+        sender_id = int(callback.data.split(":", 1)[1])
+        if not 0 < sender_id < 2**63 or sender_id == owner:
+            raise ValueError
+    except (ValueError, IndexError):
+        await callback.answer("Yuboruvchi ID noto‘g‘ri.", show_alert=True)
+        return
+    if owner is None:
+        await callback.answer("Faqat shaxsiy chatda ishlaydi.", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.answer(
+        f"🚫 <b>{sender_id}</b> ID li yuboruvchini faqat o‘zingiz uchun "
+        "bloklaysizmi? Keyin 🚫 Bloklanganlar menyusidan ochishingiz mumkin.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🚫 Ha, bloklash", callback_data=f"bsc:{sender_id}"),
+            _close_button(),
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("bsc:"))
+async def confirm_block_sender(callback: types.CallbackQuery):
+    owner = _block_callback_owner(callback)
+    try:
+        sender_id = int(callback.data.split(":", 1)[1])
+        if not 0 < sender_id < 2**63 or sender_id == owner:
+            raise ValueError
+    except (ValueError, IndexError):
+        await callback.answer("Yuboruvchi ID noto‘g‘ri.", show_alert=True)
+        return
+    if owner is None:
+        await callback.answer("Faqat shaxsiy chatda ishlaydi.", show_alert=True)
+        return
+    added = block_sender(owner, sender_id)
+    await callback.answer("Bloklandi" if added else "Allaqachon bloklangan")
+    await callback.message.edit_text(
+        f"🚫 <b>{sender_id}</b> siz uchun bloklangan. "
+        "Bu boshqa foydalanuvchilarga ta’sir qilmaydi.", parse_mode="HTML"
+    )
+
+
+@dp.callback_query(F.data.startswith("bsl:"))
+async def blocked_page_callback(callback: types.CallbackQuery):
+    owner = _block_callback_owner(callback)
+    try:
+        page = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Sahifa noto‘g‘ri.", show_alert=True)
+        return
+    if owner is None:
+        await callback.answer("Faqat shaxsiy chatda ishlaydi.", show_alert=True)
+        return
+    text, markup = _blocked_page(owner, page)
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("bsu:"))
+async def unblock_sender_callback(callback: types.CallbackQuery):
+    owner = _block_callback_owner(callback)
+    try:
+        _, sender, page = callback.data.split(":")
+        sender_id, page = int(sender), int(page)
+        if not 0 < sender_id < 2**63:
+            raise ValueError
+    except (ValueError, IndexError):
+        await callback.answer("Ma’lumot noto‘g‘ri.", show_alert=True)
+        return
+    if owner is None:
+        await callback.answer("Faqat shaxsiy chatda ishlaydi.", show_alert=True)
+        return
+    removed = unblock_sender(owner, sender_id)
+    text, markup = _blocked_page(owner, page)
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    await callback.answer("Blokdan chiqarildi" if removed else "Ro‘yxatda yo‘q")
 
 
 @dp.callback_query(F.data.startswith("fb:"))

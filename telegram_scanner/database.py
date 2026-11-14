@@ -101,6 +101,12 @@ def init_db() -> None:
                             words TEXT NOT NULL,
                             verdict TEXT DEFAULT '',
                             created_at INTEGER DEFAULT 0)""")
+        # Har bir foydalanuvchi faqat o'z blok ro'yxatiga ega.
+        conn.execute("""CREATE TABLE IF NOT EXISTS blocked_senders (
+                            owner_user_id INTEGER NOT NULL,
+                            sender_user_id INTEGER NOT NULL,
+                            created_at INTEGER NOT NULL,
+                            PRIMARY KEY(owner_user_id, sender_user_id))""")
         # Foydalanuvchi statistikasi hisoblagichlari
         conn.execute("""CREATE TABLE IF NOT EXISTS user_counters (
                             user_id INTEGER NOT NULL,
@@ -791,8 +797,44 @@ def set_user_score_threshold(user_id: int, value: float) -> float:
     return value
 
 
+def block_sender(owner_user_id: int, sender_user_id: int) -> bool:
+    """Shaxsiy blok qo'shadi; takror qo'shishda False."""
+    if owner_user_id <= 0 or sender_user_id <= 0 or owner_user_id == sender_user_id:
+        return False
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO blocked_senders VALUES (?, ?, ?)",
+            (owner_user_id, sender_user_id, int(time.time())),
+        )
+        return cur.rowcount > 0
+
+
+def unblock_sender(owner_user_id: int, sender_user_id: int) -> bool:
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute("DELETE FROM blocked_senders WHERE owner_user_id = ? AND sender_user_id = ?",
+                           (owner_user_id, sender_user_id))
+        return cur.rowcount > 0
+
+
+def is_sender_blocked(owner_user_id: int, sender_user_id: int) -> bool:
+    with closing(_connect()) as conn:
+        return conn.execute("SELECT 1 FROM blocked_senders WHERE owner_user_id = ? AND sender_user_id = ?",
+                            (owner_user_id, sender_user_id)).fetchone() is not None
+
+
+def list_blocked_senders(owner_user_id: int, limit: int = 10, offset: int = 0):
+    with closing(_connect()) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM blocked_senders WHERE owner_user_id = ?",
+                             (owner_user_id,)).fetchone()[0]
+        rows = conn.execute("SELECT sender_user_id FROM blocked_senders WHERE owner_user_id = ? "
+                            "ORDER BY created_at DESC, sender_user_id DESC LIMIT ? OFFSET ?",
+                            (owner_user_id, limit, offset)).fetchall()
+    return [row[0] for row in rows], total
+
+
 def delete_user_completely(user_id: int) -> None:
     with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM blocked_senders WHERE owner_user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_groups WHERE owner_user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_counters WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))

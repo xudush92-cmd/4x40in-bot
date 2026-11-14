@@ -12,11 +12,12 @@ import time
 
 from telethon import TelegramClient, events, utils
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel, Chat
+from telethon.tl.types import Channel, Chat, PeerUser, User
 
 from config import ADMIN_ID, API_HASH, API_ID
 from database import (
     get_all_users_full,
+    is_sender_blocked,
     save_lead_review,
     get_owner_active_chat_ids,
     get_pending_user_groups,
@@ -512,6 +513,14 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 _log_skip(owner_id, event.chat_id, verdict)
             return
 
+        # Faqat Telethon tasdiqlagan shaxsiy PeerUser ID ishlatiladi;
+        # anonim administrator/kanal ID si hech qachon shaxs deb bloklanmaydi.
+        peer = getattr(message, "from_id", None)
+        sender_user_id = peer.user_id if isinstance(peer, PeerUser) else None
+        if sender_user_id and is_sender_blocked(owner_id, sender_user_id):
+            logger.info("[SCAN] blocked-sender owner=%s", owner_id)
+            return
+
         if chat is None:
             try:
                 chat = await event.get_chat()
@@ -537,7 +546,7 @@ def _make_handler(owner_id: int, client: TelegramClient):
             sender_name, username = None, None
             # Telethon ma'lumoti entity keshida bo'lmasa get_sender() None qaytarishi
             # mumkin. Eventning sender_id si profil havolasi uchun fallback bo'ladi.
-            sender_user_id = getattr(event, "sender_id", None)
+            protected_sender_id = sender_user_id or getattr(event, "sender_id", None)
             if include_details:
                 try:
                     sender = await event.get_sender()
@@ -547,7 +556,11 @@ def _make_handler(owner_id: int, client: TelegramClient):
                             f"{getattr(sender, 'last_name', '') or ''}"
                         ).strip() or getattr(sender, "title", "") or None
                         username = getattr(sender, "username", None)
-                        sender_user_id = getattr(sender, "id", None) or sender_user_id
+                        protected_sender_id = getattr(sender, "id", None) or protected_sender_id
+                        if peer is None and sender_user_id is None and isinstance(sender, User):
+                            sender_user_id = sender.id
+                            if is_sender_blocked(owner_id, sender_user_id):
+                                return
                 except Exception:
                     logger.warning(
                         "[SCAN] protected-match yuboruvchi olinmadi "
@@ -563,15 +576,22 @@ def _make_handler(owner_id: int, client: TelegramClient):
                 include_details=include_details,
                 sender_name=sender_name,
                 username=username,
-                user_id=sender_user_id,
+                user_id=protected_sender_id,
                 phone=phone,
                 matched_words=matched_words,
             )
             markup = build_protected_notification_markup(
                 message_link,
                 username=username if include_details else None,
-                user_id=sender_user_id if include_details else None,
+                user_id=protected_sender_id if include_details else None,
             )
+            if include_details and sender_user_id and sender_user_id != owner_id:
+                if markup is None:
+                    markup = {"inline_keyboard": []}
+                markup["inline_keyboard"].append([{
+                    "text": "🚫 Shu odamni bloklash",
+                    "callback_data": f"bsp:{sender_user_id}",
+                }])
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
             increment_counter("leads_found")
@@ -608,6 +628,11 @@ def _make_handler(owner_id: int, client: TelegramClient):
             if getattr(sender, "username", None):
                 username = f"@{sender.username}"
 
+        if peer is None and sender_user_id is None and isinstance(sender, User):
+            sender_user_id = sender.id
+            if is_sender_blocked(owner_id, sender_user_id):
+                return
+
         phone = find_phone_text(raw_text, sender)
         text = build_notification_text(
             group_title=group_title,
@@ -634,6 +659,9 @@ def _make_handler(owner_id: int, client: TelegramClient):
             }])
         if message_link:
             rows.append([{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}])
+        if sender_user_id and sender_user_id != owner_id:
+            rows.append([{"text": "🚫 Shu odamni bloklash",
+                          "callback_data": f"bsp:{sender_user_id}"}])
         # Fikr-mulohaza statistikasi; vaznni faqat admin baholashi o'zgartiradi.
         review_id = save_lead_review(owner_id, verdict.matched)
         if review_id:
