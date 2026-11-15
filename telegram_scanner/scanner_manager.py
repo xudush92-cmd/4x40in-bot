@@ -438,10 +438,15 @@ def _log_skip(owner_id: int, chat_id, verdict) -> None:
     )
 
 
-def _make_handler(owner_id: int, client: TelegramClient):
+def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | None = None):
     @client.on(events.NewMessage)
     async def _handler(event):
         handler_started = time.monotonic()
+        received_at = datetime.datetime.now(datetime.timezone.utc)
+        # Handler ulanmasdan oldin ro'yxatga olinadi, ammo akkaunt egasi
+        # tasdiqlanmaguncha xabarni ishlash yoki yuborish mumkin emas.
+        if ready is not None:
+            await ready.wait()
         chat_id = getattr(event, "chat_id", None)
         is_private = bool(getattr(event, "is_private", False))
         initial_text = event.raw_text or ""
@@ -474,10 +479,15 @@ def _make_handler(owner_id: int, client: TelegramClient):
         async def _send_notification(text, markup=None):
             send_started = time.monotonic()
             sent = await send_to_bot_api(text, markup, chat_id=owner_id)
+            send_ms = (time.monotonic() - send_started) * 1000
             scan_delay_diagnostics.record_notification(
-                trace,
-                success=sent,
-                duration_ms=(time.monotonic() - send_started) * 1000,
+                trace, success=sent, duration_ms=send_ms,
+            )
+            scan_delay_diagnostics.record_match_notification(
+                owner_id, message_date=getattr(message, "date", None),
+                received_at=received_at,
+                before_send_ms=(send_started - handler_started) * 1000,
+                send_ms=send_ms, success=sent,
             )
             return sent
 
@@ -778,6 +788,8 @@ async def _start_user_client(owner_id: int) -> bool:
         return False
     client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
     instrument_telethon_client(client, owner_id)
+    ready = asyncio.Event()
+    _make_handler(owner_id, client, ready=ready)
     try:
         await client.connect()
         if not await client.is_user_authorized():
@@ -802,10 +814,10 @@ async def _start_user_client(owner_id: int) -> bool:
         # shuning uchun "invalid" deb belgilanmaydi, faqat ogohlantiriladi.
         await _notify_session_problem(owner_id, invalid=False)
         return False
-    _make_handler(owner_id, client)
     _clients[owner_id] = client
     _start_error.pop(owner_id, None)
     set_session_status(owner_id, "active")
+    ready.set()
     _last_session_notice.pop(owner_id, None)
     logger.info("[SESSION] owner=%s client ishga tushdi", owner_id)
     asyncio.create_task(_resolve_owner_groups(owner_id, client))

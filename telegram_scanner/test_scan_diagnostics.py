@@ -91,6 +91,28 @@ class TestScanDiagnostics(unittest.TestCase):
             self.assertIsNone(trace)
             self.assertEqual(list(Path(temp_dir).iterdir()), [])
 
+    def test_match_timing_is_opt_in_private_and_captures_fast_messages(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp_dir:
+            diagnostics = ScanDiagnostics(temp_dir)
+            received = dt.datetime.now(dt.timezone.utc)
+            with patch.dict(os.environ, {"SCANNER_MATCH_TIMING_ENABLED": "0"}):
+                diagnostics.record_match_notification(
+                    12, message_date=received, received_at=received,
+                    before_send_ms=10, send_ms=20, success=True)
+                self.assertEqual(list(Path(temp_dir).iterdir()), [])
+            with patch.dict(os.environ, {"SCANNER_MATCH_TIMING_ENABLED": "1"}):
+                diagnostics.record_match_notification(
+                    12, message_date=received - dt.timedelta(seconds=2),
+                    received_at=received, before_send_ms=10, send_ms=20, success=True)
+            row = json.loads((Path(temp_dir) / "owner_12.jsonl").read_text())
+            self.assertEqual(row['stage'], 'matched_notification_timing')
+            self.assertEqual(row['source_to_receive_ms'], 2000)
+            self.assertEqual(row['send_ms'], 20)
+            self.assertTrue(row['success'])
+            for key in ('chat_id', 'message_id', 'text', 'sender', 'phone', 'token'):
+                self.assertNotIn(key, row)
+
     def test_loop_lag_only_records_above_threshold(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             diagnostics = ScanDiagnostics(temp_dir)

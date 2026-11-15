@@ -22,6 +22,7 @@ DEFAULT_NO_UPDATES_TIMEOUT_SECONDS = 15 * 60
 MIN_NO_UPDATES_TIMEOUT_SECONDS = 60
 MAX_NO_UPDATES_TIMEOUT_SECONDS = 15 * 60
 NO_UPDATES_TIMEOUT_ENV = "SCANNER_TELETHON_NO_UPDATES_TIMEOUT_SECONDS"
+MATCH_TIMING_ENV = "SCANNER_MATCH_TIMING_ENABLED"
 _MAX_FILE_BYTES = 256 * 1024
 _BACKUP_COUNT = 2
 
@@ -194,6 +195,29 @@ class ScanDiagnostics:
             "message_id": trace.message_id,
             "source_to_receive_ms": trace.source_to_receive_ms,
             "duration_ms": round(max(0.0, duration_ms), 1),
+            "success": bool(success),
+        })
+
+    def record_match_notification(
+        self, owner_id: int, *, message_date, received_at, before_send_ms: float,
+        send_ms: float, success: bool,
+    ) -> None:
+        """Ixtiyoriy: faqat yuborilayotgan alert vaqtlari, mazmun va IDlarsiz."""
+        if os.getenv(MATCH_TIMING_ENV, "").strip() != "1":
+            return
+        source_ms = None
+        if isinstance(message_date, dt.datetime):
+            if message_date.tzinfo is None:
+                message_date = message_date.replace(tzinfo=dt.timezone.utc)
+            if received_at.tzinfo is None:
+                received_at = received_at.replace(tzinfo=dt.timezone.utc)
+            source_ms = round((received_at.astimezone(dt.timezone.utc) -
+                               message_date.astimezone(dt.timezone.utc)).total_seconds() * 1000, 1)
+        self._write(owner_id, {
+            "stage": "matched_notification_timing",
+            "source_to_receive_ms": source_ms,
+            "before_send_ms": round(max(0.0, before_send_ms), 1),
+            "send_ms": round(max(0.0, send_ms), 1),
             "success": bool(success),
         })
 

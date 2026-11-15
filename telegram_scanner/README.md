@@ -232,3 +232,22 @@ kalit so'zlarga bo'linadi — ma'lumot yo'qolmaydi.
 
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.
+
+### Bildirishnoma kechikishini ixtiyoriy o'lchash
+
+`SCANNER_MATCH_TIMING_ENABLED=1` qo'yilsa, haqiqatan yuborishga uringan
+bildirishnomalar uchun `diagnostics/owner_<ID>.jsonl` fayliga bitta
+`matched_notification_timing` yozuvi qo'shiladi. O'chirilgan holat standart.
+Yozuvda xabar matni, kalitlar, yuboruvchi, telefon, chat yoki xabar ID'si
+saqlanmaydi; fayl nomi va yozuvda egasining ID'si bor. Vaqtlar:
+
+- `source_to_receive_ms`: Telegram xabar vaqtidan handlerga kelguncha;
+  server vaqti va Telegram timestamp aniqligiga bog'liq, manfiy ham bo'lishi mumkin.
+- `before_send_ms`: handler boshlanishidan Bot API so'rovi boshlanguncha.
+- `send_ms`: Bot API yuborish urinishining davomiyligi; `success` API
+  qabul qilgan-qilmaganini bildiradi, telefon ekrani yoki o'qilishini emas.
+
+Ma'lumotlar hajmi cheklangan fayllarda aylanadi; bu faqat yuborishga
+urinishlar namunasi, barcha guruh xabarlari emas. Sinov tugagach o'zgaruvchini
+olib tashlang va xizmatni qayta ishga tushiring. Bu o'lchov kechikish sababini
+avtomatik aniqlamaydi va xabar yetkazilishini tezlashtirish kafolati emas.
