@@ -52,6 +52,7 @@ from notifier import (
 from scan_diagnostics import (
     configure_telethon_no_updates_timeout,
     instrument_telethon_client,
+    group_timing,
     scan_diagnostics as scan_delay_diagnostics,
 )
 
@@ -483,6 +484,11 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             scan_delay_diagnostics.record_notification(
                 trace, success=sent, duration_ms=send_ms,
             )
+            group_timing.notification(
+                owner_id, chat_id, getattr(event, "id", 0) or 0,
+                getattr(message, "date", None), received_at,
+                (send_started - handler_started) * 1000, send_ms, sent,
+            )
             scan_delay_diagnostics.record_match_notification(
                 owner_id, message_date=getattr(message, "date", None),
                 received_at=received_at,
@@ -506,11 +512,16 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             is_sticker=is_sticker,
             chat_id=chat_id,
         )
+        filter_ms = (time.monotonic() - filter_started) * 1000
+        before_filter_ms = (filter_started - handler_started) * 1000
         scan_delay_diagnostics.record_evaluation(
-            trace,
-            matched=verdict.ok,
-            filter_duration_ms=(time.monotonic() - filter_started) * 1000,
-            handler_to_filter_ms=(filter_started - handler_started) * 1000,
+            trace, matched=verdict.ok, filter_duration_ms=filter_ms,
+            handler_to_filter_ms=before_filter_ms,
+        )
+        group_timing.evaluation(
+            owner_id, chat_id, getattr(event, "id", 0) or 0,
+            getattr(message, "date", None), received_at, filter_ms,
+            before_filter_ms, verdict.ok, getattr(verdict, "stage", ""),
         )
         if not verdict.ok:
             if protected or protection_unknown:
