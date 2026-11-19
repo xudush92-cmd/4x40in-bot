@@ -1295,7 +1295,8 @@ async def user_list_groups(message: types.Message, state: FSMContext):
             reply_markup=user_menu_for(uid),
         )
         return
-    text, markup = _group_list_page(groups, 0)
+    links = await _load_group_public_links(uid, state)
+    text, markup = _group_list_page(groups, 0, links)
     await message.answer(text, parse_mode="HTML", reply_markup=markup,
                          disable_web_page_preview=True)
 
@@ -1306,6 +1307,18 @@ def _find_user_group(uid: int, gid: int):
 
 
 GROUP_LIST_PAGE_SIZE = 8
+GROUP_LIST_LINKS_KEY = "group_list_public_usernames"
+
+
+async def _load_group_public_links(uid, state):
+    """Akkaunt dialoglarini bir marta o'qiydi; keyingi sahifalar shu natijani ishlatadi."""
+    try:
+        import scanner_manager
+        links = await asyncio.wait_for(scanner_manager.list_group_public_usernames(uid), timeout=8)
+    except Exception:
+        links = None
+    await state.update_data(**{GROUP_LIST_LINKS_KEY: links})
+    return links
 
 
 def _public_group_username(value):
@@ -1317,7 +1330,7 @@ def _public_group_username(value):
     return None
 
 
-def _group_list_page(groups, page):
+def _group_list_page(groups, page, links=None):
     total = len(groups)
     pages = max(1, (total + GROUP_LIST_PAGE_SIZE - 1) // GROUP_LIST_PAGE_SIZE)
     page = min(max(0, page), pages - 1)
@@ -1327,28 +1340,28 @@ def _group_list_page(groups, page):
              f"Sahifa: {page + 1}/{pages}", ""]
     buttons = []
     for index, row in enumerate(groups[start:start + GROUP_LIST_PAGE_SIZE], start + 1):
-        gid, _owner, value, _chat_id, title, is_active, status, _error = row
-        username = _public_group_username(value)
-        name = _short_text(title or (('@' + username) if username else 'Yopiq guruh'), 70)
-        if username:
-            display = f'<a href="https://t.me/{username}">{html.escape(name)}</a>'
-        else:
-            display = html.escape(name)
+        gid, _owner, value, chat_id, _title, is_active, status, _error = row
+        # Dialoglar olingan bo'lsa faqat aynan shu chat ID ga tegishli joriy
+        # username ishlatiladi. Offline paytda eski kiritilgan username tekshirilmagan.
+        raw_username = (links.get(str(chat_id)) if chat_id is not None else None) if links is not None else None
+        username = _public_group_username('@' + str(raw_username)) if raw_username else None
+        if links is None:
+            username = _public_group_username(value)
+        display = (f'<a href="https://t.me/{username}">@{html.escape(username)}</a>' if username
+                   else ('Ochiq havola topilmadi' if links is not None else 'Havola tekshirilmadi'))
         icon = ('✅' if is_active else '⏸') if status == 'ok' else {
             'pending': '⏳', 'left': '🚪', 'duplicate': '🔁', 'error': '⚠️'
         }.get(status, '⚠️')
         lines.append(f"{index}. {icon} {display}")
-        if username and title:
-            lines.append(f"   @{html.escape(username)}")
-        label = _short_text(name, 24)
-        buttons.append([
-            InlineKeyboardButton(text=f"🗑 {index}. {label}", callback_data=f"ugl:ask:{gid}:{page}"),
-            InlineKeyboardButton(text="ℹ️", callback_data=f"ugl:info:{gid}:{page}"),
-        ])
+        buttons.append([InlineKeyboardButton(text=f"🗑 {index}", callback_data=f"ugl:ask:{gid}:{page}")])
     if not groups:
         lines.append("Guruhlar ro'yxati bo'sh.")
-    lines.extend(["", "✅ Guruh faol · ⏳ Tekshirilmoqda · ⚠️ Xato · 🚪 A'zolik yo'q · 🔁 Takror · ⏸ Faol emas",
-                  "Umumiy skaner holati alohida. ℹ️ — holat va qayta tekshirish. Ochiq manzili saqlanmagan guruh nomi havolasiz ko'rsatiladi."])
+    lines.extend(["", "✅ Faol · ⏳ Tekshirilmoqda · ⚠️ Xato · 🚪 A'zolik yo'q · 🔁 Takror · ⏸ Faol emas",
+                  "Umumiy skaner holati alohida. 🗑 raqamini bosing — tasdiqlash yoki holatni ko'rish mumkin."])
+    if links is None:
+        lines.append("⚠️ Joriy havolalar olinmadi; ko'rsatilgan saqlangan manzillar tekshirilmagan.")
+    else:
+        lines.append("Ochiq manzili yo'q yoki akkaunt dialogida topilmagan guruhlar havolasiz ko'rsatiladi.")
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"ugl:page:{page - 1}"))
@@ -1386,7 +1399,8 @@ async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
         await _show_account_groups(callback.message, uid, state)
         return
     if action == 'page':
-        text, markup = _group_list_page(get_user_groups(uid), page)
+        links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
+        text, markup = _group_list_page(get_user_groups(uid), page, links)
         await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
                                          disable_web_page_preview=True)
         await callback.answer()
@@ -1400,7 +1414,7 @@ async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
         markup = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data=f"ugl:delete:{gid}:{page}"),
             InlineKeyboardButton(text="↩️ Bekor qilish", callback_data=f"ugl:page:{page}"),
-        ]])
+        ], [InlineKeyboardButton(text="ℹ️ Holat", callback_data=f"ugl:info:{gid}:{page}")]])
         await callback.message.edit_text(f"🗑 <b>{html.escape(name)}</b> guruhini ro'yxatdan o'chirasizmi?",
                                          parse_mode='HTML', reply_markup=markup)
     elif action == 'info':
@@ -1412,12 +1426,14 @@ async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     elif action == 'retry':
         requeue_user_group(gid)
-        text, markup = _group_list_page(get_user_groups(uid), page)
+        links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
+        text, markup = _group_list_page(get_user_groups(uid), page, links)
         await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
                                          disable_web_page_preview=True)
     elif action == 'delete':
         delete_user_group(gid, uid)
-        text, markup = _group_list_page(get_user_groups(uid), page)
+        links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
+        text, markup = _group_list_page(get_user_groups(uid), page, links)
         await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
                                          disable_web_page_preview=True)
     await callback.answer("O'chirildi" if action == 'delete' else "Tekshiruvga qo'yildi" if action == 'retry' else "")
@@ -3219,7 +3235,8 @@ async def admin_list_groups(message: types.Message, state: FSMContext):
             reply_markup=main_menu(admin=True),
         )
         return
-    text, markup = _group_list_page(groups, 0)
+    links = await _load_group_public_links(uid, state)
+    text, markup = _group_list_page(groups, 0, links)
     await message.answer(text, parse_mode="HTML", reply_markup=markup,
                          disable_web_page_preview=True)
 
