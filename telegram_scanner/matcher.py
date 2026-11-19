@@ -14,6 +14,8 @@ Qo'shimcha imkoniyatlar:
     "toshkent" ~ "toshkentdan" / "toshkentga" (umumiy o'zak bo'yicha);
   * lotin/kirill alifbosi farqi hisobga olinmaydi, shu jumladan
     "dangasa" yozilgan kirill (ў→у, қ→к, ғ→г, ҳ→х) ham;
+  * yangi lotin harflari ö/ğ/ş/ç eski o'/g'/sh/ch yozuvlariga
+    normallashtiriladi — kalitlarni alohida nusxalash shart emas;
   * fe'l shaxsi ajratiladi: "jo'naymiz" (biz) "jo'naysiz" (siz) bilan
     aralashtirilmaydi;
   * so'roq shaklini qat'iy ajratish imkoniyati bor (ixtiyoriy):
@@ -29,6 +31,11 @@ from functools import lru_cache
 
 _TOKEN_RE = re.compile(r"[^\W_]+(?:['’ʻʼ][^\W_]+)*", re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "ʻ": "'", "ʼ": "'", "`": "'"})
+# O‘RQ-1184 bilan kiritilayotgan yangi lotin harflari eski yozuvning
+# matcher uchun yagona shakliga o'tkaziladi. Avval text.lower() qilinadi.
+_NEW_UZBEK_LATIN = str.maketrans({
+    "ö": "o'", "ğ": "g'", "ş": "sh", "ç": "ch",
+})
 
 # --- Lotin <-> kirill transliteratsiya (faqat SOLISHTIRISH uchun) ---
 # Bitta kalit ikkala alifbodagi xabarni ham topishi uchun har bir so'z
@@ -102,17 +109,20 @@ def _fold_variants(word: str) -> tuple[str, ...]:
     """
     is_cyr = _is_cyrillic(word)
     base = cyr_to_lat(word) if is_cyr else word
-    variants = [base]
-    # ``o'``->``u`` almashtirish kirillda doim, lotinda esa faqat so'z
-    # yetarlicha uzun bo'lsa qo'llanadi (qisqa so'zlarda u boshqa haqiqiy
-    # so'z bilan to'qnashadi: yo'q ~ yuk, to'q ~ tuk, so'z ~ suz).
-    long_enough = len(base.replace("'", "")) >= 4
-    lazy = _lazy_latin(base, fold_apostrophe=is_cyr or long_enough)
-    if lazy not in variants:
-        variants.append(lazy)
-    plain = base.replace("o'", "o").replace("g'", "g")
-    if plain not in variants:
-        variants.append(plain)
+    # Chatlarda ``w`` ko'pincha ``sh`` o'rniga ishlatiladi. Asl shaklni
+    # ham qoldiramiz: inglizcha va boshqa so'zlardagi w yo'qolmasin.
+    bases = (base, base.replace("w", "sh")) if "w" in base else (base,)
+    variants = []
+    for form in bases:
+        # Qisqa so'zlarda o' -> u boshqa so'z bilan to'qnashishi mumkin.
+        long_enough = len(form.replace("'", "")) >= 4
+        for variant in (
+            form,
+            _lazy_latin(form, fold_apostrophe=is_cyr or long_enough),
+            form.replace("o'", "o").replace("g'", "g"),
+        ):
+            if variant not in variants:
+                variants.append(variant)
     return tuple(variants)
 
 
@@ -177,10 +187,11 @@ class MatchResult:
 
 
 def normalize_tokens(text: str) -> list[str]:
-    """Matnni kichik harfli so'zlar ro'yxatiga aylantiradi."""
+    """Matnni kichik harfli, alifbo variantlari bir xil so'zlarga aylantiradi."""
     if not text:
         return []
-    return _TOKEN_RE.findall(text.lower().translate(_APOSTROPHES))
+    normalized = text.lower().translate(_APOSTROPHES).translate(_NEW_UZBEK_LATIN)
+    return _TOKEN_RE.findall(normalized)
 
 
 def normalize_text(text: str) -> str:
@@ -423,15 +434,25 @@ def _most_specific_for_token(matched_keys, token: str) -> list[str]:
     return selected
 
 
+def _weighted_token_similarity(key: str, token: str) -> float:
+    """Imlo mosliklari ichida kalitning xabar tokeniga yaqinligini baholaydi."""
+    return max(
+        SequenceMatcher(None, key_variant, token_variant).ratio()
+        for key_variant in _fold_variants(key)
+        for token_variant in _fold_variants(token)
+    )
+
+
 def _find_weighted_single_matches(
     message_text, positive_entries, negative_entries,
-    strict_positive=(), strict_negative=(),
+    strict_positive=(), strict_negative=(), positive_weights=None,
 ):
     """Yakka kalitlarni topib, bitta token uchun eng aniq kalitni qoldiradi."""
     positive_entries = list(positive_entries)
     negative_entries = list(negative_entries)
     strict_positive = set(strict_positive)
     strict_negative = set(strict_negative)
+    positive_weights = positive_weights or {}
     message_tokens = _single_word_search_tokens(normalize_tokens(message_text))
     found_positive: set[str] = set()
     found_negative: set[str] = set()
@@ -455,6 +476,19 @@ def _find_weighted_single_matches(
         all_matches = _most_specific_for_token(
             matched_positive + matched_negative, token
         )
+        positive_matches = [word for word in all_matches if word in positive_entries]
+        exact_positive = [word for word in positive_matches if _same_word(word, token)]
+        if len(positive_matches) > 1 and not exact_positive:
+            best = max(
+                positive_matches,
+                key=lambda word: (
+                    _weighted_token_similarity(word, token),
+                    positive_weights.get(word, 0.0),
+                    max(len(v.replace("'", "")) for v in _fold_variants(word)),
+                ),
+            )
+            all_matches = [word for word in all_matches if word not in positive_matches]
+            all_matches.append(best)
         found_positive.update(word for word in all_matches if word in positive_entries)
         found_negative.update(word for word in all_matches if word in negative_entries)
     return (
@@ -480,6 +514,99 @@ def _find_exact_phrases(message_text: str, entries) -> list[str]:
         ):
             found.append(entry)
     return found
+
+
+def _find_weighted_positive_phrases(
+    message_text: str,
+    entries,
+    weights: dict[str, float],
+    strict_entries=(),
+) -> list[str]:
+    """Bir xabar bo'lagiga tushgan o'xshash musbat iborani bir marta sanaydi.
+
+    Bir xil token oralig'iga bir necha imlo varianti mos kelsa, ular bitta
+    signal hisoblanadi. O'zaro qoplanishi bo'lmagan iboralar alohida qoladi.
+    Guruh vakili sifatida eng katta vazn, so'ng xabar bilan aniqroq mos kelgan
+    va uzunroq (o'ziga xosroq) kalit tanlanadi.
+    """
+    entries = tuple(dict.fromkeys(entries or ()))
+    if not entries:
+        return []
+    strict = set(strict_entries)
+    message_tokens = normalize_tokens(message_text)
+    if not message_tokens:
+        return []
+
+    # Avval indeksli matcher orqali haqiqatan mos kelishi mumkin bo'lgan
+    # iboralarni qisqartiramiz; keyin qaysi xabar oralig'iga tushganini olamiz.
+    candidates = set(_find_entries(
+        message_text, entries, question_key_only=True
+    ))
+    if not candidates:
+        return []
+    candidates_by_span: dict[tuple[int, int], list[int]] = {}
+    exactness: dict[int, int] = {}
+    tokenized = [tuple(normalize_tokens(entry)) for entry in entries]
+    for idx, (entry, key_tokens) in enumerate(zip(entries, tokenized)):
+        if entry not in candidates or not key_tokens:
+            continue
+        size = len(key_tokens)
+        for start in range(len(message_tokens) - size + 1):
+            window = message_tokens[start:start + size]
+            if entry in strict:
+                matched = all(_same_word(key, token) for key, token in zip(key_tokens, window))
+            else:
+                matched = all(
+                    _word_matches(key, token, question_key_only=True)
+                    for key, token in zip(key_tokens, window)
+                )
+            if not matched:
+                continue
+            span = (start, start + size)
+            candidates_by_span.setdefault(span, []).append(idx)
+            exact_count = sum(
+                _same_word(key, token) for key, token in zip(key_tokens, window)
+            )
+            exactness[idx] = max(exactness.get(idx, 0), exact_count)
+
+    # Kalitlar bir xabar oralig'ida birga mos kelsa, fuzzy-alias guruhiga
+    # birlashtiramiz. Alohida oralig'dagi mustaqil iboralar qo'shilaveradi.
+    parent = list(range(len(entries)))
+
+    def find(idx: int) -> int:
+        while parent[idx] != idx:
+            parent[idx] = parent[parent[idx]]
+            idx = parent[idx]
+        return idx
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for span_entries in candidates_by_span.values():
+        if len(span_entries) > 1:
+            first = span_entries[0]
+            for idx in span_entries[1:]:
+                union(first, idx)
+
+    groups: dict[int, list[int]] = {}
+    for idx in exactness:
+        groups.setdefault(find(idx), []).append(idx)
+
+    winners = []
+    for group in groups.values():
+        winner = max(
+            group,
+            key=lambda idx: (
+                weights.get(entries[idx], 0.0),
+                exactness.get(idx, 0),
+                sum(len(token.replace("'", "")) for token in tokenized[idx]),
+                -idx,
+            ),
+        )
+        winners.append(winner)
+    return [entries[idx] for idx in sorted(winners)]
 
 
 def match_keywords(
@@ -915,24 +1042,24 @@ def score_text(
         neg_single,
         strict_positive=(w for w in pos_single if strict_entries.get(w)),
         strict_negative=(w for w in neg_single if strict_entries.get(w)),
+        positive_weights=pos_entries,
     )
     for word in matched_pos:
         result.positives[word] = pos_entries[word]
     for word in matched_neg:
         result.negatives[word] = neg_entries[word]
 
-    # Iboralar alohida kalit bo'lib qoladi; specificity filtri faqat bitta
-    # token uchun o'zaro qoplanadigan kalitlarga qo'llanadi.
+    # Alohida iboralar yig'iladi, lekin bitta xabar oralig'iga mos tushgan
+    # fuzzy imlo-variantlari bir musbat signal sifatida hisoblanadi.
     pos_phrases = [word for word in pos_entries if len(normalize_tokens(word)) > 1]
     neg_phrases = [word for word in neg_entries if len(normalize_tokens(word)) > 1]
-    pos_exact = [w for w in pos_phrases if strict_entries.get(w)]
     neg_exact = [w for w in neg_phrases if strict_entries.get(w)]
-    pos_flexible = [w for w in pos_phrases if not strict_entries.get(w)]
     neg_flexible = [w for w in neg_phrases if not strict_entries.get(w)]
-    for word in _find_exact_phrases(message_text, pos_exact):
-        result.positives[word] = pos_entries[word]
-    for word in _find_entries(
-        message_text, pos_flexible, question_key_only=True
+    for word in _find_weighted_positive_phrases(
+        message_text,
+        pos_phrases,
+        pos_entries,
+        strict_entries=(w for w in pos_phrases if strict_entries.get(w)),
     ):
         result.positives[word] = pos_entries[word]
     for word in _find_exact_phrases(message_text, neg_exact):
@@ -1056,8 +1183,9 @@ def canonical_entry(text: str | None) -> str:
 
     Katta-kichik harf, ortiqcha bo'shliq, tinish belgilari va
     lotin/kirill farqi hisobga olinmaydi: ``ТОШКЕНТ`` bilan
-    ``toshkent`` bitta yozuv hisoblanadi. "Dangasa" yozilgan kirill
-    (``қарши`` / ``карши``) ham bitta yozuv sifatida qaraladi.
+    ``toshkent`` bitta yozuv hisoblanadi. Yangi lotindagi ``ö/ğ/ş/ç``
+    ham eski ``o'/g'/sh/ch`` shakllari bilan bir xil hisoblanadi.
+    "Dangasa" yozilgan kirill (``қарши`` / ``карши``) ham bitta yozuv.
     """
     tokens = normalize_tokens(text or "")
     out = []

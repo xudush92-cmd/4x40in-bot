@@ -189,6 +189,62 @@ class TestWeightedInput(unittest.TestCase):
             parse_weighted_entries("reys\n-3 reys"), [("reys", -3.0)]
         )
 
+    def test_w_sh_variants_in_weighted_phrases_and_negative_entries(self):
+        for text in ("mawina kerak", "mashina kerak", "машина керак"):
+            with self.subTest(text=text):
+                result = score_text(text, [("mashina kerak", 3.0)], threshold=3.0)
+                self.assertEqual(result.score, 3.0)
+        result = score_text("mawina bor", [("mashina bor", -4.0)], threshold=1.0)
+        self.assertEqual(result.score, -4.0)
+        result = score_text("mashina kerak", [("mawina kerak", 3.0)], threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+
+    def test_w_sh_phrase_aliases_score_once(self):
+        result = score_text("mawina kerak", [("mawina kerak", 3.0),
+                                             ("mashina kerak", 3.0)], threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+        self.assertEqual(len(result.positives), 1)
+
+    def test_new_alphabet_aliases_do_not_duplicate_weighted_keys(self):
+        entries = parse_weighted_entries("+3: shahar\n+3: şahar\n+3: шаҳар")
+        self.assertEqual(entries, [("shahar", 3.0)])
+        result = score_text("ŞAHAR", entries, threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+        self.assertEqual(result.positives, {"shahar": 3.0})
+
+    def test_fuzzy_single_word_aliases_only_score_once_per_token(self):
+        entries = [("pochta", 3.0), ("pocta", 3.0), ("pochto", 3.0)]
+        result = score_text("pocht", entries, threshold=3.0)
+        self.assertEqual(result.score, 3.0)
+        self.assertEqual(len(result.positives), 1)
+
+    def test_fuzzy_phrase_aliases_only_score_once_per_occurrence(self):
+        entries = [
+            ("pochta bor", 3.0),
+            ("pocta bor", 3.0),
+            ("pochto bor", 3.0),
+            ("moshin borm", 3.0),
+        ]
+        first = score_text("Moshina bormi\n\npochta bor", entries, threshold=3.0)
+        second = score_text("pochta bor xizmati bor", entries, threshold=3.0)
+        repeated = score_text("pochta bor va pocta bor", entries, threshold=3.0)
+        self.assertEqual(first.score, 6.0)
+        self.assertEqual(first.positives, {"pochta bor": 3.0, "moshin borm": 3.0})
+        self.assertEqual(second.score, 3.0)
+        self.assertEqual(second.positives, {"pochta bor": 3.0})
+        self.assertEqual(repeated.score, 3.0)
+        self.assertEqual(repeated.positives, {"pochta bor": 3.0})
+
+    def test_distinct_phrase_occurrences_keep_independent_scores(self):
+        entries = [
+            ("pochta bor", 3.0),
+            ("pocta bor", 3.0),
+            ("odam bor", 2.0),
+        ]
+        result = score_text("pochta bor odam bor", entries, threshold=3.0)
+        self.assertEqual(result.score, 5.0)
+        self.assertEqual(result.positives, {"pochta bor": 3.0, "odam bor": 2.0})
+
     def test_empty_and_blank(self):
         self.assertEqual(parse_weighted_entries(""), [])
         self.assertEqual(parse_weighted_entries("\n\n  \n"), [])
@@ -620,6 +676,149 @@ class TestFilterChain(unittest.TestCase):
         v = self._verdict("mashina kerak 🚕")
         self.assertFalse(v.ok)
         self.assertEqual(v.stage, "emoji")
+
+
+class TestSignupGroupScanIntegration(unittest.IsolatedAsyncioTestCase):
+    """Offline smoke test: registration -> group -> filter -> notification."""
+
+    OWNER = 555_555
+    CHAT_ID = -1001234567890
+
+    async def asyncSetUp(self):
+        self.db = db
+        db.delete_user_completely(self.OWNER)
+        with db.closing(db._connect()) as conn, conn:
+            conn.execute("DELETE FROM phrases")
+            conn.execute("DELETE FROM lead_reviews WHERE owner_user_id = ?", (self.OWNER,))
+        db.set_setting("is_active", "1")
+        db.set_match_mode("weight")
+        db.set_score_threshold(3.0)
+
+        # Registration and admin approval are exercised against a temporary DB.
+        db.upsert_user(self.OWNER, "Sinov", "sinov_user")
+        db.set_registration_info(self.OWNER, "Sinov Foydalanuvchi", "998900000000")
+        db.set_pending_session(self.OWNER, "fake-encrypted-session")
+        self.assertTrue(db.approve_pending_session(self.OWNER))
+        db.set_new_term(self.OWNER, 7)
+        db.set_user_scanner_enabled(self.OWNER, True)
+        user = db.get_user_full(self.OWNER)
+        self.assertEqual(user[6], "Sinov Foydalanuvchi")
+        self.assertEqual(user[8], "fake-encrypted-session")
+        self.assertEqual(user[10], 0)
+
+        # A private group is added and resolved to its active Telegram ID.
+        added, error = db.add_user_group(self.OWNER, str(self.CHAT_ID))
+        self.assertTrue(added, error)
+        group_id = db.get_user_groups(self.OWNER)[0][0]
+        self.assertTrue(db.resolve_user_group(group_id, self.CHAT_ID, "Sinov guruhi"))
+        self.assertEqual(db.get_owner_active_chat_ids(self.OWNER), [self.CHAT_ID])
+
+        # Global weighted keys stay in the canonical old Latin form.
+        db.add_keyword_checked("shahar", weight=3.0)
+        db.add_keyword_checked("odam bor", weight=3.0)
+
+    async def asyncTearDown(self):
+        db.delete_user_completely(self.OWNER)
+        with db.closing(db._connect()) as conn, conn:
+            conn.execute("DELETE FROM phrases")
+            conn.execute("DELETE FROM lead_reviews WHERE owner_user_id = ?", (self.OWNER,))
+
+    async def test_new_and_cyrillic_messages_reach_notification(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        import scanner_manager
+
+        class Client:
+            def on(self, _builder):
+                def register(handler):
+                    self.handler = handler
+                    return handler
+                return register
+
+        class Event:
+            is_private = False
+            out = False
+            chat_id = TestSignupGroupScanIntegration.CHAT_ID
+            message = SimpleNamespace(noforwards=False, sticker=None)
+
+            def __init__(self, text, message_id, out=False):
+                self.raw_text = text
+                self.id = message_id
+                self.out = out
+
+            async def get_chat(self):
+                return SimpleNamespace(
+                    title="Sinov guruhi", username="sinov_group", noforwards=False
+                )
+
+            async def get_sender(self):
+                return SimpleNamespace(
+                    first_name="Sinov", last_name="Mijoz", username="sinov_mijoz",
+                    id=777001, phone=None,
+                )
+
+        # The actual filter chain, DB-owned active group, handler, formatting,
+        # and notification dispatch are tested. Telegram/API calls are mocked.
+        client = Client()
+        scanner_manager._make_handler(self.OWNER, client)
+        notifications = AsyncMock(return_value=True)
+        with patch.object(scanner_manager, "send_to_bot_api", notifications):
+            await client.handler(Event("Şahar tomondan odam bor", 101))
+            await client.handler(Event("Шаҳар томондан одам бор", 102))
+            # The connected account's own outgoing group messages are scanned too.
+            await client.handler(Event("Şahar tomondan odam bor", 103, out=True))
+
+        self.assertEqual(notifications.await_count, 3)
+        for call in notifications.await_args_list:
+            text = call.args[0]
+            self.assertIn("YANGI BUYURTMA / MIJOZ TOPILDI", text)
+            self.assertIn("Sinov guruhi", text)
+            self.assertIn("Sinov Mijoz", text)
+            self.assertIn("shahar", text)
+            self.assertIn("odam bor", text)
+        self.assertEqual(db.get_user_counter(self.OWNER, "leads_found"), 3)
+
+    def test_exact_group_duplicate_is_rejected_and_timestamped(self):
+        group = db.get_user_groups(self.OWNER)[0]
+        self.assertGreater(db.get_user_group_created_at(group[0]), 0)
+        added, error = db.add_user_group(self.OWNER, str(self.CHAT_ID))
+        self.assertFalse(added)
+        self.assertIn("allaqachon", error)
+        self.assertEqual(len(db.get_user_groups(self.OWNER)), 1)
+
+    async def test_leaving_pauses_group_and_rejoining_restores_it(self):
+        group_id = db.get_user_groups(self.OWNER)[0][0]
+        self.assertTrue(db.mark_user_group_left(group_id))
+        self.assertEqual(db.get_owner_active_chat_ids(self.OWNER), [])
+        self.assertFalse(db.mark_user_group_left(group_id))
+        self.assertTrue(db.resolve_user_group(group_id, self.CHAT_ID, "Sinov guruhi"))
+        self.assertEqual(db.get_owner_active_chat_ids(self.OWNER), [self.CHAT_ID])
+
+    def test_filter_modes_reuse_one_database_connection(self):
+        import filters
+
+        db.add_keyword_checked("kerak", weight=2.0)
+        db.set_setting("match_count", "1")
+        db.set_score_threshold(1.75)
+
+        original_connect = db._connect
+        for mode in ("count", "weight"):
+            db.set_match_mode(mode)
+            calls = 0
+
+            def counted_connect():
+                nonlocal calls
+                calls += 1
+                return original_connect()
+
+            db._connect = counted_connect
+            try:
+                verdict = filters.evaluate(ADMIN, "kerak", check_group=False)
+            finally:
+                db._connect = original_connect
+
+            self.assertTrue(verdict.ok, (mode, verdict.detail))
+            self.assertEqual(calls, 1, mode)
 
 
 if __name__ == "__main__":

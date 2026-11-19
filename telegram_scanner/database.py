@@ -1,6 +1,6 @@
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 from config import DB_NAME
 from matcher import canonical_entry, display_entry
@@ -18,6 +18,23 @@ def _connect() -> sqlite3.Connection:
     except sqlite3.Error:
         pass
     return conn
+
+
+@contextmanager
+def read_connection():
+    """Bitta filtr baholashida bir nechta SELECT'ni bitta ulanishda bajarish."""
+    with closing(_connect()) as conn:
+        yield conn
+
+
+@contextmanager
+def _connection_scope(conn=None):
+    """Berilgan ulanishni qayta ishlatadi yoki mustaqil ulanish ochadi."""
+    if conn is not None:
+        yield conn
+    else:
+        with read_connection() as owned:
+            yield owned
 
 
 def init_db() -> None:
@@ -72,7 +89,9 @@ def init_db() -> None:
                             is_active INTEGER DEFAULT 1,
                             status TEXT DEFAULT 'pending',
                             last_error TEXT,
+                            created_at INTEGER DEFAULT 0,
                             UNIQUE(owner_user_id, input_value))""")
+        _migrate_user_group_columns(conn)
         # Bildirishnoma ustidan fikr-mulohaza (feedback): «foydali / keraksiz».
         # Har bir yuborilgan xabar va unda topilgan so'zlar saqlanadi —
         # foydalanuvchi tugma bosganda o'sha so'zlarning vazni moslashadi.
@@ -82,6 +101,12 @@ def init_db() -> None:
                             words TEXT NOT NULL,
                             verdict TEXT DEFAULT '',
                             created_at INTEGER DEFAULT 0)""")
+        # Har bir foydalanuvchi faqat o'z blok ro'yxatiga ega.
+        conn.execute("""CREATE TABLE IF NOT EXISTS blocked_senders (
+                            owner_user_id INTEGER NOT NULL,
+                            sender_user_id INTEGER NOT NULL,
+                            created_at INTEGER NOT NULL,
+                            PRIMARY KEY(owner_user_id, sender_user_id))""")
         # Foydalanuvchi statistikasi hisoblagichlari
         conn.execute("""CREATE TABLE IF NOT EXISTS user_counters (
                             user_id INTEGER NOT NULL,
@@ -147,6 +172,15 @@ def _migrate_user_columns(conn) -> None:
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
 
 
+def _migrate_user_group_columns(conn) -> None:
+    """Mavjud guruh yozuvlari saqlanib, yangi yozuvlar vaqt belgisi oladi."""
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(user_groups)")]
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE user_groups ADD COLUMN created_at INTEGER DEFAULT 0"
+        )
+
+
 SETS_SPLIT_FLAG = "legacy_sets_split"
 
 
@@ -209,10 +243,12 @@ def find_lists_for_entry(entry: str) -> list[str]:
     return []
 
 
-def get_keywords() -> list[str]:
+def get_keywords(*, conn=None) -> list[str]:
     """Barcha kalit so'zlar (soni cheksiz)."""
-    with closing(_connect()) as conn:
-        rows = conn.execute("SELECT text FROM phrases ORDER BY id").fetchall()
+    with _connection_scope(conn) as active_conn:
+        rows = active_conn.execute(
+            "SELECT text FROM phrases ORDER BY id"
+        ).fetchall()
     return [row[0] for row in rows]
 
 
@@ -294,13 +330,14 @@ def get_all_phrases_with_id() -> list[tuple[int, str]]:
         ).fetchall()
 
 
-def get_phrases_full() -> list[tuple[int, str, float, int]]:
+def get_phrases_full(*, conn=None) -> list[tuple[int, str, float, int]]:
     """Ro'yxat to'liq: ``(id, so'z, vazn, qatiylik)``.
 
-    Musbat vazn — mijoz belgisi, manfiy — haydovchi belgisi.
+    Berilgan ``conn`` bo'lsa, uni yopmasdan qayta ishlatadi. Bu har bir
+    skaner eventida alohida SQLite ulanishi ochmaslikka yordam beradi.
     """
-    with closing(_connect()) as conn:
-        rows = conn.execute(
+    with _connection_scope(conn) as active_conn:
+        rows = active_conn.execute(
             "SELECT id, text, weight, strict FROM phrases ORDER BY id"
         ).fetchall()
     return [
@@ -309,9 +346,12 @@ def get_phrases_full() -> list[tuple[int, str, float, int]]:
     ]
 
 
-def get_keywords_weighted() -> list[tuple[str, float, int]]:
+def get_keywords_weighted(*, conn=None) -> list[tuple[str, float, int]]:
     """Skaner uchun: ``[(so'z, vazn, qatiylik), ...]``."""
-    return [(text, weight, strict) for _id, text, weight, strict in get_phrases_full()]
+    return [
+        (text, weight, strict)
+        for _id, text, weight, strict in get_phrases_full(conn=conn)
+    ]
 
 
 def update_phrase(
@@ -479,9 +519,9 @@ def get_word_feedback_stats(min_total: int = 2) -> dict:
 MATCH_MODES = ("count", "weight")
 
 
-def get_match_mode() -> str:
+def get_match_mode(*, conn=None) -> str:
     """``count`` — nechta kalit; ``weight`` — ballar yig'indisi."""
-    value = (get_setting("match_mode") or "count").strip().lower()
+    value = (get_setting("match_mode", conn=conn) or "count").strip().lower()
     return value if value in MATCH_MODES else "count"
 
 
@@ -497,9 +537,9 @@ def set_match_mode(mode: str) -> str:
 SCORE_THRESHOLDS = (0.5, 1.0, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0)
 
 
-def get_score_threshold() -> float:
+def get_score_threshold(*, conn=None) -> float:
     try:
-        return float(get_setting("score_threshold") or 1.75)
+        return float(get_setting("score_threshold", conn=conn) or 1.75)
     except (TypeError, ValueError):
         return 1.75
 
@@ -510,10 +550,10 @@ def set_score_threshold(value: float) -> float:
     return value
 
 
-def get_match_count() -> int:
+def get_match_count(*, conn=None) -> int:
     """Admin belgilagan shart: nechta kalit so'z topilsa xabar beriladi."""
-    with closing(_connect()) as conn:
-        res = conn.execute(
+    with _connection_scope(conn) as active_conn:
+        res = active_conn.execute(
             "SELECT value FROM settings WHERE key = 'match_count'"
         ).fetchone()
     try:
@@ -537,10 +577,10 @@ def upsert_user(user_id: int, first_name: str = "", username: str = "") -> None:
         )
 
 
-def get_user(user_id: int):
+def get_user(user_id: int, *, conn=None):
     """(user_id, first_name, username, is_blocked, sub_expires_at, created_at)."""
-    with closing(_connect()) as conn:
-        return conn.execute(
+    with _connection_scope(conn) as active_conn:
+        return active_conn.execute(
             "SELECT user_id, first_name, username, is_blocked, "
             "sub_expires_at, created_at FROM users WHERE user_id = ?",
             (user_id,),
@@ -667,10 +707,10 @@ def clear_session(user_id: int) -> None:
         )
 
 
-def get_user_scanner_enabled(user_id: int) -> bool:
+def get_user_scanner_enabled(user_id: int, *, conn=None) -> bool:
     """Foydalanuvchining UMUMIY skaneri yoniqmi (bitta Stop/Start)."""
-    with closing(_connect()) as conn:
-        row = conn.execute(
+    with _connection_scope(conn) as active_conn:
+        row = active_conn.execute(
             "SELECT COALESCE(scanner_enabled,1) FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
@@ -686,19 +726,19 @@ def set_user_scanner_enabled(user_id: int, enabled: bool) -> bool:
     return enabled
 
 
-def get_user_match_count(user_id: int) -> int:
+def get_user_match_count(user_id: int, *, conn=None) -> int:
     """Foydalanuvchining O'Z xabar sharti.
 
     O'zi belgilamagan bo'lsa (0) — adminning umumiy sharti ishlatiladi.
     """
-    with closing(_connect()) as conn:
-        row = conn.execute(
+    with _connection_scope(conn) as active_conn:
+        row = active_conn.execute(
             "SELECT COALESCE(own_match_count,0) FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-    if row and row[0]:
-        return max(1, int(row[0]))
-    return get_match_count()
+        if row and row[0]:
+            return max(1, int(row[0]))
+        return get_match_count(conn=active_conn)
 
 
 def set_user_match_count(user_id: int, value: int) -> int:
@@ -712,23 +752,23 @@ def set_user_match_count(user_id: int, value: int) -> int:
     return value
 
 
-def get_user_score_threshold(user_id: int) -> float:
+def get_user_score_threshold(user_id: int, *, conn=None) -> float:
     """Foydalanuvchining O'Z ball chegarasi.
 
     O'zi belgilamagan bo'lsa (0) — adminning umumiy chegarasi ishlatiladi.
     Qaytaradi: samarali qiymat (``float``).
     """
-    with closing(_connect()) as conn:
-        row = conn.execute(
+    with _connection_scope(conn) as active_conn:
+        row = active_conn.execute(
             "SELECT COALESCE(own_score_threshold,0) FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-    if row and row[0]:
-        try:
-            return float(row[0])
-        except (TypeError, ValueError):
-            pass
-    return get_score_threshold()
+        if row and row[0]:
+            try:
+                return float(row[0])
+            except (TypeError, ValueError):
+                pass
+        return get_score_threshold(conn=active_conn)
 
 
 def get_own_score_threshold(user_id: int) -> float:
@@ -757,8 +797,44 @@ def set_user_score_threshold(user_id: int, value: float) -> float:
     return value
 
 
+def block_sender(owner_user_id: int, sender_user_id: int) -> bool:
+    """Shaxsiy blok qo'shadi; takror qo'shishda False."""
+    if owner_user_id <= 0 or sender_user_id <= 0 or owner_user_id == sender_user_id:
+        return False
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO blocked_senders VALUES (?, ?, ?)",
+            (owner_user_id, sender_user_id, int(time.time())),
+        )
+        return cur.rowcount > 0
+
+
+def unblock_sender(owner_user_id: int, sender_user_id: int) -> bool:
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute("DELETE FROM blocked_senders WHERE owner_user_id = ? AND sender_user_id = ?",
+                           (owner_user_id, sender_user_id))
+        return cur.rowcount > 0
+
+
+def is_sender_blocked(owner_user_id: int, sender_user_id: int) -> bool:
+    with closing(_connect()) as conn:
+        return conn.execute("SELECT 1 FROM blocked_senders WHERE owner_user_id = ? AND sender_user_id = ?",
+                            (owner_user_id, sender_user_id)).fetchone() is not None
+
+
+def list_blocked_senders(owner_user_id: int, limit: int = 10, offset: int = 0):
+    with closing(_connect()) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM blocked_senders WHERE owner_user_id = ?",
+                             (owner_user_id,)).fetchone()[0]
+        rows = conn.execute("SELECT sender_user_id FROM blocked_senders WHERE owner_user_id = ? "
+                            "ORDER BY created_at DESC, sender_user_id DESC LIMIT ? OFFSET ?",
+                            (owner_user_id, limit, offset)).fetchall()
+    return [row[0] for row in rows], total
+
+
 def delete_user_completely(user_id: int) -> None:
     with closing(_connect()) as conn, conn:
+        conn.execute("DELETE FROM blocked_senders WHERE owner_user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_groups WHERE owner_user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_counters WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
@@ -823,8 +899,9 @@ def add_user_group(owner_user_id: int, input_value: str):
     try:
         with closing(_connect()) as conn, conn:
             conn.execute(
-                "INSERT INTO user_groups (owner_user_id, input_value) VALUES (?, ?)",
-                (owner_user_id, input_value),
+                "INSERT INTO user_groups (owner_user_id, input_value, created_at) "
+                "VALUES (?, ?, ?)",
+                (owner_user_id, input_value, int(time.time())),
             )
         return True, ""
     except sqlite3.IntegrityError:
@@ -915,6 +992,40 @@ def mark_user_group_error(group_id: int, error: str) -> None:
         )
 
 
+def mark_user_group_left(group_id: int) -> bool:
+    """A'zo bo'lmagan guruhni vaqtincha faol ro'yxatdan chiqaradi."""
+    with closing(_connect()) as conn, conn:
+        cur = conn.execute(
+            "UPDATE user_groups SET status = 'left', last_error = ? "
+            "WHERE id = ? AND status = 'ok'",
+            ("Ulangan akkaunt bu guruh a'zosi emas", group_id),
+        )
+        return cur.rowcount > 0
+
+
+def mark_user_group_duplicate(group_id: int, chat_id: int, title: str) -> None:
+    """Takror yozuvni kuzatuvdan chiqarib, topilgan chat ma'lumotini saqlaydi."""
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "UPDATE user_groups SET chat_id = ?, title = ?, status = 'duplicate', "
+            "is_active = 0, last_error = ? WHERE id = ?",
+            (
+                chat_id,
+                title,
+                "Bu guruh shu foydalanuvchiga avval qo'shilgan",
+                group_id,
+            ),
+        )
+
+
+def get_user_group_created_at(group_id: int) -> int:
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT created_at FROM user_groups WHERE id = ?", (group_id,)
+        ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
 def requeue_user_group(group_id: int) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute(
@@ -924,9 +1035,9 @@ def requeue_user_group(group_id: int) -> None:
         )
 
 
-def get_owner_active_chat_ids(owner_user_id: int) -> list[int]:
-    with closing(_connect()) as conn:
-        rows = conn.execute(
+def get_owner_active_chat_ids(owner_user_id: int, *, conn=None) -> list[int]:
+    with _connection_scope(conn) as active_conn:
+        rows = active_conn.execute(
             "SELECT chat_id FROM user_groups WHERE owner_user_id = ? "
             "AND status = 'ok' AND is_active = 1 AND chat_id IS NOT NULL",
             (owner_user_id,),
@@ -992,9 +1103,9 @@ def get_counter(key: str) -> int:
         return 0
 
 
-def get_setting(key: str) -> str | None:
-    with closing(_connect()) as conn:
-        res = conn.execute(
+def get_setting(key: str, *, conn=None) -> str | None:
+    with _connection_scope(conn) as active_conn:
+        res = active_conn.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
         ).fetchone()
     return res[0] if res else None

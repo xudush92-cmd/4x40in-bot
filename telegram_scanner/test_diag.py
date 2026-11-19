@@ -1,4 +1,4 @@
-"""🧾 Diagnostika va 👁 Kuzatuv testlari.
+"""🧾 Diagnostika testlari.
 
 `python test_diag.py`
 """
@@ -20,7 +20,6 @@ os.environ.setdefault("API_HASH", "x")
 os.environ.setdefault("BOT_TOKEN", "1:x")
 
 import logbuffer  # noqa: E402
-import watch  # noqa: E402
 
 
 class TestLogBuffer(unittest.TestCase):
@@ -261,7 +260,7 @@ class _ProtectedEvent:
     def __init__(self):
         self.chat_id = -100123456789
         self.is_private = False
-        self.raw_text = "secret message: passenger phone 998901234567"
+        self.raw_text = "Toshkentdan odam bor, telefon 998901234567"
         self.out = False
         self.id = 50
         self.message = SimpleNamespace(noforwards=False, sticker=None)
@@ -274,16 +273,41 @@ class _ProtectedEvent:
 
     async def get_sender(self):
         self.sender_calls += 1
-        return SimpleNamespace(first_name="Private Sender", id=321)
+        return SimpleNamespace(
+            first_name="Visible Sender",
+            last_name="Name",
+            username="visible_user",
+            id=321,
+            phone="998991112233",
+        )
+
+
+class TestScannerWithoutObservation(unittest.IsolatedAsyncioTestCase):
+    async def test_admin_nonmatching_message_does_not_send_a_card(self):
+        import scanner_manager
+
+        event = _ProtectedEvent()
+        event.get_chat = AsyncMock()
+        client = _HandlerClient()
+        verdict = SimpleNamespace(ok=False, stage="keywords")
+        with (
+            patch.object(scanner_manager, "evaluate", return_value=verdict),
+            patch.object(scanner_manager, "_log_skip"),
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            scanner_manager._make_handler(scanner_manager.ADMIN_ID, client)
+            await client.handler(event)
+        send.assert_not_awaited()
+        event.get_chat.assert_not_awaited()
 
 
 class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
-    async def test_match_alert_does_not_copy_protected_text(self):
+    async def test_match_alert_shows_only_selected_visible_details(self):
         import scanner_manager
 
         event = _ProtectedEvent()
         client = _HandlerClient()
-        verdict = SimpleNamespace(ok=True)
+        verdict = SimpleNamespace(ok=True, matched=["odam bor"])
         with (
             patch.object(scanner_manager, "evaluate", return_value=verdict),
             patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
@@ -300,70 +324,148 @@ class TestProtectedMessageNotification(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HIMOYALANGAN GURUHDA MOS MATN TOPILDI", text)
         self.assertIn("Protected group", text)
         self.assertNotIn(event.raw_text, text)
-        self.assertNotIn("998901234567", text)
-        self.assertNotIn("Private Sender", text)
-        self.assertEqual(event.sender_calls, 0)
+        self.assertIn("Visible Sender Name", text)
+        self.assertIn("@visible_user", text)
+        self.assertIn("998901234567", text)
+        self.assertNotIn("998991112233", text)
+        self.assertIn("odam bor", text)
+        self.assertNotIn("Ball:", text)
+        self.assertEqual(event.sender_calls, 1)
         save_review.assert_not_called()
-        self.assertEqual(len(markup["inline_keyboard"]), 1)
-        button = markup["inline_keyboard"][0][0]
-        self.assertEqual(button["url"], "https://t.me/c/123456789/50")
-        self.assertNotIn("callback_data", button)
+        self.assertEqual(len(markup["inline_keyboard"]), 2)
+        profile_button, message_button = [row[0] for row in markup["inline_keyboard"]]
+        self.assertEqual(profile_button["url"], "https://t.me/visible_user")
+        self.assertEqual(message_button["url"], "https://t.me/c/123456789/50")
+        self.assertNotIn("callback_data", profile_button)
+        self.assertNotIn("callback_data", message_button)
 
 
-class TestWatch(unittest.TestCase):
-    def tearDown(self):
-        watch.disable()
+class TestGroupMembershipAudit(unittest.IsolatedAsyncioTestCase):
+    CHAT_ID = -1001234567890
+    OWNER_ID = 12345
 
-    def test_disabled_by_default(self):
-        watch.disable()
-        self.assertFalse(watch.is_active())
-        self.assertEqual(watch.remaining(), 0)
+    async def test_left_group_is_paused_and_owner_notified_once(self):
+        import scanner_manager
 
-    def test_enable_and_disable(self):
-        watch.enable(5)
-        self.assertTrue(watch.is_active())
-        self.assertEqual(watch.remaining(), 5)
-        watch.disable()
-        self.assertFalse(watch.is_active())
+        group = (
+            1, self.OWNER_ID, str(self.CHAT_ID), self.CHAT_ID,
+            "Test group", 1, "ok", None,
+        )
+        client = SimpleNamespace(get_dialogs=AsyncMock(return_value=[]))
+        with (
+            patch.object(scanner_manager, "get_user_groups", return_value=[group]),
+            patch.object(scanner_manager, "mark_user_group_left", return_value=True) as mark_left,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            self.assertTrue(
+                await scanner_manager._audit_owner_group_membership(self.OWNER_ID, client)
+            )
+        mark_left.assert_called_once_with(1)
+        send.assert_awaited_once()
+        self.assertEqual(send.await_args.kwargs["chat_id"], self.OWNER_ID)
+        self.assertIn("guruhdan chiqib ketilgani", send.await_args.args[0].lower())
 
-    def test_minutes_are_clamped(self):
-        self.assertEqual(watch.enable(0), 1)
-        self.assertEqual(watch.enable(9999), watch.MAX_MINUTES)
+    async def test_rejoining_group_restores_watch(self):
+        import scanner_manager
 
-    def test_expires(self):
-        watch.enable(1)
-        watch._until = time.time() - 1
-        self.assertFalse(watch.is_active())
-        self.assertEqual(watch.remaining(), 0)
+        group = (
+            1, self.OWNER_ID, str(self.CHAT_ID), self.CHAT_ID,
+            "Old title", 1, "left", "a'zo emas",
+        )
+        entity = SimpleNamespace(peer_id=self.CHAT_ID, title="Current title")
+        client = SimpleNamespace(
+            get_dialogs=AsyncMock(return_value=[SimpleNamespace(entity=entity)])
+        )
+        with (
+            patch.object(scanner_manager, "get_user_groups", return_value=[group]),
+            patch.object(scanner_manager.utils, "get_peer_id", side_effect=lambda e: e.peer_id),
+            patch.object(scanner_manager, "resolve_user_group", return_value=True) as restore,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            self.assertTrue(
+                await scanner_manager._audit_owner_group_membership(self.OWNER_ID, client)
+            )
+        restore.assert_called_once_with(1, self.CHAT_ID, "Current title")
+        send.assert_awaited_once()
+        self.assertIn("qayta tiklandi", send.await_args.args[0])
 
-    def test_card_for_passed_message(self):
-        verdict = _Verdict(4.0, 1.75, True, "ok",
-                           {"kerak": 3.0, "mashina": 1.0}, {})
-        card = watch.card_text("mashina kerak", verdict)
-        self.assertIn("mashina kerak", card)
-        self.assertIn("ball <b>4</b> / 1.75", card)
-        self.assertIn("+3 kerak", card)
-        self.assertIn("yuborildi", card)
+    async def test_dialog_fetch_failure_does_not_mark_group_left(self):
+        import scanner_manager
 
-    def test_card_for_near_miss(self):
-        verdict = _Verdict(1.5, 1.75, False, "keywords", {"odam": 1.0}, {})
-        card = watch.card_text("odam bor", verdict)
-        self.assertIn("chegarada", card)
+        group = (
+            1, self.OWNER_ID, str(self.CHAT_ID), self.CHAT_ID,
+            "Test group", 1, "ok", None,
+        )
+        client = SimpleNamespace(get_dialogs=AsyncMock(side_effect=RuntimeError("offline")))
+        with (
+            patch.object(scanner_manager, "get_user_groups", return_value=[group]),
+            patch.object(scanner_manager, "mark_user_group_left") as mark_left,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock) as send,
+        ):
+            self.assertFalse(
+                await scanner_manager._audit_owner_group_membership(self.OWNER_ID, client)
+            )
+        mark_left.assert_not_called()
+        send.assert_not_awaited()
 
-    def test_card_for_emoji_block(self):
-        verdict = _Verdict(0.0, 1.75, False, "emoji")
-        card = watch.card_text("🚖 reys", verdict)
-        self.assertIn("emoji", card)
 
-    def test_card_escapes_html(self):
-        verdict = _Verdict(4.0, 1.75, True, "ok", {"kerak": 3.0}, {})
-        card = watch.card_text("<b>yomon</b> matn", verdict)
-        self.assertIn("&lt;b&gt;", card)
+class TestGroupResolutionDedup(unittest.IsolatedAsyncioTestCase):
+    OWNER_ID = 12345
+    CHAT_ID = -1001234567890
 
-    def test_card_truncates_long_text(self):
-        verdict = _Verdict(4.0, 1.75, True, "ok", {}, {})
-        card = watch.card_text("so'z " * 300, verdict)
-        self.assertIn("…", card)
+    async def _resolve_duplicate(self, *, old_created, new_created):
+        import scanner_manager
+
+        class FakeChat:
+            def __init__(self):
+                self.chat_id = TestGroupResolutionDedup.CHAT_ID
+                self.title = "Same group"
+                self.username = "same_group"
+
+        class FakeChannel:
+            pass
+
+        old = (1, self.OWNER_ID, "@same_group", self.CHAT_ID, "Same group", 1, "ok", None)
+        new = (2, self.OWNER_ID, "-1001234567890", None, None, 1, "pending", None)
+        entity = FakeChat()
+        client = SimpleNamespace(
+            get_dialogs=AsyncMock(return_value=[SimpleNamespace(entity=entity)])
+        )
+        with (
+            patch.object(scanner_manager, "get_pending_user_groups", return_value=[
+                (2, self.OWNER_ID, new[2], None, "pending")
+            ]),
+            patch.object(scanner_manager, "get_user_groups", return_value=[old, new]),
+            patch.object(
+                scanner_manager, "get_user_group_created_at",
+                side_effect={1: old_created, 2: new_created}.__getitem__,
+            ),
+            patch.object(scanner_manager, "delete_user_group") as delete,
+            patch.object(scanner_manager, "mark_user_group_duplicate") as mark_dup,
+            patch.object(scanner_manager, "send_to_bot_api", new_callable=AsyncMock),
+            patch.object(scanner_manager, "Chat", FakeChat),
+            patch.object(scanner_manager, "Channel", FakeChannel),
+            patch.object(scanner_manager.utils, "get_peer_id", side_effect=lambda e: e.chat_id),
+        ):
+            await scanner_manager._resolve_owner_groups(self.OWNER_ID, client)
+        return delete, mark_dup
+
+    async def test_new_alias_duplicate_is_removed(self):
+        import time
+
+        now = int(time.time())
+        delete, mark_dup = await self._resolve_duplicate(
+            old_created=now - 1, new_created=now
+        )
+        delete.assert_called_once_with(2, self.OWNER_ID)
+        mark_dup.assert_not_called()
+
+    async def test_old_duplicate_is_not_auto_deleted(self):
+        delete, mark_dup = await self._resolve_duplicate(
+            old_created=0, new_created=0
+        )
+        delete.assert_not_called()
+        mark_dup.assert_called_once_with(2, self.CHAT_ID, "Same group")
 
 
 if __name__ == "__main__":

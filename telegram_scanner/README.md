@@ -119,6 +119,7 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   emoji 5-bosqichda turadi (kalitlardan oldin): ball qanchalik yuqori
   bo'lsa ham xabar to'xtaydi. Qaror egasi tomonidan tasdiqlangan
   (2026-10-25).
+- **Admin kalitlar tekshiruvi:** bot bilan shaxsiy chatda 🔑 Kalit so'zlar → 🔍 Kalit so'zlar tekshiruvi. Har bir mavjud kalitning o'zi namuna sifatida joriy filtr va admin chegarasi bilan tekshiriladi; barcha natijalar `.txt` faylda yuboriladi. Musbat namuna bilan manfiy kalit birga topilsa, ko'rib chiqish uchun belgilanadi. Bu barcha xabarlar yoki yozilish variantlarini qamrab olmaydi, guruh/sessiya/yetkazishni tekshirmaydi va hech bir kalit yoki vaznni o'zgartirmaydi.
 - **Bitta umumiy ro'yxat**: faqat 🔑 Kalit so'zlar bor (admin
   kiritadi). Ro'yxatga yozuv: takror so'z (katta/kichik harf,
   lotin/kirill, tinish belgisi farqi bilan) qo'shilmaydi; xato
@@ -169,7 +170,9 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   yetarli. Skaner kirill alifbosini ham, "dangasa" yozilgan kirillni
   ham (ў→у, қ→к, ғ→г, ҳ→х) tanidi: `qarshi` = `қарши` = `карши`,
   `jo'naymiz` = `жўнаймиз` =
-  `жунаймиз`. Apostrof muhim: `bo'sh` to'g'ri, `bosh` — boshqa so'z.
+  `жунаймиз`. Yangi lotin harflari ham eski kalitlarga tenglashtiriladi:
+  `ö` = `o'`, `ğ` = `g'`, `ş` = `sh`, `ç` = `ch`.
+  Apostrof muhim: `bo'sh` to'g'ri, `bosh` — boshqa so'z.
   Fe'l shakllari ham mos keladi: `olamiz`/`olaman` (bir shaxs),
   `odam`/`odamlar`.
 - **Tezlik**: kalitlar prefiks indeksi bo'yicha qidiriladi. 5000 ta
@@ -230,3 +233,75 @@ kalit so'zlarga bo'linadi — ma'lumot yo'qolmaydi.
 
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.
+
+### Bildirishnoma kechikishini ixtiyoriy o'lchash
+
+`SCANNER_MATCH_TIMING_ENABLED=1` qo'yilsa, haqiqatan yuborishga uringan
+bildirishnomalar uchun `diagnostics/owner_<ID>.jsonl` fayliga bitta
+`matched_notification_timing` yozuvi qo'shiladi. O'chirilgan holat standart.
+Yozuvda xabar matni, kalitlar, yuboruvchi, telefon, chat yoki xabar ID'si
+saqlanmaydi; fayl nomi va yozuvda egasining ID'si bor. Vaqtlar:
+
+- `source_to_receive_ms`: Telegram xabar vaqtidan handlerga kelguncha;
+  server vaqti va Telegram timestamp aniqligiga bog'liq, manfiy ham bo'lishi mumkin.
+- `before_send_ms`: handler boshlanishidan Bot API so'rovi boshlanguncha.
+- `send_ms`: Bot API yuborish urinishining davomiyligi; `success` API
+  qabul qilgan-qilmaganini bildiradi, telefon ekrani yoki o'qilishini emas.
+
+Ma'lumotlar hajmi cheklangan fayllarda aylanadi; bu faqat yuborishga
+urinishlar namunasi, barcha guruh xabarlari emas. Sinov tugagach o'zgaruvchini
+olib tashlang va xizmatni qayta ishga tushiring. Bu o'lchov kechikish sababini
+avtomatik aniqlamaydi va xabar yetkazilishini tezlashtirish kafolati emas.
+
+### Tanlangan guruhlarda qisqa vaqt sinovi
+
+Standartda o'chiq. Xabar tezligini guruhma-guruh solishtirish uchun 1–10
+juftlik `owner_id:chat_id` formatida (vergul bilan ajratib) va majburiy UTC
+muddatini belgilang. Noto'g'ri ro'yxat yoki muddatsiz, o'tgan yoki 2 soatdan
+uzoq muddat bo'lsa, sinov yoqilmaydi. Muddat tugaganda avtomatik to'xtaydi;
+qayta yuklanganda muddat yangilanmaydi.
+
+Masalan, xizmat muhitida (IDlar o'rniga mahalliy natijalarni qo'ying):
+
+```
+SCANNER_GROUP_TIMING_PAIRS=111:-100111,111:-100222
+SCANNER_GROUP_TIMING_UNTIL_UTC=2026-11-15T18:00:00Z
+```
+
+Adminning o'z faol guruhlarini faqat VPS terminalida ko'rish:
+
+```
+cd /root/4x40in-bot
+python3 telegram_scanner/group_timing_report.py --list-admin
+```
+
+`.env` yoki terminal muhitida `ADMIN_ID` va `SCANNER_DB_PATH` to'g'ri bo'lishi
+kerak. Agar xizmat bazasi boshqacha yo'lda bo'lsa, `--db` bilan ko'rsating.
+Baza faqat o'qish rejimida ochiladi. Bu ro'yxatdagi ID va guruh nomlari
+shaxsiy ma'lumot — ularni umumiy hisobotga yubormang. 5–10 ta turli guruhni
+ongli tanlang; tizim guruh turini yoki himoyasini avtomatik tasniflamaydi.
+
+Systemd bilan `sudo systemctl edit scanner-bot.service` orqali mavjud boshqa
+sozlamalarga tegmasdan `[Service]` ostiga ikki `Environment="..."` qatorini
+qo'shing va xizmatni qayta ishga tushiring. Masalan, UTC tugash vaqtini
+`date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ` bilan oling. Tugagach o'sha ikki
+qatorni olib tashlang; boshqa drop-inlarni, ayniqsa mavjud 60 soniyalik sinovni,
+o'chirmang.
+
+Hisobot: `python3 telegram_scanner/group_timing_report.py --hours 1`. Standart
+hisobot guruhlarni G1, G2 kabi anonim ko'rsatadi. Faqat VPS terminalida
+`--show-ids` bilan G nomining egasi va chat IDsi ko'rinadi; uni ulashmang.
+Aliaslar shu hisobotdagi saralashga bog'liq. Natijada Telegram timestampidan
+handlergacha, filtr, yuborishgacha va Bot API javobigacha vaqtlar bor. Faqat
+filtrlangan matn/stiker hodisalari va haqiqiy yuborish urinishlari sanaladi;
+filtrdan o'tish yuborish kafolati emas (masalan, bloklangan yuboruvchi).
+Bot API javobi telefon ekranida ko'ringan vaqt emas. Sinov faqat passiv:
+guruhga qo'shilmaydi, qo'shimcha Telegram so'rovlari yoki sinov xabarlarini
+yubormaydi, ruxsatlarni o'zgartirmaydi.
+
+Xom `diagnostics/group_trials/owner_*.jsonl*` yozuvlarida owner/chat/xabar
+IDlari va vaqtlar bor: ularni maxfiy saqlang. Xabar matni, telefon, sessiya,
+yuboruvchi va kalit so'z yozilmaydi. Har bir owner uchun maksimum 5 ta 1 MiB
+fayl saqlanadi; rotatsiya sabab butun davrni qamrab olmasligi mumkin. Soatlar
+va Telegram timestamp aniqligi natijaga ta'sir qiladi. Test uchun faqat o'z
+guruhingizda xabar yuboring. `--hours` oynasini sinov muddatiga mos tanlang.

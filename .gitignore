@@ -70,3 +70,4 @@ telegram_scanner/.env
 telegram_scanner/*.db
 telegram_scanner/*.session
 telegram_scanner/*.session-journal
+telegram_scanner/diagnostics/
