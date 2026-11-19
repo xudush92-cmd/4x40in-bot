@@ -340,6 +340,30 @@ async def list_user_dialogs(owner_id: int, limit: int | None = None):
     return out
 
 
+async def list_group_public_usernames(owner_id: int):
+    """Faqat ulangan akkaunt dialoglaridagi ochiq username'lar, ID bo'yicha.
+
+    Hech qanday xabar, taklif havolasi yoki sessiya ma'lumoti qaytarilmaydi.
+    None — dialoglar olinmadi; bo'sh dict — olindi, username yo'q.
+    """
+    client = _clients.get(owner_id)
+    if client is None or not client.is_connected():
+        return None
+    try:
+        dialogs = await client.get_dialogs(limit=None)
+    except Exception:
+        logger.warning("[GROUP] Ochiq manzillarni olish muvaffaqiyatsiz")
+        return None
+    result = {}
+    for dialog in dialogs:
+        entity = dialog.entity
+        if isinstance(entity, Chat) or (isinstance(entity, Channel) and entity.megagroup):
+            username = getattr(entity, 'username', None)
+            if username:
+                result[str(utils.get_peer_id(entity))] = username
+    return result
+
+
 def _is_protected_content(chat=None, message=None) -> bool:
     """Telegram content-protection (noforwards) bayrog'ini aniqlaydi."""
     return bool(

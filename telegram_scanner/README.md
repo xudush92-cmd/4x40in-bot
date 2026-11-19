@@ -189,10 +189,13 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
    tekshirilib, "✅ Guruh ulandi" yoki sababi bilan xato xabari keladi.
    Xato bo'lsa 🔄 Qayta tekshirish tugmasi bor.
 2. **📋 Guruhlarim** guruhlarni bitta sahifali xabarda (har sahifada 8 ta)
-   ko'rsatadi. Ochiq @username saqlangan bo'lsa, nomi bosiladigan havola;
-   ID bilan qo'shilgan yoki yopiq guruhlar havolasiz ko'rsatiladi. 🗑 tugmasi
-   tasdiqdan so'ng o'chiradi, ℹ️ holat va kerak bo'lsa qayta tekshirishni
-   ko'rsatadi. Stop/Start guruhga alohida EMAS — foydalanuvchi menyusining
+   ko'rsatadi. Ochishda ulangan akkaunt dialoglaridan joriy ochiq @username
+   olinadi; ID orqali qo'shilgan ochiq guruhlar ham manzil bilan chiqadi.
+   Ochiq manzili bo'lmagan yoki dialogda topilmagan guruhlar havolasiz
+   ko'rsatiladi; dialoglar olinmasa, saqlangan manzillar tekshirilmagan deb
+   belgilanadi. Maxfiy taklif havolalari chiqarilmaydi. 🗑 raqamini bosganda
+   tasdiq va holat ko'rinadi; u yerdan zarur bo'lsa qayta tekshirish mumkin.
+   Stop/Start guruhga alohida EMAS — foydalanuvchi menyusining
    ENG TEPASIDA bitta UMUMIY tugma: yoniq bo'lsa `🔴 ⏸ Stop`,
    o'chiq bo'lsa `🟢 ▶️ Start` chiqadi va barcha guruhlariga
    bir vaqtda ta'sir qiladi. 📱 Akkaunt holati bo'limida tugmalar
