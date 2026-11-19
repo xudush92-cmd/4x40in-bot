@@ -119,6 +119,7 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
   emoji 5-bosqichda turadi (kalitlardan oldin): ball qanchalik yuqori
   bo'lsa ham xabar to'xtaydi. Qaror egasi tomonidan tasdiqlangan
   (2026-10-25).
+- **Admin kalitlar tekshiruvi:** bot bilan shaxsiy chatda 🔑 Kalit so'zlar → 🔍 Kalit so'zlar tekshiruvi. Har bir mavjud kalitning o'zi namuna sifatida joriy filtr va admin chegarasi bilan tekshiriladi; barcha natijalar `.txt` faylda yuboriladi. Musbat namuna bilan manfiy kalit birga topilsa, ko'rib chiqish uchun belgilanadi. Bu barcha xabarlar yoki yozilish variantlarini qamrab olmaydi, guruh/sessiya/yetkazishni tekshirmaydi va hech bir kalit yoki vaznni o'zgartirmaydi.
 - **Bitta umumiy ro'yxat**: faqat 🔑 Kalit so'zlar bor (admin
   kiritadi). Ro'yxatga yozuv: takror so'z (katta/kichik harf,
   lotin/kirill, tinish belgisi farqi bilan) qo'shilmaydi; xato

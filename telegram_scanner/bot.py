@@ -1986,6 +1986,7 @@ async def words_menu(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ So'z qo'shish", callback_data="wadd")],
         [InlineKeyboardButton(text="📋 To'liq ro'yxat", callback_data="wlist")],
+        [InlineKeyboardButton(text="🔍 Kalit so'zlar tekshiruvi", callback_data="waudit")],
         [
             InlineKeyboardButton(text="📤 Nusxa (eksport)", callback_data="wexport"),
             InlineKeyboardButton(text="📥 Import", callback_data="wimport"),
@@ -2011,6 +2012,40 @@ async def words_menu(message: types.Message, state: FSMContext):
         parse_mode="HTML",
         reply_markup=kb,
     )
+
+
+_keyword_audit_lock = asyncio.Lock()
+
+
+@dp.callback_query(AdminFilter(), F.data == "waudit")
+async def words_audit(callback: types.CallbackQuery):
+    """Baza nusxasini tekshiradi; natijani faqat admin shaxsiy chatiga yuboradi."""
+    if not callback.message or callback.message.chat.type != "private" or callback.message.chat.id != callback.from_user.id:
+        await callback.answer("Tekshiruvni botning shaxsiy chatida oching.", show_alert=True)
+        return
+    if _keyword_audit_lock.locked():
+        await callback.answer("Tekshiruv allaqachon davom etmoqda.", show_alert=True)
+        return
+    async with _keyword_audit_lock:
+        entries = get_keywords_weighted()
+        if not entries:
+            await callback.answer("Kalit so'zlar ro'yxati bo'sh.", show_alert=True)
+            return
+        mode = get_match_mode()
+        threshold = get_user_score_threshold(callback.from_user.id)
+        required = get_user_match_count(callback.from_user.id)
+        await callback.answer("Tekshiruv boshlandi")
+        await callback.message.answer("🔍 Barcha kalitlar tekshirilmoqda. Hisobot fayl bo'lib yuboriladi.")
+        from keyword_audit import build_keyword_audit
+        try:
+            report = await asyncio.to_thread(build_keyword_audit, entries, mode, threshold, required)
+            await callback.message.answer_document(
+                BufferedInputFile(report.encode("utf-8"), filename="kalitlar-tekshiruvi.txt"),
+                caption="Har bir kalit namuna sifatida tekshirildi. Faylda natijalar va cheklovlar bor; kalitlar o'zgartirilmagan.",
+            )
+        except Exception:
+            logger.exception("Kalitlar tekshiruvida xato")
+            await callback.message.answer("⚠️ Tekshiruvni bajarib bo'lmadi. Keyinroq qayta urinib ko'ring.")
 
 
 def get_word_id(word: str) -> int | None:
