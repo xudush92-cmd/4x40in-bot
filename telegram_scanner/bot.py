@@ -1247,9 +1247,11 @@ async def user_save_group(message: types.Message, state: FSMContext):
 
 def _user_group_text(row) -> str:
     gid, owner, input_value, chat_id, title, is_active, status, last_error = row
-    name = title or input_value
-    if status == "ok":
+    name = title or (input_value if _public_group_username(input_value) else "Yopiq guruh")
+    if status == "ok" and is_active:
         line = "✅ Kuzatuvda (umumiy Stop menyuda)"
+    elif status == "ok":
+        line = "⏸ Guruh faol emas"
     elif status == "pending":
         line = "⏳ Tekshirilmoqda..."
     elif status == "left":
@@ -1260,7 +1262,7 @@ def _user_group_text(row) -> str:
     elif status == "duplicate":
         line = "🔁 Takror yozuv — bu guruh boshqa qatorda bor, bu yozuv kuzatilmaydi."
     else:
-        line = f"⚠️ Xato: {last_error or 'nomaʼlum'}"
+        line = f"⚠️ Xato: {html.escape(str(last_error or 'nomaʼlum'))}"
     return f"👥 <b>{html.escape(name or '')}</b>\n{line}"
 
 
@@ -1293,15 +1295,132 @@ async def user_list_groups(message: types.Message, state: FSMContext):
             reply_markup=user_menu_for(uid),
         )
         return
-    await message.answer(f"📋 Sizning guruhlaringiz — {len(groups)} ta:")
-    for row in groups:
-        await message.answer(_user_group_text(row), parse_mode="HTML",
-                             reply_markup=_user_group_keyboard(row))
+    text, markup = _group_list_page(groups, 0)
+    await message.answer(text, parse_mode="HTML", reply_markup=markup,
+                         disable_web_page_preview=True)
 
 
 def _find_user_group(uid: int, gid: int):
     row = get_user_group(gid)
     return row if row and row[1] == uid else None
+
+
+GROUP_LIST_PAGE_SIZE = 8
+
+
+def _public_group_username(value):
+    """Faqat ochiq username; maxfiy taklif havolalari ko'rsatilmaydi."""
+    value = str(value or '').strip()
+    match = re.fullmatch(r'(?:@|https?://t\.me/|t\.me/)([A-Za-z][A-Za-z0-9_]{4,31})/?', value, re.I)
+    if match and match.group(1).lower() not in {'joinchat', 'addlist'}:
+        return match.group(1)
+    return None
+
+
+def _group_list_page(groups, page):
+    total = len(groups)
+    pages = max(1, (total + GROUP_LIST_PAGE_SIZE - 1) // GROUP_LIST_PAGE_SIZE)
+    page = min(max(0, page), pages - 1)
+    start = page * GROUP_LIST_PAGE_SIZE
+    active = sum(1 for g in groups if g[6] == 'ok' and g[5])
+    lines = [f"📋 <b>Guruhlaringiz — {total} ta</b> (faol: {active})",
+             f"Sahifa: {page + 1}/{pages}", ""]
+    buttons = []
+    for index, row in enumerate(groups[start:start + GROUP_LIST_PAGE_SIZE], start + 1):
+        gid, _owner, value, _chat_id, title, is_active, status, _error = row
+        username = _public_group_username(value)
+        name = _short_text(title or (('@' + username) if username else 'Yopiq guruh'), 70)
+        if username:
+            display = f'<a href="https://t.me/{username}">{html.escape(name)}</a>'
+        else:
+            display = html.escape(name)
+        icon = ('✅' if is_active else '⏸') if status == 'ok' else {
+            'pending': '⏳', 'left': '🚪', 'duplicate': '🔁', 'error': '⚠️'
+        }.get(status, '⚠️')
+        lines.append(f"{index}. {icon} {display}")
+        if username and title:
+            lines.append(f"   @{html.escape(username)}")
+        label = _short_text(name, 24)
+        buttons.append([
+            InlineKeyboardButton(text=f"🗑 {index}. {label}", callback_data=f"ugl:ask:{gid}:{page}"),
+            InlineKeyboardButton(text="ℹ️", callback_data=f"ugl:info:{gid}:{page}"),
+        ])
+    if not groups:
+        lines.append("Guruhlar ro'yxati bo'sh.")
+    lines.extend(["", "✅ Guruh faol · ⏳ Tekshirilmoqda · ⚠️ Xato · 🚪 A'zolik yo'q · 🔁 Takror · ⏸ Faol emas",
+                  "Umumiy skaner holati alohida. ℹ️ — holat va qayta tekshirish. Ochiq manzili saqlanmagan guruh nomi havolasiz ko'rsatiladi."])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"ugl:page:{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"ugl:page:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="➕ Guruh qo'shish", callback_data="ugl:add:0")])
+    buttons.append([_close_button()])
+    return '\n'.join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@dp.callback_query(F.data.startswith("ugl:"))
+async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if not callback.message or callback.message.chat.type != 'private' or callback.message.chat.id != uid:
+        await callback.answer("Ro'yxatni shaxsiy chatda oching.", show_alert=True)
+        return
+    parts = (callback.data or '').split(':')
+    try:
+        action = parts[1]
+        if action in {'page', 'add'} and len(parts) == 3:
+            page, gid = int(parts[2]), None
+        elif action in {'info', 'ask', 'delete', 'retry'} and len(parts) == 4:
+            gid, page = int(parts[2]), int(parts[3])
+        else:
+            raise ValueError
+        if page < 0 or page > 100000 or (gid is not None and gid <= 0):
+            raise ValueError
+    except (ValueError, IndexError):
+        await callback.answer("Noto'g'ri amal.", show_alert=True)
+        return
+    if action == 'add':
+        await callback.answer()
+        await _show_account_groups(callback.message, uid, state)
+        return
+    if action == 'page':
+        text, markup = _group_list_page(get_user_groups(uid), page)
+        await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
+                                         disable_web_page_preview=True)
+        await callback.answer()
+        return
+    row = _find_user_group(uid, gid)
+    if not row:
+        await callback.answer("Guruh topilmadi yoki sizniki emas.", show_alert=True)
+        return
+    if action == 'ask':
+        name = _short_text(row[4] or ('@' + _public_group_username(row[2]) if _public_group_username(row[2]) else 'guruh'), 70)
+        markup = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data=f"ugl:delete:{gid}:{page}"),
+            InlineKeyboardButton(text="↩️ Bekor qilish", callback_data=f"ugl:page:{page}"),
+        ]])
+        await callback.message.edit_text(f"🗑 <b>{html.escape(name)}</b> guruhini ro'yxatdan o'chirasizmi?",
+                                         parse_mode='HTML', reply_markup=markup)
+    elif action == 'info':
+        buttons = []
+        if row[6] not in {'ok', 'duplicate'}:
+            buttons.append([InlineKeyboardButton(text="🔄 Qayta tekshirish", callback_data=f"ugl:retry:{gid}:{page}")])
+        buttons.append([InlineKeyboardButton(text="↩️ Ro'yxatga", callback_data=f"ugl:page:{page}")])
+        await callback.message.edit_text(_user_group_text(row), parse_mode='HTML',
+                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    elif action == 'retry':
+        requeue_user_group(gid)
+        text, markup = _group_list_page(get_user_groups(uid), page)
+        await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
+                                         disable_web_page_preview=True)
+    elif action == 'delete':
+        delete_user_group(gid, uid)
+        text, markup = _group_list_page(get_user_groups(uid), page)
+        await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
+                                         disable_web_page_preview=True)
+    await callback.answer("O'chirildi" if action == 'delete' else "Tekshiruvga qo'yildi" if action == 'retry' else "")
 
 
 @dp.callback_query(F.data.startswith("ugdel:"))
@@ -3100,18 +3219,9 @@ async def admin_list_groups(message: types.Message, state: FSMContext):
             reply_markup=main_menu(admin=True),
         )
         return
-    ok = sum(1 for g in groups if g[6] == "ok")
-    pending = sum(1 for g in groups if g[6] == "pending")
-    await message.answer(
-        f"📋 Sizning guruhlaringiz — {len(groups)} ta "
-        f"(kuzatuvda: {ok}, tekshiruvda: {pending})"
-    )
-    for row in groups:
-        await message.answer(
-            _user_group_text(row),
-            parse_mode="HTML",
-            reply_markup=_user_group_keyboard(row),
-        )
+    text, markup = _group_list_page(groups, 0)
+    await message.answer(text, parse_mode="HTML", reply_markup=markup,
+                         disable_web_page_preview=True)
 
 
 # --- Admin: akkauntdagi guruhlarni aniqlash (ID taxmin qilmaslik uchun) ---
