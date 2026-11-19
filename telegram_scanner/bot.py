@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import re
+import secrets
 import time
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
@@ -167,6 +168,7 @@ class NotAdminFilter(BaseFilter):
 
 class AddPhrase(StatesGroup):
     waiting_phrase = State()  # kalit so'z(lar) kutilmoqda
+    waiting_conflict_confirmation = State()
 
 
 class SetCount(StatesGroup):
@@ -2067,6 +2069,7 @@ async def words_add_start(callback: types.CallbackQuery, state: FSMContext):
         "• Probel, vergul yoki yangi qator bilan ajrating\n"
         "• Faqat o'zak yozing (qo'shimchasiz), lotin harflarida\n"
         "• Takror so'z o'zi tashlab yuboriladi\n"
+        "• Ball rejimida yangi kalitlar mavjud musbat namunalar bilan tekshiriladi; ziddiyatda tasdiq so'raladi\n"
         "• Vaznni so'z oldiga yozasiz: <code>+3 kerak</code>, "
         "<code>-3 reys</code>. Vazn yozilmasa — <b>+1</b>\n"
         "• <b>Musbat</b> = mijoz belgisi, <b>manfiy</b> = haydovchi belgisi\n"
@@ -2106,6 +2109,81 @@ async def save_new_phrase(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Kamida bitta so'z yozing.")
         return  # holatda qolamiz — qayta yozishi mumkin
 
+    from keyword_conflicts import preview_entries, find_conflicts, format_conflicts
+
+    existing = get_keywords_weighted()
+    mode = get_match_mode()
+    threshold = get_user_score_threshold(message.from_user.id)
+    proposed, changed = preview_entries(existing, parsed, keyword_reject_reason)
+    if mode == "weight" and changed:
+        found = await asyncio.to_thread(find_conflicts, existing, proposed, changed, threshold)
+        if (get_keywords_weighted() != existing or get_match_mode() != mode
+                or get_user_score_threshold(message.from_user.id) != threshold):
+            await state.clear()
+            await message.answer("Tekshiruv vaqtida ro'yxat yoki chegara o'zgardi. Kalitlarni qaytadan kiriting; hech narsa saqlanmadi.")
+            return
+        if found:
+            if message.chat.type != "private" or message.chat.id != message.from_user.id:
+                await state.clear()
+                await message.answer("⚠️ Ziddiyat aniqlandi. Kalitlarni botning shaxsiy chatida qayta kiriting; hech narsa saqlanmadi.")
+                return
+            report = format_conflicts(found, threshold)
+            token = secrets.token_hex(6)
+            await state.update_data(
+                pending_keywords=parsed, keyword_token=token,
+                keyword_snapshot=[list(row) for row in existing],
+                keyword_mode=mode, keyword_threshold=threshold,
+            )
+            await state.set_state(AddPhrase.waiting_conflict_confirmation)
+            await message.answer_document(
+                BufferedInputFile(report.encode('utf-8'), filename='kalit-ziddiyatlari.txt'),
+                caption=f"⚠️ {len(found)} ta namunada manfiy moslik topildi. Kalitlar hali saqlanmadi. Tafsilotlar faylda.",
+            )
+            await message.answer(
+                "Bu faqat kalitlarning o'zini namuna qilib tekshiradi; barcha xabar variantlari qamrab olinmaydi. Qanday davom etamiz?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="✅ Baribir saqlash", callback_data=f"wconf:save:{token}"),
+                    InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"wconf:cancel:{token}"),
+                ]]),
+            )
+            return
+    if mode != "weight":
+        await message.answer("ℹ️ Son rejimida manfiy ball ishlamaydi; musbat/manfiy ziddiyat tekshirilmadi.")
+    await _apply_new_phrases(message, state, parsed)
+
+
+@dp.callback_query(AdminFilter(), StateFilter(AddPhrase.waiting_conflict_confirmation), F.data.startswith("wconf:"))
+async def words_conflict_decision(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split(":")
+    data = await state.get_data()
+    if len(parts) != 3 or parts[2] != data.get("keyword_token"):
+        await callback.answer("Bu tekshiruv eskirgan.", show_alert=True)
+        return
+    if parts[1] == "cancel":
+        await state.clear()
+        await callback.answer("Bekor qilindi")
+        await callback.message.answer("Kalitlar saqlanmadi.")
+        return
+    if parts[1] != "save":
+        await callback.answer("Noma'lum amal.", show_alert=True)
+        return
+    snapshot = [list(row) for row in get_keywords_weighted()]
+    if (snapshot != data.get("keyword_snapshot") or get_match_mode() != data.get("keyword_mode")
+            or get_user_score_threshold(callback.from_user.id) != data.get("keyword_threshold")):
+        await state.clear()
+        await callback.answer("Ro'yxat yoki chegara o'zgargan.", show_alert=True)
+        await callback.message.answer("Tekshiruv eskirdi. Kalitlarni qaytadan kiriting; hech narsa saqlanmadi.")
+        return
+    parsed = data.get("pending_keywords") or []
+    if not parsed:
+        await state.clear()
+        await callback.answer("Tekshiruv topilmadi.", show_alert=True)
+        return
+    await callback.answer("Saqlanmoqda")
+    await _apply_new_phrases(callback.message, state, parsed)
+
+
+async def _apply_new_phrases(message: types.Message, state: FSMContext, parsed):
     await state.clear()
     added, updated, conflicts, rejects = [], [], [], []
     for word, weight in parsed:
