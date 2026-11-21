@@ -174,11 +174,30 @@ def build_message_link(chat, chat_id, message_id) -> str | None:
     return None
 
 
+# Faqat aniq belgilangan User ID: ... ko'rinishi; oddiy raqam yoki telefon emas.
+_TEXT_USER_ID_RE = re.compile(r'(?<!\w)user\s+id\s*:\s*([0-9]{5,15})(?![\w\d])', re.IGNORECASE)
+
+
+def _text_user_id_matches(raw_text: str):
+    return list(_TEXT_USER_ID_RE.finditer(raw_text or ""))
+
+
+def find_text_user_id(raw_text: str) -> int | None:
+    """Bir xil aniq belgilangan IDni topadi; bir nechta turli ID bo'lsa tanlamaydi."""
+    ids = {int(match.group(1)) for match in _text_user_id_matches(raw_text)}
+    if len(ids) != 1:
+        return None
+    user_id = ids.pop()
+    return user_id if user_id > 0 else None
+
+
 def find_phone_text(raw_text: str, sender=None) -> str:
     """Telefonni xabar matnidan topadi; sender faqat oddiy alertlar uchun."""
-    match = PHONE_REGEX.search(raw_text or "")
-    if match:
-        return match.group(0)
+    text = raw_text or ""
+    id_spans = [match.span(1) for match in _text_user_id_matches(text)]
+    for match in PHONE_REGEX.finditer(text):
+        if not any(match.start() < end and match.end() > start for start, end in id_spans):
+            return match.group(0)
     profile_phone = getattr(sender, "phone", None)
     if profile_phone:
         digits = re.sub(r"\D", "", str(profile_phone))
@@ -191,6 +210,7 @@ def build_protected_notification_markup(
     message_link: str | None,
     username: str | None = None,
     user_id: int | str | None = None,
+    text_user_id: int | None = None,
 ):
     """Himoyalangan lead uchun profil/ID va asl xabar havolalari."""
     rows = []
@@ -200,6 +220,9 @@ def build_protected_notification_markup(
             "text": "👤 Yuboruvchi profilini ochish",
             "url": profile_link,
         }])
+    text_profile = build_protected_sender_link(None, text_user_id)
+    if text_profile:
+        rows.append([{"text": "👤 Matndagi ID profilini ochish", "url": text_profile}])
     if message_link:
         rows.append([{
             "text": "↗️ Guruhdagi asl xabarni ochish",
@@ -219,6 +242,7 @@ def build_protected_notification_text(
     user_id: int | str | None = None,
     phone: str | None = None,
     matched_words=None,
+    text_user_id: int | None = None,
 ) -> str:
     """Xom matnsiz, faqat ruxsat etilgan ko'rinadigan ma'lumotli ogohlantirish.
 
@@ -258,6 +282,12 @@ def build_protected_notification_text(
             )
         else:
             lines.append("🔗 <b>Username:</b> ochiq emas")
+        text_profile = build_protected_sender_link(None, text_user_id)
+        if text_profile:
+            lines.append(
+                f'🆔 <b>Matnda yozilgan ID (tasdiqlanmagan):</b> '
+                f'<a href="{esc(text_profile, quote=True)}">{esc(str(text_user_id))}</a>'
+            )
         phone_text = phone or "Matnda ko'rsatilmagan"
         lines.append(f"📞 <b>Telefon:</b> {esc(phone_text)}")
         words = list(dict.fromkeys(str(word) for word in (matched_words or []) if word))
@@ -301,6 +331,7 @@ def build_notification_text(
     positive_weights: dict | None = None,
     negative_weights: dict | None = None,
     profile_user_id: int | None = None,
+    text_user_id: int | None = None,
 ) -> str:
     """Bildirishnoma matni — rejimga mos ball/shart bilan.
 
@@ -342,6 +373,12 @@ def build_notification_text(
         f"✅ <b>Topilgan kalitlar ({len(matched_words)} ta):</b> "
         f"{esc(', '.join(matched_words))}",
     ]
+    text_profile = build_protected_sender_link(None, text_user_id)
+    if text_profile:
+        lines.append(
+            f'🆔 <b>Matnda yozilgan ID (tasdiqlanmagan):</b> '
+            f'<a href="{esc(text_profile, quote=True)}">{esc(str(text_user_id))}</a>'
+        )
     if match_mode == "weight":
         score_value = float(score or 0.0)
         threshold_value = float(score_threshold or 0.0)
