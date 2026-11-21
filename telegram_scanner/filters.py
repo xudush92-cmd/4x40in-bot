@@ -10,11 +10,11 @@ Tartib BITTA joyda — ``evaluate()`` da:
     2. Tarif faolmi / bloklanmaganmi (admin bundan mustasno)
     3. Foydalanuvchining umumiy Stop/Start holati
     4. Xabar shu foydalanuvchining faol guruhidanmi
-    5. Emoji / stiker  -> haydovchi belgisi, blok
+    5. Emoji / stiker  -> shaxsiy filtr yoqilgan bo'lsa blok
     6. Kalit so'zlar soni shartga yetadimi
 
-Emoji filtri ro'yxat talab qilmaydi: haydovchi e'lonlari deyarli doim
-emoji bilan bezatiladi, mijoz xabarlarida esa emoji bo'lmaydi.
+Emoji yoki stiker mavjudligi mijoz emasligini isbotlamaydi; foydalanuvchi
+bu filtrni o'zi uchun o'chirishi mumkin.
 
 Skaner faqat ``verdict.ok`` ni ko'radi; test esa ``verdict.stages`` ni
 ko'rsatib, qaysi bosqichda to'xtaganini aytadi.
@@ -36,6 +36,7 @@ from database import (
     get_user_match_count,
     get_user,
     get_user_scanner_enabled,
+    get_user_emoji_sticker_filter,
     read_connection,
 )
 from matcher import contains_emoji, match_keywords, score_text
@@ -189,11 +190,14 @@ def _evaluate_with_connection(
         add("group", INFO, f"faol guruhlar: {len(active_ids)} ta (test rejimi)")
 
     # 5. Emoji / stiker
-    if is_sticker:
-        return finish("emoji", "stiker — haydovchi belgisi")
-    if contains_emoji(text):
-        return finish("emoji", "emoji bor — haydovchi belgisi")
-    add("emoji", OK, "toza")
+    if get_user_emoji_sticker_filter(owner_id, conn=conn):
+        if is_sticker:
+            return finish("emoji", "stiker — filtr yoqilgan")
+        if contains_emoji(text):
+            return finish("emoji", "emoji bor — filtr yoqilgan")
+        add("emoji", OK, "filtr yoqilgan, emoji/stiker yo'q")
+    else:
+        add("emoji", INFO, "emoji/stiker filtri o'chirilgan")
 
     # 6. Kalit so'zlar (yagona ro'yxat) — ikki rejim
     mode = get_match_mode(conn=conn)
