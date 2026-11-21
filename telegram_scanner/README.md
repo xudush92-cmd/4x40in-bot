@@ -252,6 +252,13 @@ Telegram havolani rad etsa, bildirishnomani ID havolasiz, asl guruh xabari va
 qolgan tugmalar bilan yuborishga uriniladi. Himoyalangan xabarlar matni
 bildirishnomaga ko'chirilmaydi.
 
+Xabar matnida aniq `User ID: 123456789` yozuvi bo'lsa, u alohida
+**matnda yozilgan, tasdiqlanmagan ID** sifatida ko'rsatiladi. Bu raqam
+xabar yuboruvchiga yoki haqiqiy mijozga tegishli ekanligi tekshirilmaydi.
+Bir nechta turli ID bo'lsa bittasi taxmin qilinmaydi; himoya holati noma'lum
+bo'lsa bunday ma'lumot ko'rsatilmaydi. ID ko'rsatilgan bo'lsa ham Telegram
+profilni ochmasligi mumkin.
+
 ### Shaxsiy emoji va stiker filtri
 
 Ulangan foydalanuvchi menyusida **😀 Emoji/stiker filtri** orqali ushbu
