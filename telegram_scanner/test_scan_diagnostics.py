@@ -142,6 +142,87 @@ class TestScanDiagnostics(unittest.TestCase):
         finally:
             messagebox.NO_UPDATES_TIMEOUT = original
 
+    def test_fast_channel_difference_too_long_is_always_recorded_without_payload(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp_dir:
+            diagnostics = ScanDiagnostics(temp_dir)
+            from telethon.tl.types.updates import ChannelDifferenceTooLong
+            response = ChannelDifferenceTooLong(
+                dialog=SimpleNamespace(secret='SECRET SESSION'),
+                messages=[SimpleNamespace(message='SECRET MESSAGE', phone='SECRET PHONE')],
+                chats=[], users=[], final=True, timeout=30,
+            )
+            diagnostics.record_channel_difference(
+                99, channel_id=123, request_pts=42,
+                started_at=dt.datetime.now(dt.timezone.utc), duration_ms=1, response=response,
+            )
+            path = Path(temp_dir) / 'owner_99.jsonl'
+            raw = path.read_text()
+            row = json.loads(raw)
+            self.assertEqual(row['response_type'], 'ChannelDifferenceTooLong')
+            self.assertEqual(row['new_message_count'], 0)
+            self.assertNotIn('SECRET', raw)
+            self.assertNotIn('messages', row)
+            self.assertNotIn('dialog', row)
+
+    def test_fast_regular_difference_stays_selective(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp_dir:
+            diagnostics = ScanDiagnostics(temp_dir)
+            diagnostics.record_channel_difference(
+                99, channel_id=123, request_pts=42,
+                started_at=dt.datetime.now(dt.timezone.utc), duration_ms=1,
+                response=SimpleNamespace(new_messages=[], other_updates=[]),
+            )
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
+    def test_session_health_allowlists_and_no_sensitive_data(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            diagnostics = ScanDiagnostics(temp_dir)
+            diagnostics.record_session_health(100, connection='SECRET SESSION', update_loop='SECRET MESSAGE')
+            raw = (Path(temp_dir) / 'owner_100.jsonl').read_text()
+            row = json.loads(raw)
+            self.assertEqual(row['connection'], 'unknown')
+            self.assertEqual(row['update_loop'], 'unknown')
+            self.assertNotIn('SECRET', raw)
+            self.assertEqual(set(row) - {'logged_at_utc', 'owner_id'}, {'stage', 'connection', 'update_loop'})
+
+    def test_reconnect_events_are_allowlisted_without_sensitive_payload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            diagnostics = ScanDiagnostics(temp_dir)
+            diagnostics.record_session_event(101, event='SECRET DATA')
+            self.assertFalse((Path(temp_dir) / 'owner_101.jsonl').exists())
+            for event in ('reconnect_attempt', 'reconnect_succeeded', 'reconnect_failed'):
+                diagnostics.record_session_event(101, event=event)
+            raw = (Path(temp_dir) / 'owner_101.jsonl').read_text()
+            rows = [json.loads(line) for line in raw.splitlines()]
+            self.assertEqual([row['event'] for row in rows], ['reconnect_attempt', 'reconnect_succeeded', 'reconnect_failed'])
+            self.assertNotIn('SECRET', raw)
+
+    def test_diagnostic_exception_does_not_break_rpc(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from telethon.tl import types
+        from telethon.tl.functions.updates import GetChannelDifferenceRequest
+        class Client:
+            def __init__(self, fail=False): self.fail = fail
+            async def _call(self, *args, **kwargs):
+                if self.fail:
+                    raise ValueError('original failure')
+                return 'original result'
+        request = GetChannelDifferenceRequest(channel=types.InputChannel(1, 2), filter=types.ChannelMessagesFilterEmpty(), pts=1, limit=100)
+        async def run():
+            with patch('scan_diagnostics.scan_diagnostics', SimpleNamespace(record_channel_difference=lambda *a, **k: (_ for _ in ()).throw(RuntimeError('secret')))):
+                client = Client()
+                instrument_telethon_client(client, 1)
+                self.assertEqual(await client._call(None, request), 'original result')
+                client = Client(fail=True)
+                instrument_telethon_client(client, 1)
+                with self.assertRaisesRegex(ValueError, 'original failure'):
+                    await client._call(None, request)
+        asyncio.run(run())
+
     def test_channel_difference_timing_stores_only_metadata(self):
         from types import SimpleNamespace
         from unittest.mock import patch

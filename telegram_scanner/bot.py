@@ -1574,6 +1574,13 @@ def _scan_diag_lines(uid: int) -> list[str]:
         return lines
     if not info.get("connected"):
         lines.append("⚠️ Client yaratilgan, lekin Telegramga ulanmagan")
+    update_loop = info.get("update_loop")
+    if update_loop == "running":
+        lines.append("⚙️ Yangilanish vazifasi ishlayapti; bu xabarlar kelishini kafolatlamaydi.")
+    elif update_loop == "stopped":
+        lines.append("⚠️ Yangilanish vazifasi to'xtagan; sessiya holatini tekshiring.")
+    elif update_loop == "unknown":
+        lines.append("ℹ️ Yangilanish vazifasi holati noma'lum.")
     watched = info.get("watched") or []
     lines.append(f"👁 Kuzatilayotgan chatlar: <b>{len(watched)}</b> ta")
     if watched:

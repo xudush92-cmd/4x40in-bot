@@ -10,7 +10,7 @@ import html
 import logging
 import time
 
-from telethon import TelegramClient, events, utils
+from telethon import TelegramClient, events, utils, __version__ as TELETHON_VERSION
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel, Chat, PeerUser, User
 
@@ -71,6 +71,62 @@ _tasks: list[asyncio.Task] = []
 _GROUP_MEMBERSHIP_AUDIT_SECONDS = 10 * 60
 _last_group_membership_audit: dict[int, float] = {}
 _resolving_owner_groups: set[int] = set()
+_session_health_states: dict[int, tuple[object, tuple[str, str]]] = {}
+_SESSION_HEALTH_INTERVAL = 15
+
+
+def _session_health(client) -> tuple[str, str]:
+    """Passiv namuna; tarmoq so'rovi, reconnect yoki exception matni yo'q.
+
+    _updates_handle — private API: faqat pin qilingan 1.34.0 da tekshiriladi.
+    Task ishlashi Telegram xabar yetkazayotganini isbotlamaydi.
+    """
+    try:
+        connection = "connected" if client.is_connected() else "disconnected"
+    except Exception:
+        connection = "unknown"
+    update_loop = "unknown"
+    if TELETHON_VERSION == "1.34.0":
+        try:
+            task = getattr(client, "_updates_handle", None)
+            if isinstance(task, asyncio.Future):
+                update_loop = "stopped" if task.done() else "running"
+        except Exception:
+            pass
+    return connection, update_loop
+
+
+def _sample_session_health() -> None:
+    """O'zgargan holatlarni alohida maxfiy faylga yozadi; xabar bo'lmasa restart qilmaydi."""
+    clients = dict(_clients)
+    for owner_id in set(_session_health_states) - set(clients):
+        _session_health_states.pop(owner_id, None)
+    for owner_id, client in clients.items():
+        try:
+            connection, update_loop = _session_health(client)
+            current = (connection, update_loop)
+            previous = _session_health_states.get(owner_id)
+            if previous is None or previous[0] is not client or previous[1] != current:
+                scan_delay_diagnostics.record_session_health(
+                    owner_id, connection=connection, update_loop=update_loop,
+                )
+                _session_health_states[owner_id] = (client, current)
+        except Exception:
+            logger.warning("Sessiya holati diagnostikasi yozilmadi")
+
+
+def _record_session_event(owner_id: int, event: str) -> None:
+    try:
+        scan_delay_diagnostics.record_session_event(owner_id, event=event)
+    except Exception:
+        logger.warning("Sessiya hodisasi diagnostikasi yozilmadi")
+
+
+async def _session_health_loop():
+    while True:
+        _sample_session_health()
+        await asyncio.sleep(_SESSION_HEALTH_INTERVAL)
+
 
 def is_client_online(user_id: int) -> bool:
     client = _clients.get(user_id)
@@ -406,6 +462,7 @@ def scan_diagnostics(owner_id: int) -> dict:
         "start_error": _start_error.get(owner_id, ""),
         "last_sync": _last_sync_ts,
         "connected": bool(client is not None and client.is_connected()),
+        "update_loop": _session_health(client)[1] if client is not None else "unknown",
         "events": _seen_events.get(owner_id, 0),
         "private": _seen_private.get(owner_id, 0),
         "last_ts": last[0] if last else 0,
@@ -942,10 +999,13 @@ async def _sync_loop():
                 if not client.is_connected():
                     try:
                         logger.warning("[SESSION] owner=%s uzilgan, qayta ulanmoqda", uid)
+                        _record_session_event(uid, "reconnect_attempt")
                         await client.connect()
                         if not client.is_connected():
                             raise ConnectionError("ulanmadi")
+                        _record_session_event(uid, "reconnect_succeeded")
                     except Exception:
+                        _record_session_event(uid, "reconnect_failed")
                         logger.warning("[SESSION] owner=%s qayta tiklanmadi", uid)
                         _clients.pop(uid, None)
                         _last_group_membership_audit.pop(uid, None)
@@ -1030,6 +1090,7 @@ def start_background() -> None:
     _tasks.append(asyncio.create_task(_sync_loop()))
     _tasks.append(asyncio.create_task(_expiry_warning_loop()))
     _tasks.append(asyncio.create_task(_event_loop_lag_loop()))
+    _tasks.append(asyncio.create_task(_session_health_loop()))
 
 
 async def run():
