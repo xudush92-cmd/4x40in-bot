@@ -131,11 +131,22 @@ class TestNotificationText(unittest.TestCase):
         self.assertNotIn("tg://user?id=", text)
         self.assertEqual(build_profile_link("@ali_123"), "https://t.me/ali_123")
 
-    def test_missing_username_does_not_emit_privacy_sensitive_tg_link(self):
-        text = self._build(username="Yo'q")
+    def test_missing_username_uses_verified_user_id(self):
+        text = self._build(username="Yo'q", profile_user_id=123)
+        self.assertIn('href="tg://user?id=123"', text)
+        self.assertIn('>Ali</a>', text)
+        self.assertIsNone(build_profile_link("Yo'q"))
+
+    def test_unverified_id_does_not_emit_user_link(self):
+        text = self._build(username="Yo'q", user_id=123)
         self.assertNotIn("tg://user?id=", text)
         self.assertIn("guruhdagi asl xabarni oching", text)
-        self.assertIsNone(build_profile_link("Yo'q"))
+        self.assertNotIn("tg://user?id=", self._build(username="Yo'q", profile_user_id=-1))
+
+    def test_username_preferred_over_verified_id(self):
+        text = self._build(profile_user_id=123)
+        self.assertIn('href="https://t.me/alice"', text)
+        self.assertNotIn('tg://user?id=', text)
 
     def test_count_mode_shows_count_requirement(self):
         text = self._build(match_mode="count", required_count=2)
