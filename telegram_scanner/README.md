@@ -241,6 +241,23 @@ kalit so'zlarga bo'linadi — ma'lumot yo'qolmaydi.
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.
 
+### Sessiya va difference diagnostikasi
+
+Servis har 15 soniyada tarmoq ulanishi va (faqat Telethon 1.34.0 uchun)
+update task holatini passiv tekshiradi. Birinchi holat va o'zgarishlar
+`diagnostics/owner_<ID>.jsonl` ga `session_health` sifatida yoziladi;
+`connection` va `update_loop` faqat oldindan belgilangan holatlardan iborat.
+Task ishlashi xabar kelishini kafolatlamaydi. Noma'lum kutubxona versiyasida
+update task holati `unknown`; avtomatik restart yoki tarmoq so'rovi qilinmaydi.
+Manager aniq boshlagan qayta ulanish urinishlari `session_event` sifatida
+qayd etiladi; tez sodir bo'lgan ichki auto-reconnectlar ko'rinmasligi mumkin.
+
+`ChannelDifferenceTooLong` javoblari hatto tez qaytsa ham maxfiy aylanuvchi
+faylga qayd etiladi. Bu xabar yo'qolganining yakuniy isboti emas; faqat javob
+turi va texnik hisoblar yoziladi, xabar mazmuni, yuboruvchi, telefon yoki
+session qiymati yozilmaydi. Egasi va channel IDlari sezgir: xom faylni
+ulashmang. Fayllar boshqa diagnostika yozuvlari bilan birga rotatsiyalanadi.
+
 ### Bildirishnoma kechikishini ixtiyoriy o'lchash
 
 `SCANNER_MATCH_TIMING_ENABLED=1` qo'yilsa, haqiqatan yuborishga uringan

@@ -238,6 +238,23 @@ class ScanDiagnostics:
             "lag_ms": round(max(0.0, lag_ms), 1),
         })
 
+    def record_session_event(self, owner_id: int, *, event: str) -> None:
+        if event not in {"reconnect_attempt", "reconnect_succeeded", "reconnect_failed"}:
+            return
+        self._write(owner_id, {"stage": "session_event", "event": event})
+
+    def record_session_health(self, owner_id: int, *, connection: str, update_loop: str) -> None:
+        """Faqat cheklangan holat kodlari; exception yoki session qiymatlari yo'q."""
+        if connection not in {"connected", "disconnected", "unknown"}:
+            connection = "unknown"
+        if update_loop not in {"running", "stopped", "unknown"}:
+            update_loop = "unknown"
+        self._write(owner_id, {
+            "stage": "session_health",
+            "connection": connection,
+            "update_loop": update_loop,
+        })
+
     def record_channel_difference(
         self,
         owner_id: int,
@@ -263,8 +280,11 @@ class ScanDiagnostics:
         oldest_message_age_ms = max(ages_ms, default=None)
         duration_ms = max(0.0, duration_ms)
 
-        # Oddiy, tez va bo'sh difference so'rovlarini yozmaymiz.
-        if not error_type and duration_ms < 1000 and (oldest_message_age_ms or 0) < self.threshold_seconds * 1000:
+        # TooLong oddiy tez javob emas: Telethon 1.34 undagi qisman
+        # xabarlarni dispatch qilmasligi mumkin. Matn/payloadni yozmaymiz.
+        response_type = type(response).__name__ if response is not None else None
+        is_too_long = response_type == "ChannelDifferenceTooLong"
+        if not is_too_long and not error_type and duration_ms < 1000 and (oldest_message_age_ms or 0) < self.threshold_seconds * 1000:
             return
 
         self._write(owner_id, {
@@ -274,7 +294,7 @@ class ScanDiagnostics:
             "started_at_utc": _utc_iso(started_at),
             "completed_at_utc": _utc_iso(now),
             "duration_ms": round(duration_ms, 1),
-            "response_type": type(response).__name__ if response is not None else None,
+            "response_type": response_type,
             "new_message_count": len(messages),
             "other_update_count": len(other_updates),
             "oldest_message_age_ms": oldest_message_age_ms,
@@ -458,24 +478,30 @@ def instrument_telethon_client(client, owner_id: int) -> bool:
                 flood_sleep_threshold=flood_sleep_threshold,
             )
         except Exception as exc:
+            try:
+                scan_diagnostics.record_channel_difference(
+                    owner_id,
+                    channel_id=channel_id,
+                    request_pts=request_pts,
+                    started_at=started_at,
+                    duration_ms=(time.monotonic() - started_monotonic) * 1000,
+                    error_type=type(exc).__name__,
+                )
+            except Exception:
+                logging.getLogger(__name__).warning("Difference diagnostikasini yozib bo'lmadi")
+            raise
+
+        try:
             scan_diagnostics.record_channel_difference(
                 owner_id,
                 channel_id=channel_id,
                 request_pts=request_pts,
                 started_at=started_at,
                 duration_ms=(time.monotonic() - started_monotonic) * 1000,
-                error_type=type(exc).__name__,
+                response=response,
             )
-            raise
-
-        scan_diagnostics.record_channel_difference(
-            owner_id,
-            channel_id=channel_id,
-            request_pts=request_pts,
-            started_at=started_at,
-            duration_ms=(time.monotonic() - started_monotonic) * 1000,
-            response=response,
-        )
+        except Exception:
+            logging.getLogger(__name__).warning("Difference diagnostikasini yozib bo'lmadi")
         return response
 
     client._call = _timed_call
