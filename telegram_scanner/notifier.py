@@ -39,6 +39,24 @@ def build_feedback_row(review_id: int) -> list[dict]:
     ]
 
 
+def _without_id_profile_links(text, reply_markup):
+    """ID mention Telegram tomonidan rad etilsa, boshqa tugma/havolalarni saqlash."""
+    clean_text = re.sub(r'<a href="tg://user\?id=[0-9]+">(.*?)</a>', r'\1', text, flags=re.DOTALL)
+    if clean_text != text:
+        clean_text += "\nℹ️ Profil havolasi mavjud emas — guruhdagi asl xabarni oching."
+    clean_markup = None
+    if reply_markup:
+        rows = []
+        for row in reply_markup.get("inline_keyboard", []):
+            kept = [button for button in row
+                    if not str(button.get("url", "")).startswith("tg://user?id=")]
+            if kept:
+                rows.append(kept)
+        if rows:
+            clean_markup = {**reply_markup, "inline_keyboard": rows}
+    return clean_text, clean_markup
+
+
 async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
     """Xabarni boshqaruv boti orqali berilgan chatga yuborish.
 
@@ -65,6 +83,23 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
                     logger.info("[NOTIFY] Yuborildi (chat_id=%s)", target)
                     return True
                 logger.warning("[NOTIFY] Bot API xatosi (%s): %s", resp.status, body)
+                rejected_status = resp.status
+            # Telegram botga noma'lum user ID mention yoki URLni rad etishi
+            # mumkin. Aniq 400 da faqat ID havolani olib, boshqa tugma va
+            # asl xabar havolasini saqlab qayta yuboramiz.
+            safe_text, safe_markup = _without_id_profile_links(text, reply_markup)
+            if rejected_status == 400 and (safe_text != text or safe_markup != reply_markup):
+                safe_payload = {
+                    "chat_id": target, "text": safe_text, "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                }
+                if safe_markup:
+                    safe_payload["reply_markup"] = safe_markup
+                async with session.post(url, json=safe_payload) as safe_resp:
+                    if safe_resp.status == 200:
+                        logger.info("[NOTIFY] ID havolasiz zaxira yuborildi")
+                        return True
+                    logger.warning("[NOTIFY] ID havolasiz zaxira xatosi (%s)", safe_resp.status)
             # Avval inline tugmalarsiz, lekin HTML havolalarini saqlab yuboramiz.
             # Reply markupdagi bitta yaroqsiz URL butun klaviaturani yo'qotmasin.
             html_fallback = {
@@ -265,19 +300,24 @@ def build_notification_text(
     score_threshold: float | None = None,
     positive_weights: dict | None = None,
     negative_weights: dict | None = None,
+    profile_user_id: int | None = None,
 ) -> str:
-    """Bildirishnoma matni — rejimga mos ball/shart bilan."""
+    """Bildirishnoma matni — rejimga mos ball/shart bilan.
+
+    ID havolasi faqat chaqiruvchi uni Telegram foydalanuvchisi deb tasdiqlasa ishlatiladi.
+    """
     sep = "━━━━━━━━━━━━━━━"
     esc = html.escape
 
-    profile_link = build_profile_link(username)
-    if user_id is not None and profile_link:
+    profile_link = build_protected_sender_link(username, profile_user_id)
+    if profile_link:
         safe_profile_link = esc(profile_link, quote=True)
         sender_block = (
             f'👤 <b>Yuboruvchi:</b> '
             f'<a href="{safe_profile_link}">{esc(sender_name)}</a>'
         )
-        sender_block += f"\n({esc(username)})"
+        if build_profile_link(username):
+            sender_block += f"\n({esc(username)})"
         profile_line = (
             f'👉 <a href="{safe_profile_link}">'
             "Mijoz profiliga o'tish (Lichkasi)</a>"
@@ -293,7 +333,7 @@ def build_notification_text(
         sep,
         f"📍 <b>Guruh:</b> {esc(group_title or 'Nomaʼlum guruh')}",
         sender_block,
-        f"🆔 <b>Telegram ID:</b> <code>{user_id if user_id is not None else '—'}</code>",
+        f"🆔 <b>Telegram ID:</b> <code>{esc(str(user_id)) if user_id is not None else '—'}</code>",
         f"📞 <b>Telefon:</b> {esc(phone)}",
         "",
         "💬 <b>Xabar matni:</b>",

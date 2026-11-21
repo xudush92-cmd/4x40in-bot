@@ -241,6 +241,17 @@ kalit so'zlarga bo'linadi — ma'lumot yo'qolmaydi.
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.
 
+### Bildirishnomadagi yuboruvchi profili
+
+Oddiy xabarda ochiq username bo'lsa, profil uchun shu username ishlatiladi;
+username bo'lmasa va yuboruvchi shaxs ekanligi tasdiqlansa, Telegram ID
+havolasi ko'rsatiladi. Kanal/anonim guruh ID si shaxs ID si sifatida
+ishlatilmaydi. Telegram bunday ID havolasini bot yoki oluvchi akkaunti uchun
+har doim ochib bermaydi; profil ochilishi yoki yozish imkoniyati kafolat emas.
+Telegram havolani rad etsa, bildirishnomani ID havolasiz, asl guruh xabari va
+qolgan tugmalar bilan yuborishga uriniladi. Himoyalangan xabarlar matni
+bildirishnomaga ko'chirilmaydi.
+
 ### Shaxsiy emoji va stiker filtri
 
 Ulangan foydalanuvchi menyusida **😀 Emoji/stiker filtri** orqali ushbu

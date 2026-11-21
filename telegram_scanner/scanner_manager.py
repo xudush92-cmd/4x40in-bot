@@ -42,7 +42,7 @@ from session_crypto import decrypt_session
 from notifier import (
     build_feedback_row,
     build_message_link,
-    build_profile_link,
+    build_protected_sender_link,
     build_notification_text,
     build_protected_notification_markup,
     build_protected_notification_text,
@@ -751,10 +751,11 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             score_threshold=verdict.threshold,
             positive_weights=verdict.positives,
             negative_weights=verdict.negatives,
+            profile_user_id=sender_user_id,
         )
         rows = []
-        profile_link = build_profile_link(username)
-        if user_id is not None and profile_link:
+        profile_link = build_protected_sender_link(username, sender_user_id)
+        if profile_link:
             rows.append([{
                 "text": "💬 Mijozga yozish (Lichka)",
                 "url": profile_link,
