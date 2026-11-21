@@ -62,6 +62,8 @@ from database import (
     get_user_group,
     get_user_groups,
     get_user_match_count,
+    get_user_emoji_sticker_filter,
+    set_user_emoji_sticker_filter,
     get_user_score_threshold,
     get_own_score_threshold,
     set_user_score_threshold,
@@ -126,6 +128,7 @@ BTN_LOGIN = "🔑 Login"
 BTN_ACCOUNT = "📱 Akkaunt holati"
 BTN_HELP = "ℹ️ Yordam"
 BTN_BLOCKED = "🚫 Bloklanganlar"
+BTN_EMOJI_FILTER = "😀 Emoji/stiker filtri"
 # Foydalanuvchining UMUMIY skaner boshqaruvi (bitta tugma, menyuda)
 # Ikki alohida panel: admin boshqaruvi va skanerning O'Z ishlari
 BTN_ADMIN_PANEL = "🛠 Admin panel"
@@ -141,7 +144,7 @@ MENU_BUTTONS = {
     BTN_GROUPS, BTN_COUNT, BTN_TOGGLE, BTN_TOGGLE_OLD, BTN_TEST,
     BTN_USERS, BTN_STATS,
     BTN_BROADCAST, BTN_APPLICATIONS, BTN_SCAN_GROUPS,
-    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_BLOCKED, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
+    BTN_LOGIN, BTN_ACCOUNT, BTN_HELP, BTN_BLOCKED, BTN_EMOJI_FILTER, BTN_SCAN_PAUSE, BTN_SCAN_RESUME,
     BTN_ADMIN_PANEL, BTN_SCAN_PANEL, BTN_MAIN_MENU, BTN_DIAG,
 }
 # Eski menyu tugmalari (yangilangach ham adashmaslik uchun)
@@ -256,6 +259,7 @@ def scan_panel_keyboard(uid: int) -> list:
         [KeyboardButton(text=toggle)],
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_BLOCKED)],
+        [KeyboardButton(text=BTN_EMOJI_FILTER)],
         [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -274,6 +278,7 @@ def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
         [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_COUNT)],
+        [KeyboardButton(text=BTN_EMOJI_FILTER)],
         [KeyboardButton(text=BTN_BLOCKED), KeyboardButton(text=BTN_HELP)],
     ]
 
@@ -1504,6 +1509,47 @@ async def user_stats(message: types.Message, state: FSMContext):
     )
 
 
+def _emoji_filter_text(enabled: bool) -> str:
+    state = "🟢 yoqilgan" if enabled else "⚪ o'chirilgan"
+    return (
+        f"😀 <b>Emoji va stiker filtri: {state}</b>\n\n"
+        "Yoqilganida emoji yoki stikerli xabarlar kalit so'z tekshiruvidan oldin to'xtatiladi. "
+        "O'chirilganda boshqa filtrlar ishlashda davom etadi. "
+        "Matnsiz stiker kalit so'zga mos kelmasligi mumkin. "
+        "Bu sozlama faqat sizga tegishli."
+    )
+
+
+def _emoji_filter_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="⚪ Filtrni o'chirish" if enabled else "🟢 Filtrni yoqish",
+            callback_data="emoji_filter:off" if enabled else "emoji_filter:on",
+        )
+    ]])
+
+
+@dp.message(F.text == BTN_EMOJI_FILTER)
+async def user_emoji_filter_menu(message: types.Message, state: FSMContext):
+    await state.clear()
+    enabled = get_user_emoji_sticker_filter(message.from_user.id)
+    await message.answer(_emoji_filter_text(enabled), parse_mode="HTML",
+                         reply_markup=_emoji_filter_keyboard(enabled))
+
+
+@dp.callback_query(F.data.in_({"emoji_filter:on", "emoji_filter:off"}))
+async def user_emoji_filter_change(callback: types.CallbackQuery):
+    if (not callback.message or callback.message.chat.type != "private"
+            or callback.message.chat.id != callback.from_user.id):
+        await callback.answer("Faqat shaxsiy chattingizda foydalaning", show_alert=True)
+        return
+    enabled = callback.data == "emoji_filter:on"
+    set_user_emoji_sticker_filter(callback.from_user.id, enabled)
+    await callback.message.edit_text(_emoji_filter_text(enabled), parse_mode="HTML",
+                                     reply_markup=_emoji_filter_keyboard(enabled))
+    await callback.answer("Filtr yoqildi" if enabled else "Filtr o'chirildi")
+
+
 # --- Foydalanuvchi: UMUMIY Stop/Start (bitta tugma, menyuda) ---
 @dp.message(F.text.in_({BTN_SCAN_PAUSE, BTN_SCAN_RESUME}))
 async def user_scanner_toggle(message: types.Message, state: FSMContext):
@@ -1949,6 +1995,7 @@ async def help_user(message: types.Message, state: FSMContext):
         "xabarlar faqat sizga keladi.\n"
         "• 🔔 Xabar sharti — faol rejimga qarab kalitlar soni yoki ball "
         "chegarasini o‘zingiz belgilaysiz (faqat sizga taʼsir qiladi).\n"
+        "• 😀 Emoji/stiker filtri — faqat siz uchun yoqish yoki o'chirish.\n"
         "• 🧪 Skaner testi — xabar nima uchun kelayotganini/kelmayotganini "
         "qadamma-qadam ko'rsatadi.\n"
         "• 🚫 Bloklanganlar — faqat sizga tegishli shaxsiy ro‘yxat; "
@@ -2151,8 +2198,7 @@ async def words_menu(message: types.Message, state: FSMContext):
         "ℹ️ Har so'zning vazni bor: ➕ (mijoz belgisi) yoki ➖ "
         "(haydovchi belgisi). 📋 To'liq ro'yxatda yonidagi ➖/➕ "
         "tugmalari bilan 0.5 qadamda o'zgartiring.\n\n"
-        "ℹ️ Emoji yoki stikerli xabarlar avtomatik tashlanadi — "
-        "bu haydovchi e'lonlari uchun yetarli.",
+        "ℹ️ Emoji/stiker filtri har bir foydalanuvchi tomonidan alohida boshqariladi.",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -3734,8 +3780,8 @@ def _admin_user_card_text(row) -> str:
         f"⚙️ Umumiy tizim: {'✅ yoniq' if system_on else '⏸ admin toʻxtatgan'}\n"
         f"🧪 Skaner holati: <b>{working_line}</b>\n\n"
         f"🔔 Xabar sharti: {condition_line}\n"
-        f"🚫 Haydovchi filtri: faol (emoji/stiker blok, "
-        f"{len(get_keywords())} kalit so'z)\n\n"
+        f"😀 Emoji/stiker filtri: {'yoqilgan' if get_user_emoji_sticker_filter(uid) else 'o‘chirilgan'}\n"
+        f"🔑 Kalit so'zlar: {len(get_keywords())} ta\n\n"
         f"👥 <b>Guruhlari: {len(groups)} ta</b> "
         f"(ulangan: {len(ok_groups)}, tekshiruvda: {len(pending_groups)}, "
         f"xato: {len(error_groups)})\n"

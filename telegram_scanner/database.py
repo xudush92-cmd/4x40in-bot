@@ -101,6 +101,10 @@ def init_db() -> None:
                             words TEXT NOT NULL,
                             verdict TEXT DEFAULT '',
                             created_at INTEGER DEFAULT 0)""")
+        # Shaxsiy filtr sozlamasi, admin users jadvalida bo'lmasa ham ishlaydi.
+        conn.execute("""CREATE TABLE IF NOT EXISTS user_filter_settings (
+                            user_id INTEGER PRIMARY KEY,
+                            emoji_sticker_enabled INTEGER NOT NULL DEFAULT 1)""")
         # Har bir foydalanuvchi faqat o'z blok ro'yxatiga ega.
         conn.execute("""CREATE TABLE IF NOT EXISTS blocked_senders (
                             owner_user_id INTEGER NOT NULL,
@@ -707,6 +711,25 @@ def clear_session(user_id: int) -> None:
         )
 
 
+def get_user_emoji_sticker_filter(user_id: int, *, conn=None) -> bool:
+    """Mavjud va yangi foydalanuvchilar uchun standart: yoqilgan."""
+    with _connection_scope(conn) as active_conn:
+        row = active_conn.execute(
+            "SELECT emoji_sticker_enabled FROM user_filter_settings WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return bool(row[0]) if row else True
+
+
+def set_user_emoji_sticker_filter(user_id: int, enabled: bool) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO user_filter_settings (user_id, emoji_sticker_enabled) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET emoji_sticker_enabled = excluded.emoji_sticker_enabled",
+            (user_id, int(enabled)),
+        )
+
+
 def get_user_scanner_enabled(user_id: int, *, conn=None) -> bool:
     """Foydalanuvchining UMUMIY skaneri yoniqmi (bitta Stop/Start)."""
     with _connection_scope(conn) as active_conn:
@@ -835,6 +858,7 @@ def list_blocked_senders(owner_user_id: int, limit: int = 10, offset: int = 0):
 def delete_user_completely(user_id: int) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute("DELETE FROM blocked_senders WHERE owner_user_id = ?", (user_id,))
+        conn.execute("DELETE FROM user_filter_settings WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_groups WHERE owner_user_id = ?", (user_id,))
         conn.execute("DELETE FROM user_counters WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))

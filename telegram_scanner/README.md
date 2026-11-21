@@ -241,6 +241,19 @@ kalit so'zlarga bo'linadi — ma'lumot yo'qolmaydi.
 Maxfiy fayllar (`.env`, `*.db`, `*.session`) `.gitignore` da — ularni
 hech qachon gitga qo'shmang.
 
+### Shaxsiy emoji va stiker filtri
+
+Ulangan foydalanuvchi menyusida **😀 Emoji/stiker filtri** orqali ushbu
+filtrni yoqishi yoki o'chirishi mumkin. Admin o'z skaneri uchun shu tugmani
+**🎛 Skaner paneli** ichida ko'radi. Sozlama faqat uni o'zgartirgan
+foydalanuvchiga taalluqli va qayta ishga tushganda saqlanadi. Mavjud va yangi
+foydalanuvchilar uchun standart — yoqilgan.
+
+Filtr yoqilganda emoji yoki stiker bor xabar kalit so'z tekshiruvidan oldin
+bloklanadi. O'chirilganda xabar qolgan tekshiruvlardan odatdagidek o'tadi;
+matnsiz stikerning o'zi kalitga mos kelishini kafolatlamaydi. Bu parametrni
+o'chirish keraksiz e'lonlarni ko'paytirishi mumkin.
+
 ### Sessiya va difference diagnostikasi
 
 Servis har 15 soniyada tarmoq ulanishi va (faqat Telethon 1.34.0 uchun)
