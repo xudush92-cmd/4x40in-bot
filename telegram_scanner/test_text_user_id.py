@@ -1,4 +1,4 @@
-"""Matnda ochiq belgilangan ID — tasdiqlangan yuboruvchi ID si emas."""
+"""Matndagi ID alohida bildirilmaydi va telefon bilan adashmaydi."""
 import os
 import unittest
 from types import SimpleNamespace
@@ -22,24 +22,11 @@ class Client:
 
 
 class TextUserIdTests(unittest.IsolatedAsyncioTestCase):
-    def test_strict_explicit_label_and_ambiguity(self):
-        self.assertEqual(notifier.find_text_user_id('kerak\nUser ID: 123456789'), 123456789)
-        self.assertEqual(notifier.find_text_user_id('USER id: 123456789\nuser ID: 123456789'), 123456789)
-        for raw in ('123456789', '+998901234567', 'User ID: -123456789',
-                    'User ID: 1234567890123456', 'User ID: 123456789x',
-                    'User ID: 123456789\nUser ID: 987654321'):
-            self.assertIsNone(notifier.find_text_user_id(raw), raw)
-
     def test_id_is_not_treated_as_phone(self):
         self.assertEqual(notifier.find_phone_text('User ID: 123456789'), "Matnda ko'rsatilmagan")
         self.assertIn('901234567', notifier.find_phone_text('User ID: 123456789\nTel: 901234567'))
 
-    def test_unknown_protection_never_leaks_id(self):
-        text = notifier.build_protected_notification_text(group_title='G', message_link=None,
-            protected=False, include_details=True, text_user_id=123456789)
-        self.assertNotIn('123456789', text)
-
-    async def test_protected_notice_uses_unverified_text_id_without_raw_text(self):
+    async def test_protected_notice_hides_text_id_and_retains_source(self):
         verdict = SimpleNamespace(ok=True, matched=['kerak'], mode='count', required=1)
         event = SimpleNamespace(chat_id=-100123456, is_private=False,
             raw_text='maxfiy asl matn\nUser ID: 123456789', out=False, id=15, sender_id=None,
@@ -54,11 +41,13 @@ class TextUserIdTests(unittest.IsolatedAsyncioTestCase):
             await client.handler(event)
         text, markup = send.await_args.args
         self.assertNotIn('maxfiy asl matn', text)
-        self.assertIn('Matnda yozilgan ID (tasdiqlanmagan)', text)
-        self.assertIn('tg://user?id=123456789', text)
+        self.assertNotIn('123456789', text)
+        self.assertNotIn('Matnda yozilgan ID', text)
+        self.assertNotIn('Topilgan kalitlar', text)
+        self.assertIn('🔑 kerak', text)
         self.assertIn("Matnda ko&#x27;rsatilmagan", text)
-        self.assertTrue(any(b.get('url') == 'tg://user?id=123456789' for row in markup['inline_keyboard'] for b in row))
-        self.assertFalse(any(b.get('callback_data', '').startswith('bsp:') for row in markup['inline_keyboard'] for b in row))
+        self.assertFalse(any('tg://user' in b.get('url', '') for row in markup['inline_keyboard'] for b in row))
+        self.assertTrue(any('grouptest/15' in b.get('url', '') for row in markup['inline_keyboard'] for b in row))
         self.assertEqual(send.await_args.kwargs['chat_id'], 200)
 
 

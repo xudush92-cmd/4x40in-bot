@@ -47,7 +47,6 @@ from notifier import (
     build_protected_notification_markup,
     build_protected_notification_text,
     find_phone_text,
-    find_text_user_id,
     send_to_bot_api,
 )
 from scan_diagnostics import (
@@ -671,7 +670,6 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                         owner_id, chat_id, exc_info=True,
                     )
             phone = find_phone_text(raw_text) if include_details else None
-            text_user_id = find_text_user_id(raw_text) if include_details else None
             matched_words = getattr(verdict, "matched", []) if include_details else []
             text = build_protected_notification_text(
                 group_title=group_title,
@@ -683,13 +681,11 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                 user_id=protected_sender_id,
                 phone=phone,
                 matched_words=matched_words,
-                text_user_id=text_user_id,
             )
             markup = build_protected_notification_markup(
                 message_link,
                 username=username if include_details else None,
                 user_id=protected_sender_id if include_details else None,
-                text_user_id=text_user_id,
             )
             if include_details and sender_user_id and sender_user_id != owner_id:
                 if markup is None:
@@ -740,7 +736,6 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                 return
 
         phone = find_phone_text(raw_text, sender)
-        text_user_id = find_text_user_id(raw_text)
         text = build_notification_text(
             group_title=group_title,
             sender_name=sender_name,
@@ -757,7 +752,6 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             positive_weights=verdict.positives,
             negative_weights=verdict.negatives,
             profile_user_id=sender_user_id,
-            text_user_id=text_user_id,
         )
         rows = []
         profile_link = build_protected_sender_link(username, sender_user_id)
@@ -766,9 +760,6 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                 "text": "💬 Mijozga yozish (Lichka)",
                 "url": profile_link,
             }])
-        text_profile_link = build_protected_sender_link(None, text_user_id)
-        if text_profile_link:
-            rows.append([{"text": "👤 Matndagi ID profilini ochish", "url": text_profile_link}])
         if message_link:
             rows.append([{"text": "↗️ Guruhdagi asl xabarni ochish", "url": message_link}])
         if sender_user_id and sender_user_id != owner_id:
