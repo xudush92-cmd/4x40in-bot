@@ -65,7 +65,10 @@ class TestNotificationText(unittest.TestCase):
         self.assertIn("Ali &amp; Vali", text)
         self.assertIn('href="https://t.me/ali_user"', text)
         self.assertIn("+998901234567", text)
-        self.assertIn("Topilgan kalitlar (1 ta):</b> odam bor", text)
+        self.assertIn("🔑 odam bor", text)
+        self.assertNotIn("Topilgan kalitlar", text)
+        self.assertIn("\n\n📞", text)
+        self.assertIn("\n\n🔑", text)
         self.assertNotIn("Ball:", text)
         self.assertNotIn("Xabar matni:", text)
 
@@ -147,6 +150,14 @@ class TestNotificationText(unittest.TestCase):
         text = self._build(profile_user_id=123)
         self.assertIn('href="https://t.me/alice"', text)
         self.assertNotIn('tg://user?id=', text)
+
+    def test_normal_notification_separates_sections_and_shortens_keywords(self):
+        text = self._build(raw_text='asl & matn')
+        self.assertIn('🔑 mashina, kerak', text)
+        self.assertNotIn('Topilgan kalitlar', text)
+        self.assertIn('\n\n👤', text)
+        self.assertIn('\n\n📞', text)
+        self.assertIn('asl &amp; matn', text)
 
     def test_count_mode_shows_count_requirement(self):
         text = self._build(match_mode="count", required_count=2)
