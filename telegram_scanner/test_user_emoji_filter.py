@@ -1,4 +1,4 @@
-"""Shaxsiy emoji/stiker filtri, migratsiya va menyu testlari."""
+"""Emoji/stiker filtri olib tashlanganini va avvalgi ma'lumotlar saqlanishini tekshiradi."""
 import os
 import tempfile
 import time
@@ -35,22 +35,19 @@ class UserEmojiFilterTests(unittest.IsolatedAsyncioTestCase):
         self.db_patch.stop()
         self.tmp.cleanup()
 
-    def test_defaults_and_isolation_with_count_and_weight(self):
+    def test_old_settings_no_longer_block_emoji_or_stickers(self):
+        db.set_user_emoji_sticker_filter(100, True)
+        db.set_user_emoji_sticker_filter(200, False)
         for mode in ('count', 'weight'):
             db.set_match_mode(mode)
-            db.set_user_emoji_sticker_filter(100, True)
-            for sticker, text in ((False, '🚕 taksi kerak'), (True, 'taksi kerak')):
-                self.assertEqual(filters.evaluate(100, text, is_sticker=sticker, chat_id=-100123).stage, 'emoji')
-                db.set_user_emoji_sticker_filter(100, False)
-                self.assertTrue(filters.evaluate(100, text, is_sticker=sticker, chat_id=-100123).ok)
-                self.assertEqual(filters.evaluate(200, text, is_sticker=sticker, chat_id=-100123).stage, 'emoji')
-                db.set_user_emoji_sticker_filter(100, True)
-            db.set_user_emoji_sticker_filter(100, False)
-            self.assertEqual(filters.evaluate(100, '🚕 tasodifiy', chat_id=-100123).stage, 'keywords')
-            self.assertEqual(filters.evaluate(100, '', is_sticker=True, chat_id=-100123).stage, 'keywords')
-            self.assertEqual(filters.evaluate(100, '🚕 kerak', chat_id=-999).stage, 'group')
-        db.set_user_emoji_sticker_filter(100, True)
-        self.assertEqual(filters.evaluate(100, '🚕 kerak', chat_id=-100123).stage, 'emoji')
+            for uid in (100, 200):
+                for sticker, text in ((False, '🚕 taksi kerak'), (True, 'taksi kerak')):
+                    self.assertTrue(filters.evaluate(uid, text, is_sticker=sticker, chat_id=-100123).ok)
+                self.assertEqual(filters.evaluate(uid, '🚕 tasodifiy', chat_id=-100123).stage, 'keywords')
+                self.assertEqual(filters.evaluate(uid, '', is_sticker=True, chat_id=-100123).stage, 'keywords')
+                self.assertEqual(filters.evaluate(uid, '🚕 kerak', chat_id=-999).stage, 'group')
+        self.assertTrue(db.get_user_emoji_sticker_filter(100))
+        self.assertFalse(db.get_user_emoji_sticker_filter(200))
 
     def test_persistence_missing_user_and_delete(self):
         self.assertTrue(db.get_user_emoji_sticker_filter(777))
@@ -71,21 +68,16 @@ class UserEmojiFilterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(db.get_user(300)[1], 'Old')
             self.assertTrue(db.get_user_emoji_sticker_filter(300))
 
-    async def test_menu_and_callback_are_personal(self):
-        self.assertIn(bot.BTN_EMOJI_FILTER, [b.text for row in bot.user_menu_keyboard() for b in row])
-        self.assertIn(bot.BTN_EMOJI_FILTER, [b.text for row in bot.scan_panel_keyboard(777) for b in row])
+    async def test_menu_removed_and_old_callback_is_inert(self):
+        self.assertNotIn(bot.BTN_EMOJI_FILTER, [b.text for row in bot.user_menu_keyboard() for b in row])
+        self.assertNotIn(bot.BTN_EMOJI_FILTER, [b.text for row in bot.scan_panel_keyboard(777) for b in row])
+        db.set_user_emoji_sticker_filter(100, True)
         cb = SimpleNamespace(data='emoji_filter:off', from_user=SimpleNamespace(id=100),
             message=SimpleNamespace(chat=SimpleNamespace(id=100, type='private'), edit_text=AsyncMock()), answer=AsyncMock())
-        await bot.user_emoji_filter_change(cb)
-        self.assertFalse(db.get_user_emoji_sticker_filter(100))
-        self.assertTrue(db.get_user_emoji_sticker_filter(200))
-        cb.data = 'emoji_filter:on'
-        cb.message.chat.id = 200
-        await bot.user_emoji_filter_change(cb)
-        self.assertFalse(db.get_user_emoji_sticker_filter(100))
-        cb.message.chat.id = 100
-        await bot.user_emoji_filter_change(cb)
+        await bot.removed_emoji_filter_callback(cb)
         self.assertTrue(db.get_user_emoji_sticker_filter(100))
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_not_awaited()
 
 
 if __name__ == '__main__':

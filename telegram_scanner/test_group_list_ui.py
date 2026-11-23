@@ -28,8 +28,8 @@ class GroupListTests(unittest.TestCase):
         text, keyboard = bot._group_list_page(groups, 0)
         self.assertIn('10 ta</b> (faol: 8)', text)
         self.assertIn('<a href="https://t.me/group_00001">@group_00001</a>', text)
-        self.assertNotIn("Guruh 1", text)
-        self.assertEqual(keyboard.inline_keyboard[0][0].text, "🗑 1")
+        self.assertIn("<b>Guruh 1</b>", text)
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, "🗑 1. Guruh 1")
         self.assertEqual(len(keyboard.inline_keyboard[0]), 1)
         self.assertIn('2. ⏸', text)
         self.assertIn('3. 🚪', text)
@@ -44,12 +44,12 @@ class GroupListTests(unittest.TestCase):
         text, keyboard = bot._group_list_page([row], 0, {str(row[3]): 'current_group'})
         self.assertIn('<a href="https://t.me/current_group">@current_group</a>', text)
         self.assertNotIn('Guruh 1', text)
-        self.assertEqual(keyboard.inline_keyboard[0][0].text, '🗑 1')
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, '🗑 1. Guruh')
 
     def test_current_missing_or_invalid_does_not_use_stale_username(self):
         row = group(1, value='@old_group')
         text, _ = bot._group_list_page([row], 0, {})
-        self.assertIn('Ochiq havola topilmadi', text)
+        self.assertIn("Ochiq havola yo'q", text)
         self.assertNotIn('old_group', text)
         text, _ = bot._group_list_page([row], 0, {str(row[3]): 'x<script>'})
         self.assertNotIn('<a href=', text)
@@ -61,6 +61,21 @@ class GroupListTests(unittest.TestCase):
         self.assertNotIn('<a href=', text)
         self.assertIn('Havola tekshirilmadi', text)
         self.assertNotIn('secretInvite', bot._user_group_text((1, 777, 'https://t.me/+secretInvite', None, '', 1, 'ok', '')))
+
+    def test_private_titles_and_distinct_delete_buttons(self):
+        groups = [group(1, value='-100123', title='Yopiq guruh'),
+                  group(2, value='-100456', title='Yopiq guruh')]
+        text, keyboard = bot._group_list_page(groups, 0, {})
+        self.assertIn('<b>Yopiq guruh</b>', text)
+        self.assertIn("Ochiq havola yo'q", text)
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, '🗑 1. Yopiq guruh')
+        self.assertEqual(keyboard.inline_keyboard[1][0].text, '🗑 2. Yopiq guruh')
+        self.assertNotEqual(keyboard.inline_keyboard[0][0].callback_data, keyboard.inline_keyboard[1][0].callback_data)
+        missing = (7, 777, 'https://t.me/+secretInvite', None, '', 1, 'pending', '')
+        text, markup = bot._group_list_page([missing], 0, {})
+        self.assertIn('Guruh #7', text)
+        self.assertNotIn('secretInvite', text)
+        self.assertEqual(markup.inline_keyboard[0][0].text, '🗑 1. Guruh #7')
 
     def test_escape_and_clamp(self):
         text, _ = bot._group_list_page([group(1, title='<b>X</b>')], 50)
@@ -91,6 +106,20 @@ class GroupActionTests(unittest.IsolatedAsyncioTestCase):
                 await handler(msg, state)
             msg.answer.assert_awaited_once()
             self.assertIn('24 ta', msg.answer.await_args.args[0])
+
+    async def test_adding_group_does_not_send_extra_delete_close_card(self):
+        import scanner_manager as manager
+        cb = callback('gadd:-100123')
+        state = SimpleNamespace(get_data=AsyncMock(return_value={}))
+        with patch.object(bot, 'get_user_groups', return_value=[]), \
+             patch.object(bot, 'count_user_groups', return_value=0), \
+             patch.object(bot, 'add_user_group', return_value=(True, '')), \
+             patch.dict(manager._clients, {}, clear=True), \
+             patch.object(bot, '_render_account_groups', new_callable=AsyncMock) as render:
+            await bot.admin_add_dialog_group(cb, state)
+        cb.message.answer.assert_not_awaited()
+        render.assert_awaited_once()
+        cb.answer.assert_awaited_once()
 
     async def test_ask_does_not_delete(self):
         cb = callback('ugl:ask:4:0')

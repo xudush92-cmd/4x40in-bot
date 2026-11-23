@@ -10,11 +10,9 @@ Tartib BITTA joyda — ``evaluate()`` da:
     2. Tarif faolmi / bloklanmaganmi (admin bundan mustasno)
     3. Foydalanuvchining umumiy Stop/Start holati
     4. Xabar shu foydalanuvchining faol guruhidanmi
-    5. Emoji / stiker  -> shaxsiy filtr yoqilgan bo'lsa blok
-    6. Kalit so'zlar soni shartga yetadimi
+    5. Kalit so'zlar soni yoki ball shartga yetadimi
 
-Emoji yoki stiker mavjudligi mijoz emasligini isbotlamaydi; foydalanuvchi
-bu filtrni o'zi uchun o'chirishi mumkin.
+Emoji va stiker mavjudligi alohida bloklash yoki ball kamaytirish sababi emas.
 
 Skaner faqat ``verdict.ok`` ni ko'radi; test esa ``verdict.stages`` ni
 ko'rsatib, qaysi bosqichda to'xtaganini aytadi.
@@ -36,10 +34,9 @@ from database import (
     get_user_match_count,
     get_user,
     get_user_scanner_enabled,
-    get_user_emoji_sticker_filter,
     read_connection,
 )
-from matcher import contains_emoji, match_keywords, score_text
+from matcher import match_keywords, score_text
 
 # Bosqich nomlari — testda shu tartibda ko'rsatiladi
 STAGE_TITLES = [
@@ -47,7 +44,6 @@ STAGE_TITLES = [
     ("tariff", "Tarif / bloklanish"),
     ("scanner", "Umumiy skaner"),
     ("group", "Guruh"),
-    ("emoji", "Emoji / stiker"),
     ("keywords", "Kalit so'zlar"),
 ]
 
@@ -189,17 +185,7 @@ def _evaluate_with_connection(
             )
         add("group", INFO, f"faol guruhlar: {len(active_ids)} ta (test rejimi)")
 
-    # 5. Emoji / stiker
-    if get_user_emoji_sticker_filter(owner_id, conn=conn):
-        if is_sticker:
-            return finish("emoji", "stiker — filtr yoqilgan")
-        if contains_emoji(text):
-            return finish("emoji", "emoji bor — filtr yoqilgan")
-        add("emoji", OK, "filtr yoqilgan, emoji/stiker yo'q")
-    else:
-        add("emoji", INFO, "emoji/stiker filtri o'chirilgan")
-
-    # 6. Kalit so'zlar (yagona ro'yxat) — ikki rejim
+    # 5. Kalit so'zlar (yagona ro'yxat) — ikki rejim
     mode = get_match_mode(conn=conn)
     verdict.mode = mode
     if mode == "weight":
@@ -265,8 +251,6 @@ def _evaluate_weighted(owner_id, text, verdict, stages, add, finish, conn) -> Ve
     detail = f"ball {result.score:g} (chegara {threshold:g})"
     if plus or minus:
         detail += f": {plus}{('; ' if plus and minus else '')}{minus}"
-    if result.emoji_penalty:
-        detail += f" (emoji −{result.emoji_penalty:g})"
     if not result.is_match:
         return finish("keywords", detail)
     add("keywords", OK, detail)

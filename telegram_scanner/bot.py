@@ -64,8 +64,6 @@ from database import (
     get_user_group,
     get_user_groups,
     get_user_match_count,
-    get_user_emoji_sticker_filter,
-    set_user_emoji_sticker_filter,
     get_user_score_threshold,
     get_own_score_threshold,
     set_user_score_threshold,
@@ -262,7 +260,6 @@ def scan_panel_keyboard(uid: int) -> list:
         [KeyboardButton(text=toggle)],
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_BLOCKED)],
-        [KeyboardButton(text=BTN_EMOJI_FILTER)],
         [KeyboardButton(text=BTN_ACCOUNT), KeyboardButton(text=BTN_MAIN_MENU)],
     ]
 
@@ -281,7 +278,6 @@ def user_menu_keyboard(connected: bool = True, scanner_enabled: bool = True):
         [KeyboardButton(text=BTN_GROUP_ADD), KeyboardButton(text=BTN_GROUPS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ACCOUNT)],
         [KeyboardButton(text=BTN_TEST), KeyboardButton(text=BTN_COUNT)],
-        [KeyboardButton(text=BTN_EMOJI_FILTER)],
         [KeyboardButton(text=BTN_BLOCKED), KeyboardButton(text=BTN_HELP)],
     ]
 
@@ -1485,20 +1481,22 @@ def _group_list_page(groups, page, links=None):
              f"Sahifa: {page + 1}/{pages}", ""]
     buttons = []
     for index, row in enumerate(groups[start:start + GROUP_LIST_PAGE_SIZE], start + 1):
-        gid, _owner, value, chat_id, _title, is_active, status, _error = row
+        gid, _owner, value, chat_id, title, is_active, status, _error = row
         # Dialoglar olingan bo'lsa faqat aynan shu chat ID ga tegishli joriy
         # username ishlatiladi. Offline paytda eski kiritilgan username tekshirilmagan.
         raw_username = (links.get(str(chat_id)) if chat_id is not None else None) if links is not None else None
         username = _public_group_username('@' + str(raw_username)) if raw_username else None
         if links is None:
             username = _public_group_username(value)
+        stored_username = _public_group_username(value)
+        name = _short_text(title or ('@' + stored_username if stored_username else f'Guruh #{gid}'), 70)
         display = (f'<a href="https://t.me/{username}">@{html.escape(username)}</a>' if username
-                   else ('Ochiq havola topilmadi' if links is not None else 'Havola tekshirilmadi'))
+                   else ('Ochiq havola yo\'q' if links is not None else 'Havola tekshirilmadi'))
         icon = ('✅' if is_active else '⏸') if status == 'ok' else {
             'pending': '⏳', 'left': '🚪', 'duplicate': '🔁', 'error': '⚠️'
         }.get(status, '⚠️')
-        lines.append(f"{index}. {icon} {display}")
-        buttons.append([InlineKeyboardButton(text=f"🗑 {index}", callback_data=f"ugl:ask:{gid}:{page}")])
+        lines.append(f"{index}. {icon} <b>{html.escape(name)}</b>\n   🔗 {display}")
+        buttons.append([InlineKeyboardButton(text=f"🗑 {index}. {_short_text(name, 38)}", callback_data=f"ugl:ask:{gid}:{page}")])
     if not groups:
         lines.append("Guruhlar ro'yxati bo'sh.")
     lines.extend(["", "✅ Faol · ⏳ Tekshirilmoqda · ⚠️ Xato · 🚪 A'zolik yo'q · 🔁 Takror · ⏸ Faol emas",
@@ -1555,7 +1553,7 @@ async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Guruh topilmadi yoki sizniki emas.", show_alert=True)
         return
     if action == 'ask':
-        name = _short_text(row[4] or ('@' + _public_group_username(row[2]) if _public_group_username(row[2]) else 'guruh'), 70)
+        name = _short_text(row[4] or ('@' + _public_group_username(row[2]) if _public_group_username(row[2]) else f'Guruh #{gid}'), 70)
         markup = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data=f"ugl:delete:{gid}:{page}"),
             InlineKeyboardButton(text="↩️ Bekor qilish", callback_data=f"ugl:page:{page}"),
@@ -1649,45 +1647,16 @@ async def user_stats(message: types.Message, state: FSMContext):
     )
 
 
-def _emoji_filter_text(enabled: bool) -> str:
-    state = "🟢 yoqilgan" if enabled else "⚪ o'chirilgan"
-    return (
-        f"😀 <b>Emoji va stiker filtri: {state}</b>\n\n"
-        "Yoqilganida emoji yoki stikerli xabarlar kalit so'z tekshiruvidan oldin to'xtatiladi. "
-        "O'chirilganda boshqa filtrlar ishlashda davom etadi. "
-        "Matnsiz stiker kalit so'zga mos kelmasligi mumkin. "
-        "Bu sozlama faqat sizga tegishli."
-    )
-
-
-def _emoji_filter_keyboard(enabled: bool) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="⚪ Filtrni o'chirish" if enabled else "🟢 Filtrni yoqish",
-            callback_data="emoji_filter:off" if enabled else "emoji_filter:on",
-        )
-    ]])
-
-
 @dp.message(F.text == BTN_EMOJI_FILTER)
-async def user_emoji_filter_menu(message: types.Message, state: FSMContext):
+async def removed_emoji_filter_message(message: types.Message, state: FSMContext):
     await state.clear()
-    enabled = get_user_emoji_sticker_filter(message.from_user.id)
-    await message.answer(_emoji_filter_text(enabled), parse_mode="HTML",
-                         reply_markup=_emoji_filter_keyboard(enabled))
+    await message.answer("Emoji/stiker filtri olib tashlangan; boshqa filtrlar ishlaydi.",
+                         reply_markup=menu_for(message.from_user.id))
 
 
 @dp.callback_query(F.data.in_({"emoji_filter:on", "emoji_filter:off"}))
-async def user_emoji_filter_change(callback: types.CallbackQuery):
-    if (not callback.message or callback.message.chat.type != "private"
-            or callback.message.chat.id != callback.from_user.id):
-        await callback.answer("Faqat shaxsiy chattingizda foydalaning", show_alert=True)
-        return
-    enabled = callback.data == "emoji_filter:on"
-    set_user_emoji_sticker_filter(callback.from_user.id, enabled)
-    await callback.message.edit_text(_emoji_filter_text(enabled), parse_mode="HTML",
-                                     reply_markup=_emoji_filter_keyboard(enabled))
-    await callback.answer("Filtr yoqildi" if enabled else "Filtr o'chirildi")
+async def removed_emoji_filter_callback(callback: types.CallbackQuery):
+    await callback.answer("Emoji/stiker filtri olib tashlangan.", show_alert=True)
 
 
 # --- Foydalanuvchi: UMUMIY Stop/Start (bitta tugma, menyuda) ---
@@ -2135,7 +2104,6 @@ async def help_user(message: types.Message, state: FSMContext):
         "xabarlar faqat sizga keladi.\n"
         "• 🔔 Xabar sharti — faol rejimga qarab kalitlar soni yoki ball "
         "chegarasini o‘zingiz belgilaysiz (faqat sizga taʼsir qiladi).\n"
-        "• 😀 Emoji/stiker filtri — faqat siz uchun yoqish yoki o'chirish.\n"
         "• 🧪 Skaner testi — xabar nima uchun kelayotganini/kelmayotganini "
         "qadamma-qadam ko'rsatadi.\n"
         "• 🚫 Bloklanganlar — faqat sizga tegishli shaxsiy ro‘yxat; "
@@ -2337,8 +2305,7 @@ async def words_menu(message: types.Message, state: FSMContext):
         f"{_mode_line()}\n\n"
         "ℹ️ Har so'zning vazni bor: ➕ (mijoz belgisi) yoki ➖ "
         "(haydovchi belgisi). 📋 To'liq ro'yxatda yonidagi ➖/➕ "
-        "tugmalari bilan 0.5 qadamda o'zgartiring.\n\n"
-        "ℹ️ Emoji/stiker filtri har bir foydalanuvchi tomonidan alohida boshqariladi.",
+        "tugmalari bilan 0.5 qadamda o'zgartiring.",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -3779,19 +3746,12 @@ async def admin_add_dialog_group(
             await scanner_manager._resolve_owner_groups(uid, client)
     except Exception:
         logger.exception("Guruhni darhol hal qilish")
-    row = next((g for g in get_user_groups(uid) if g[3] == chat_id), None)
     await callback.answer("✅ Qo'shildi")
     data = await state.get_data()
     await _render_account_groups(
         callback.message, uid, state,
         page=data.get(DIALOGS_PAGE_KEY, 0), edit=True,
     )
-    if row:
-        await callback.message.answer(
-            _user_group_text(row),
-            parse_mode="HTML",
-            reply_markup=_user_group_keyboard(row),
-        )
 
 
 # --- Admin: foydalanuvchilar boshqaruvi (bitta to'liq kartochka) ---
@@ -3920,7 +3880,6 @@ def _admin_user_card_text(row) -> str:
         f"⚙️ Umumiy tizim: {'✅ yoniq' if system_on else '⏸ admin toʻxtatgan'}\n"
         f"🧪 Skaner holati: <b>{working_line}</b>\n\n"
         f"🔔 Xabar sharti: {condition_line}\n"
-        f"😀 Emoji/stiker filtri: {'yoqilgan' if get_user_emoji_sticker_filter(uid) else 'o‘chirilgan'}\n"
         f"🔑 Kalit so'zlar: {len(get_keywords())} ta\n\n"
         f"👥 <b>Guruhlari: {len(groups)} ta</b> "
         f"(ulangan: {len(ok_groups)}, tekshiruvda: {len(pending_groups)}, "

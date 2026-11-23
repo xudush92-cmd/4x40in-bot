@@ -355,10 +355,9 @@ class TestScore(unittest.TestCase):
         self.assertEqual(r.score, 0.0)
         self.assertEqual(r.positives, {})
 
-    def test_emoji_penalty(self):
-        r = score_text("mashina kerak 🚕", [("kerak", 3.0)], emoji_penalty=2.5)
-        self.assertEqual(r.score, 0.5)
-        self.assertEqual(r.emoji_penalty, 2.5)
+    def test_emoji_does_not_reduce_score(self):
+        r = score_text("mashina kerak 🚕", [("kerak", 3.0)])
+        self.assertEqual(r.score, 3.0)
 
     def test_strict_negatives_do_not_fuzzy_match(self):
         # "tashaymiz" manfiy yozuvi "tashaydi" xabar so'ziga mos kelmaydi
@@ -671,11 +670,11 @@ class TestFilterChain(unittest.TestCase):
         v = self._verdict("menga mashina kerak")
         self.assertFalse(v.ok)
 
-    def test_emoji_stage_still_first(self):
+    def test_emoji_does_not_block_matching(self):
         db.add_keyword_checked("kerak", weight=3.0)
         v = self._verdict("mashina kerak 🚕")
-        self.assertFalse(v.ok)
-        self.assertEqual(v.stage, "emoji")
+        self.assertTrue(v.ok, v.detail)
+        self.assertEqual(v.stage, "ok")
 
 
 class TestSignupGroupScanIntegration(unittest.IsolatedAsyncioTestCase):
