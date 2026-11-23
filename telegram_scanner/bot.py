@@ -4,6 +4,7 @@ import logging
 import re
 import secrets
 import time
+import weakref
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest
@@ -195,6 +196,7 @@ class Registration(StatesGroup):
     full_name = State()
     phone = State()
     code = State()       # kod raqamli tugmalarda teriladi
+    verifying = State()  # takroriy yuborishlardan himoya
     password = State()   # 2FA parol
 
 
@@ -710,6 +712,12 @@ def _numpad_text(buffer: str, length: int = 5) -> str:
     )
 
 
+async def _send_code_pad(message, state, buffer, length):
+    sent = await message.answer(_numpad_text(buffer, length), parse_mode="HTML",
+                                reply_markup=_numpad_keyboard())
+    await state.update_data(code_message_id=sent.message_id)
+
+
 @dp.message(F.text == BTN_LOGIN)
 async def begin_login(message: types.Message, state: FSMContext, user_id: int | None = None):
     uid = user_id or message.from_user.id
@@ -764,8 +772,7 @@ async def begin_login(message: types.Message, state: FSMContext, user_id: int | 
             return
         await state.set_state(Registration.code)
         await state.update_data(code_buffer="", code_length=length, phone=row[7])
-        await message.answer(_numpad_text("", length), parse_mode="HTML",
-                             reply_markup=_numpad_keyboard())
+        await _send_code_pad(message, state, "", length)
         return
     await state.set_state(Registration.full_name)
     await message.answer(
@@ -820,45 +827,129 @@ async def reg_phone(message: types.Message, state: FSMContext):
         return
     await state.set_state(Registration.code)
     await state.update_data(code_buffer="", code_length=length, phone=phone)
-    await message.answer(_numpad_text("", length), parse_mode="HTML",
-                         reply_markup=_numpad_keyboard())
+    await _send_code_pad(message, state, "", length)
+
+
+# Bir foydalanuvchining ketma-ket bosishlari FSM holatini bir vaqtda
+# o'zgartirmaydi. Zaif havola bo'sh qulflarning cheksiz yig'ilishini oldini oladi.
+_code_locks = weakref.WeakValueDictionary()
+_code_render_jobs = {}
+_code_render_tasks = {}
+
+
+def _code_lock(uid: int):
+    lock = _code_locks.get(uid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _code_locks[uid] = lock
+    return lock
+
+
+def _queue_code_render(uid, state, message):
+    previous = _code_render_jobs.get(uid)
+    revision = previous[2] + 1 if previous else 1
+    _code_render_jobs[uid] = (state, message, revision)
+    if uid not in _code_render_tasks:
+        _code_render_tasks[uid] = asyncio.create_task(_render_code_pad(uid))
+
+
+async def _render_code_pad(uid):
+    """Tez bosishlarni birlashtirib faqat nuqtalarni yangilaydi; kod loglanmaydi."""
+    try:
+        while uid in _code_render_jobs:
+            await asyncio.sleep(0.15)
+            job = _code_render_jobs.get(uid)
+            if job is None:
+                return
+            state, message, revision = job
+            if await state.get_state() != Registration.code.state:
+                _code_render_jobs.pop(uid, None)
+                return
+            data = await state.get_data()
+            try:
+                await message.edit_text(
+                    _numpad_text(data.get("code_buffer", ""), int(data.get("code_length") or 5)),
+                    parse_mode="HTML", reply_markup=_numpad_keyboard(),
+                )
+            except Exception:
+                # Ekran yangilanmasa ham FSM buferi saqlanadi; maxfiy qiymat loglanmaydi.
+                pass
+            latest = _code_render_jobs.get(uid)
+            if latest is None or latest[2] == revision:
+                _code_render_jobs.pop(uid, None)
+                return
+    finally:
+        if _code_render_tasks.get(uid) is asyncio.current_task():
+            _code_render_tasks.pop(uid, None)
+
+
+async def _stop_code_render(uid):
+    _code_render_jobs.pop(uid, None)
+    task = _code_render_tasks.pop(uid, None)
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @dp.callback_query(StateFilter(Registration.code), F.data.startswith("code:"))
 async def code_numpad(callback: types.CallbackQuery, state: FSMContext):
     uid = callback.from_user.id
     action = callback.data.split(":", 1)[1]
-    data = await state.get_data()
-    buffer = data.get("code_buffer", "")
-    length = int(data.get("code_length") or 5)
+    result = ""
+    code = None
+    # Qulf olinishi tarmoq javobini kutishdan oldin: har bir callback uchun
+    # state tekshiriladi, hatto filter oldinroq o'tgan bo'lsa ham.
+    async with _code_lock(uid):
+        if await state.get_state() != Registration.code.state:
+            result = "inactive"
+        else:
+            data = await state.get_data()
+            buffer = data.get("code_buffer", "")
+            length = int(data.get("code_length") or 5)
+            if (data.get("code_message_id") is None
+                    or getattr(callback.message, "message_id", None) != data["code_message_id"]):
+                result = "inactive"
+            elif action == "cancel":
+                await state.clear()
+                result = "cancel"
+            elif action == "ok":
+                if len(buffer) != length:
+                    result = "incomplete"
+                else:
+                    code = buffer
+                    await state.update_data(code_buffer="")
+                    await state.set_state(Registration.verifying)
+                    result = "verify"
+            elif action == "back" or (len(action) == 1 and action in "0123456789"):
+                if action == "back":
+                    buffer = buffer[:-1]
+                elif len(buffer) < length:
+                    buffer += action
+                await state.update_data(code_buffer=buffer)
+                _queue_code_render(uid, state, callback.message)
+            else:
+                result = "invalid"
 
-    if action == "cancel":
+    if result == "incomplete":
+        await callback.answer("Kodni to'liq kiriting.", show_alert=True)
+    elif result in {"inactive", "invalid"}:
+        await callback.answer("Bu tugma hozir faol emas.")
+    elif result == "cancel":
+        await callback.answer("Bekor qilindi")
+        await _stop_code_render(uid)
         await login_cleanup(uid)
-        await state.clear()
         await callback.message.edit_text("❌ Login bekor qilindi.")
-        await callback.answer()
-        return
-    if action == "back":
-        buffer = buffer[:-1]
-    elif action == "ok":
-        if len(buffer) < 4:
-            await callback.answer("Kodni to'liq kiriting.", show_alert=True)
-            return
+    elif result == "verify":
         await callback.answer("Tekshirilmoqda...")
-        await _try_code(callback.message, state, uid, buffer)
-        return
-    elif action.isdigit() and len(buffer) < 8:
-        buffer += action
+        await _stop_code_render(uid)
+        await _try_code(callback.message, state, uid, code)
+    else:
+        await callback.answer()
 
-    await state.update_data(code_buffer=buffer)
-    try:
-        await callback.message.edit_text(
-            _numpad_text(buffer, length), parse_mode="HTML",
-            reply_markup=_numpad_keyboard(),
-        )
-    except Exception:
-        pass
-    await callback.answer()
+
+@dp.callback_query(F.data.startswith("code:"))
+async def inactive_code_numpad(callback: types.CallbackQuery):
+    await callback.answer("Bu tugma hozir faol emas.")
 
 
 async def _try_code(message: types.Message, state: FSMContext, uid: int, code: str):
@@ -883,12 +974,12 @@ async def _try_code(message: types.Message, state: FSMContext, uid: int, code: s
         data = await state.get_data()
         length = int(data.get("code_length") or 5)
         await state.update_data(code_buffer="")
+        await state.set_state(Registration.code)
         await message.answer(
             "❌ Kod noto'g'ri. Qayta kiriting:",
             parse_mode="HTML",
         )
-        await message.answer(_numpad_text("", length), parse_mode="HTML",
-                             reply_markup=_numpad_keyboard())
+        await _send_code_pad(message, state, "", length)
         return
     await login_cleanup(uid)
     await state.clear()
@@ -911,8 +1002,7 @@ async def code_as_text(message: types.Message, state: FSMContext):
         "⚠️ Kodni oddiy xabar qilib yubormang! Raqamli tugmalar bilan tering:",
         parse_mode="HTML",
     )
-    await message.answer(_numpad_text(data.get("code_buffer", ""), length),
-                         parse_mode="HTML", reply_markup=_numpad_keyboard())
+    await _send_code_pad(message, state, data.get("code_buffer", ""), length)
 
 
 @dp.message(StateFilter(Registration.password), F.text)
