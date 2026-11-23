@@ -32,6 +32,7 @@ from database import (
     count_user_groups,
     delete_phrase,
     export_phrases_text,
+    ensure_user_exists,
     import_phrases,
     keyword_reject_reason,
     delete_user_completely,
@@ -723,8 +724,20 @@ async def begin_login(message: types.Message, state: FSMContext, user_id: int | 
     uid = user_id or message.from_user.id
     # Admin ham o'z akkauntini ulaydi — shu bilan skaner va xatolarni
     # o'z ko'zi bilan kuzatadi. Tasdiqlash talab qilinmaydi (o'zi admin).
-    row = get_user_full(uid)
-    if row and row[3]:
+    try:
+        row = get_user_full(uid)
+        if row is None:
+            # Eski menyudan /start siz kirish yoki jarayonda o'chirilgan qator.
+            # Faqat yo'q qatorni yaratamiz, mavjud yozuvga tegmaymiz.
+            ensure_user_exists(uid)
+            row = get_user_full(uid)
+    except Exception:
+        logger.warning("Login uchun foydalanuvchi qatorini tekshirib bo'lmadi")
+        row = None
+    if row is None:
+        await message.answer("❌ Ro'yxatdan o'tishni boshlashda xato. Admin bilan bog'laning.")
+        return
+    if row[3]:
         await message.answer("⛔ Hisobingiz bloklangan. Admin bilan bog'laning.")
         return
     if row and row[10]:
@@ -768,7 +781,9 @@ async def begin_login(message: types.Message, state: FSMContext, user_id: int | 
             await message.answer(str(e), reply_markup=menu_for(uid))
             return
         if length == 0:
-            await _complete_signed_in(message, state, uid)
+            await state.update_data(phone=row[7])
+            await state.set_state(Registration.verifying)
+            await _try_code(message, state, uid, "")
             return
         await state.set_state(Registration.code)
         await state.update_data(code_buffer="", code_length=length, phone=row[7])
@@ -791,7 +806,15 @@ async def reg_full_name(message: types.Message, state: FSMContext):
     if not validate_full_name(name):
         await message.answer("⚠️ Ism va familiyani to'liq yozing. Masalan: <i>Ali Valiyev</i>", parse_mode="HTML")
         return
-    set_registration_info(message.from_user.id, name)
+    try:
+        saved = set_registration_info(message.from_user.id, name)
+    except Exception:
+        logger.warning("Registratsiya ma'lumotini saqlab bo'lmadi")
+        saved = False
+    if not saved:
+        await state.clear()
+        await message.answer("❌ Ma'lumot saqlanmadi. /start ni bosib, loginni qayta boshlang.")
+        return
     await state.set_state(Registration.phone)
     await message.answer(
         f"✅ {html.escape(name)}\n\n📱 Telefon raqamingizni yuboring:\n"
@@ -815,7 +838,15 @@ async def reg_phone(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Bu telefon boshqa foydalanuvchiga tegishli.")
         return
     row = get_user_full(uid)
-    set_registration_info(uid, (row[6] if row else "") or message.from_user.first_name or "", phone)
+    try:
+        saved = bool(row and row[6] and set_registration_info(uid, row[6], phone))
+    except Exception:
+        logger.warning("Registratsiya ma'lumotini saqlab bo'lmadi")
+        saved = False
+    if not saved:
+        await state.clear()
+        await message.answer("❌ Ma'lumot saqlanmadi. /start ni bosib, loginni qayta boshlang.")
+        return
     try:
         length = await request_code(uid, phone)
     except LoginError as e:
@@ -823,7 +854,9 @@ async def reg_phone(message: types.Message, state: FSMContext):
         await message.answer(str(e), reply_markup=user_menu_for(uid))
         return
     if length == 0:
-        await _complete_signed_in(message, state, uid)
+        await state.update_data(phone=phone)
+        await state.set_state(Registration.verifying)
+        await _try_code(message, state, uid, "")
         return
     await state.set_state(Registration.code)
     await state.update_data(code_buffer="", code_length=length, phone=phone)
@@ -1039,33 +1072,50 @@ async def _complete_signed_in(message: types.Message, state: FSMContext, uid: in
         await message.answer("❌ Login jarayoni buzildi. Qayta urining.",
                              reply_markup=user_menu_for(uid))
         return
+    saved = False
     try:
+        data = await state.get_data()
+        phone = data.get("phone") or ""
         session_str = client.session.save()
+        if phone and session_str:
+            saved = set_pending_session(uid, encrypt_session(session_str), expected_phone=phone)
+    except Exception:
+        # Sessiya, parol, kod yoki exception mazmuni logga tushmasin.
+        logger.warning("Login sessiyasini saqlab bo'lmadi")
     finally:
         try:
             await client.disconnect()
         except Exception:
             pass
-    set_pending_session(uid, encrypt_session(session_str))
     await state.clear()
+    if not saved:
+        await message.answer(
+            "❌ Login tasdiqlandi, ammo sessiyani saqlab bo'lmadi. "
+            "Ariza yuborilmadi. Admin bilan bog'laning; qayta urinishdan oldin "
+            "Telegram Sozlamalar → Qurilmalar bo'limidagi yangi sessiyani tekshiring."
+        )
+        return
 
     # Admin o'zini tasdiqlamaydi: sessiya darhol aktiv bo'ladi va
     # skaner clienti ko'tariladi.
     if is_admin(uid):
-        approve_pending_session(uid)
+        if not approve_pending_session(uid):
+            await message.answer("❌ Sessiyani faollashtirib bo'lmadi. Akkaunt holatini tekshiring.")
+            return
+        started = False
         try:
             import scanner_manager
 
-            await scanner_manager.start_user_client(uid)
+            started = await scanner_manager.start_user_client(uid)
         except Exception:
-            logger.exception("Admin client start (login)")
-        await message.answer(
-            "✅ <b>Login muvaffaqiyatli!</b>\n\n"
-            "Akkauntingiz ulandi va skaner tayyor. Endi "
-            "➕ Guruh qo'shish orqali guruhingizni qo'shing.",
-            parse_mode="HTML",
-            reply_markup=main_menu(admin=True),
+            logger.warning("Admin client start (login) xatosi")
+        text = (
+            "✅ <b>Login muvaffaqiyatli!</b>\n\nAkkauntingiz ulandi va skaner tayyor. "
+            "Endi ➕ Guruh qo'shish orqali guruhingizni qo'shing."
+            if started else
+            "⚠️ Sessiya saqlandi, ammo skaner hozir ishga tushmadi. Akkaunt holatini tekshiring."
         )
+        await message.answer(text, parse_mode="HTML", reply_markup=main_menu(admin=True))
         return
 
     await message.answer(

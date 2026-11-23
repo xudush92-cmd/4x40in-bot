@@ -581,6 +581,15 @@ def upsert_user(user_id: int, first_name: str = "", username: str = "") -> None:
         )
 
 
+def ensure_user_exists(user_id: int) -> None:
+    """Qator bo'lmasa yarating; mavjud ma'lumot va blok holatini o'zgartirmang."""
+    with closing(_connect()) as conn, conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, created_at) VALUES (?, ?)",
+            (user_id, int(time.time())),
+        )
+
+
 def get_user(user_id: int, *, conn=None):
     """(user_id, first_name, username, is_blocked, sub_expires_at, created_at)."""
     with _connection_scope(conn) as active_conn:
@@ -641,18 +650,19 @@ def get_all_users_full() -> list[tuple]:
         ).fetchall()
 
 
-def set_registration_info(user_id: int, full_name: str, phone: str = "") -> None:
+def set_registration_info(user_id: int, full_name: str, phone: str = "") -> bool:
     with closing(_connect()) as conn, conn:
         if phone:
-            conn.execute(
-                "UPDATE users SET full_name = ?, phone = ? WHERE user_id = ?",
+            cur = conn.execute(
+                "UPDATE users SET full_name = ?, phone = ? WHERE user_id = ? AND COALESCE(is_blocked, 0) = 0",
                 (full_name, phone, user_id),
             )
         else:
-            conn.execute(
-                "UPDATE users SET full_name = ? WHERE user_id = ?",
+            cur = conn.execute(
+                "UPDATE users SET full_name = ? WHERE user_id = ? AND COALESCE(is_blocked, 0) = 0",
                 (full_name, user_id),
             )
+        return cur.rowcount == 1
 
 
 def get_user_by_phone(phone: str):
@@ -662,14 +672,22 @@ def get_user_by_phone(phone: str):
         ).fetchone()
 
 
-def set_pending_session(user_id: int, session_enc: str) -> None:
-    """Login tugadi: sessiya pending (shifrlangan) + tasdiq kutilmoqda — atomik."""
+def set_pending_session(user_id: int, session_enc: str, *, expected_phone: str | None = None) -> bool:
+    """Faqat mavjud, bloklanmagan qatorga saqlang; mavjud sessiyani almashtirmang."""
+    if not session_enc:
+        return False
     with closing(_connect()) as conn, conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE users SET pending_session_enc = ?, awaiting_approval = 1, "
-            "session_status = 'pending' WHERE user_id = ?",
-            (session_enc, user_id),
+            "session_status = 'pending' WHERE user_id = ? "
+            "AND COALESCE(is_blocked, 0) = 0 "
+            "AND COALESCE(full_name, '') != '' AND COALESCE(phone, '') != '' "
+            "AND COALESCE(session_enc, '') = '' AND COALESCE(pending_session_enc, '') = '' "
+            "AND COALESCE(awaiting_approval, 0) = 0 "
+            "AND (? IS NULL OR phone = ?)",
+            (session_enc, user_id, expected_phone, expected_phone),
         )
+        return cur.rowcount == 1
 
 
 def approve_pending_session(user_id: int) -> bool:
