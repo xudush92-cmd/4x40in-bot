@@ -984,7 +984,6 @@ class ScoreResult:
     threshold: float = 1.75
     positives: dict[str, float] = field(default_factory=dict)
     negatives: dict[str, float] = field(default_factory=dict)
-    emoji_penalty: float = 0.0
 
     @property
     def is_match(self) -> bool:
@@ -999,7 +998,6 @@ def score_text(
     message_text: str,
     entries,
     threshold: float = 1.75,
-    emoji_penalty: float = 0.0,
 ) -> ScoreResult:
     """Xabarning ballini hisoblaydi.
 
@@ -1082,9 +1080,6 @@ def score_text(
     score = sum(result.positives.values()) + (
         min(result.negatives.values()) if result.negatives else 0.0
     )
-    if emoji_penalty and contains_emoji(message_text):
-        result.emoji_penalty = float(emoji_penalty)
-        score -= result.emoji_penalty
     result.score = score
     return result
 
@@ -1097,8 +1092,7 @@ _EMOJI_RE = re.compile(
 def contains_emoji(text: str | None) -> bool:
     """Matnda emoji yoki emoji-ega belgisi bormi?
 
-    Haydovchi e'lonlari odatda emoji bilan bezatiladi; mijoz matnida
-    emoji bo'lmasligi kutiladi. Shuning uchun emoji alohida belgidir.
+    Bu yordamchi belgi tekshiruvi; skaner emoji asosida bloklamaydi.
     """
     return bool(text and _EMOJI_RE.search(text))
 

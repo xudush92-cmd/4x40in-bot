@@ -101,7 +101,7 @@ def init_db() -> None:
                             words TEXT NOT NULL,
                             verdict TEXT DEFAULT '',
                             created_at INTEGER DEFAULT 0)""")
-        # Shaxsiy filtr sozlamasi, admin users jadvalida bo'lmasa ham ishlaydi.
+        # Eski emoji/stiker sozlamalari qaytarish uchun saqlanadi, endi ishlatilmaydi.
         conn.execute("""CREATE TABLE IF NOT EXISTS user_filter_settings (
                             user_id INTEGER PRIMARY KEY,
                             emoji_sticker_enabled INTEGER NOT NULL DEFAULT 1)""")

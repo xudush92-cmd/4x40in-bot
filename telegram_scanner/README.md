@@ -106,19 +106,13 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 - Sessiyalar `SESSION_ENCRYPTION_KEY` bilan shifrlanadi (serverda
   alohida maxfiy kalit qo'ying).
 - **Filtr zanjiri** (`filters.py` — skaner ham, test ham AYNAN shu
-  kodni ishlatadi), 6 bosqich:
+  kodni ishlatadi), 5 bosqich:
   1. Tizim (admin) to'xtatmaganmi;
   2. Tarif faolmi / bloklanmaganmi (admin bundan mustasno);
   3. Foydalanuvchining umumiy Stop/Start holati;
   4. Xabar shu foydalanuvchining faol guruhidanmi;
-  5. Emoji yoki stiker bormi — haydovchi e'loni, blok;
-  6. Kalit so'zlar shartga yetadimi.
-  Emoji bosqichi hech qanday ro'yxat talab qilmaydi va **ataylab
-  qat'iy blok**: bu guruhlarda mijoz emoji ishlatmaydi — faqat matn
-  yozadi. Emoji qo'shib yozadigan odam — haydovchi e'loni. Shu sababli
-  emoji 5-bosqichda turadi (kalitlardan oldin): ball qanchalik yuqori
-  bo'lsa ham xabar to'xtaydi. Qaror egasi tomonidan tasdiqlangan
-  (2026-10-25).
+  5. Kalit so'zlar shartga yetadimi.
+  Emoji va stikerlar sababli alohida blok yoki ball jarimasi yo'q.
 - **Admin kalitlar tekshiruvi:** bot bilan shaxsiy chatda 🔑 Kalit so'zlar → 🔍 Kalit so'zlar tekshiruvi. Har bir mavjud kalitning o'zi namuna sifatida joriy filtr va admin chegarasi bilan tekshiriladi; barcha natijalar `.txt` faylda yuboriladi. Musbat namuna bilan manfiy kalit birga topilsa, ko'rib chiqish uchun belgilanadi. Bu barcha xabarlar yoki yozilish variantlarini qamrab olmaydi, guruh/sessiya/yetkazishni tekshirmaydi va hech bir kalit yoki vaznni o'zgartirmaydi.
 - **Yangi kalit tekshiruvi:** ball rejimida ➕ So'z qo'shish orqali kiritilganda mavjud va yangi musbat kalitlar namuna qilib sinab ko'riladi. Yangi/o'zgargan kalit bilan bog'liq manfiy moslik topilsa, shaxsiy chatda hisobot va saqlash/bekor qilish tanlovi chiqadi. Ro'yxat yoki chegara tasdiqlashgacha o'zgarsa, qayta tekshirish kerak. Bu cheklangan namunalar bo'lib, barcha xabarlar tekshirilmaydi; import va mavjud kalit vaznini boshqa menyuda o'zgartirishga avtomatik tatbiq qilinmaydi.
 - **Bitta umumiy ro'yxat**: faqat 🔑 Kalit so'zlar bor (admin
@@ -191,9 +185,11 @@ to'xtab qolmasligi uchun Always On / Reserved VM kerak bo'lishi mumkin.
 2. **📋 Guruhlarim** guruhlarni bitta sahifali xabarda (har sahifada 8 ta)
    ko'rsatadi. Ochishda ulangan akkaunt dialoglaridan joriy ochiq @username
    olinadi; ID orqali qo'shilgan ochiq guruhlar ham manzil bilan chiqadi.
-   Ochiq manzili bo'lmagan yoki dialogda topilmagan guruhlar havolasiz
-   ko'rsatiladi; dialoglar olinmasa, saqlangan manzillar tekshirilmagan deb
-   belgilanadi. Maxfiy taklif havolalari chiqarilmaydi. 🗑 raqamini bosganda
+   Har bir qator va o'chirish tugmasida guruh nomi ko'rsatiladi. Nomi hali
+   aniqlanmagan bo'lsa ro'yxat ID si bilan ajratiladi. Ochiq manzili bo'lmagan
+   yoki dialogda topilmagan guruhlar havolasiz ko'rsatiladi; dialoglar olinmasa,
+   saqlangan manzillar tekshirilmagan deb belgilanadi. Maxfiy taklif havolalari
+   chiqarilmaydi. 🗑 tugmasini bosganda
    tasdiq va holat ko'rinadi; u yerdan zarur bo'lsa qayta tekshirish mumkin.
    Stop/Start guruhga alohida EMAS — foydalanuvchi menyusining
    ENG TEPASIDA bitta UMUMIY tugma: yoniq bo'lsa `🔴 ⏸ Stop`,
@@ -256,18 +252,12 @@ Xabar matnidagi `User ID` uchun alohida qator yoki profil tugmasi
 ko'rsatilmaydi. Oddiy xabarda asl matn o'zgartirilmaydi; matndagi aniq
 `User ID` raqami telefon raqami sifatida olinmaydi.
 
-### Shaxsiy emoji va stiker filtri
+### Emoji va stikerlar
 
-Ulangan foydalanuvchi menyusida **😀 Emoji/stiker filtri** orqali ushbu
-filtrni yoqishi yoki o'chirishi mumkin. Admin o'z skaneri uchun shu tugmani
-**🎛 Skaner paneli** ichida ko'radi. Sozlama faqat uni o'zgartirgan
-foydalanuvchiga taalluqli va qayta ishga tushganda saqlanadi. Mavjud va yangi
-foydalanuvchilar uchun standart — yoqilgan.
-
-Filtr yoqilganda emoji yoki stiker bor xabar kalit so'z tekshiruvidan oldin
-bloklanadi. O'chirilganda xabar qolgan tekshiruvlardan odatdagidek o'tadi;
-matnsiz stikerning o'zi kalitga mos kelishini kafolatlamaydi. Bu parametrni
-o'chirish keraksiz e'lonlarni ko'paytirishi mumkin.
+Emoji/stiker filtri va uning menyusi olib tashlangan. Xabarlar boshqa guruh,
+tarif, kalit va ball tekshiruvlaridan odatdagidek o'tadi; matnsiz stikerning
+o'zi kalitga mos kelmasligi mumkin. Keraksiz e'lonlar soni ko'payishi mumkin.
+Eski shaxsiy filtr sozlamalari bazadan o'chirilmaydi, ammo ishlatilmaydi.
 
 ### Sessiya va difference diagnostikasi
 
