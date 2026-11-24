@@ -29,6 +29,7 @@ from telethon.tl.types import (
     Chat,
     ChatForbidden,
     InputMessageEntityMentionName,
+    InputUserFromMessage,
     MessageEntityTextUrl,
     MessageService,
     PeerChannel,
@@ -608,6 +609,9 @@ class _RecentValues:
         if len(self._items) > self._limit:
             self._items.popitem(last=False)
 
+    def pop(self, key):
+        return self._items.pop(key, None)
+
 
 # (owner, chat, message_id): push yoki zaxira tekshiruv orqali allaqachon
 # ko'rilgan xabarlar. Zaxira tekshiruv shu xabarlarni qayta ishlamaydi.
@@ -662,7 +666,8 @@ _SAVED_COPY_ENABLED = os.getenv("SCANNER_SAVED_MESSAGES", "1").strip() != "0"
 _SAVED_TEXT_LIMIT = 3000
 
 
-async def _owner_input_user(client, sender, sender_id, foreign_view):
+async def _owner_input_user(client, sender, sender_id, foreign_view,
+                            chat_id=None, message_id=None):
     """Egasining akkaunti uchun yaroqli InputUser (access_hash akkauntga xos)."""
     if not sender_id:
         return None
@@ -671,6 +676,16 @@ async def _owner_input_user(client, sender, sender_id, foreign_view):
             return utils.get_input_user(sender)
     try:
         return utils.get_input_user(await client.get_input_entity(PeerUser(sender_id)))
+    except Exception:
+        pass
+    if not chat_id or not message_id:
+        return None
+    # Xabar boshqa akkaunt orqali kelgan bo'lsa, egasining akkaunti mijozni
+    # hali tanimaydi. Telegram "shu guruhdagi shu xabar yuboruvchisi" deb
+    # ko'rsatishga ruxsat beradi (ega o'sha guruh a'zosi).
+    try:
+        chat_peer = utils.get_input_peer(await client.get_input_entity(chat_id))
+        return InputUserFromMessage(peer=chat_peer, msg_id=message_id, user_id=sender_id)
     except Exception:
         return None
 
@@ -719,11 +734,27 @@ async def _save_lead_copy(client, *, chat_id, message_id, protected, sender,
                 await client.forward_messages("me", message_id, from_peer=chat_id)
             except Exception as exc:
                 logger.info("[SAVED] forward bo'lmadi: %s", type(exc).__name__)
-        input_user = await _owner_input_user(client, sender, sender_id, foreign_view)
+        input_user = await _owner_input_user(
+            client, sender, sender_id, foreign_view,
+            chat_id=chat_id, message_id=message_id,
+        )
         text, entities = _saved_card(
             sender_id=sender_id, protected=protected, input_user=input_user, **card,
         )
-        await client.send_message("me", text, formatting_entities=entities, link_preview=False)
+        try:
+            await client.send_message("me", text, formatting_entities=entities, link_preview=False)
+        except Exception as exc:
+            if input_user is None:
+                raise
+            # Mention rad etilishi mumkin (masalan, xabar allaqachon o'chirilgan
+            # va "xabardagi foydalanuvchi" topilmaydi) — mention'siz saqlaymiz.
+            logger.info("[SAVED] mention rad etildi (%s), mention'siz saqlanadi",
+                        type(exc).__name__)
+            input_user = None
+            text, entities = _saved_card(
+                sender_id=sender_id, protected=protected, input_user=None, **card,
+            )
+            await client.send_message("me", text, formatting_entities=entities, link_preview=False)
         logger.info("[SAVED] kartochka saqlandi chat=%s mention=%s", chat_id, input_user is not None)
     except Exception as exc:
         logger.warning("[SAVED] kartochka saqlanmadi: %s", type(exc).__name__)
@@ -824,8 +855,17 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
         chat_id = getattr(event, "chat_id", None)
         is_private = bool(getattr(event, "is_private", False))
         initial_text = event.raw_text or ""
-        text_key = (chat_id, getattr(event, "id", 0) or 0)
-        if isinstance(event, events.MessageEdited.Event):
+        message_id = getattr(event, "id", 0) or 0
+        text_key = (chat_id, message_id)
+        is_edit = isinstance(event, events.MessageEdited.Event)
+        # O'z akkauntiga kelgan push (zaxira yoki boshqa akkaunt orqali emas).
+        own_push = not is_edit and not isinstance(event, _PolledEvent)
+        if own_push and (owner_id, chat_id, message_id) in _seen_messages:
+            # Xabar boshqa akkaunt push'i yoki zaxira orqali allaqachon
+            # ishlangan — kech kelgan o'z nusxasi qayta tekshirilmaydi.
+            _note_own_push_after_share(owner_id, chat_id, message_id)
+            return
+        if is_edit:
             # Ko'rinmas tahrir (reaksiya, ko'rishlar, havola ko'rinishi)
             # yoki matni o'zgarmagan tahrir qayta tekshirilmaydi.
             if getattr(getattr(event, "message", None), "edit_hide", False):
@@ -851,7 +891,11 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             return
         if chat_id in _poll_watchers:
             # Zaxira tekshiruv bu xabarni qayta ishlamasligi uchun.
-            _seen_messages.add((owner_id, chat_id, getattr(event, "id", 0) or 0))
+            _seen_messages.add((owner_id, chat_id, message_id))
+            if own_push:
+                # Shu guruhni kuzatayotgan boshqa egalar xabarni o'z push'ini
+                # kutmasdan, shu zahoti oladi (filtrdan oldin — kechikmasin).
+                _share_push(chat_id, getattr(event, "message", None), message_id, owner_id)
         # Zaxira xabarni boshqa akkaunt olgan bo'lsa, uning shaxsiy
         # ko'rinishi (kontakt ismi, telefon) egaga o'tmaydi.
         foreign_view = getattr(event, "polled_by", owner_id) not in (None, owner_id)
@@ -1445,6 +1489,8 @@ _arrivals = _RecentValues(60_000)   # (chat, id) -> [manba, monotonic, push_keyi
 _deleted_counted = _RecentKeys(60_000)
 _recent_arrival_ids: dict[int, deque] = {}
 _max_seen_id: dict[int, int] = {}
+# (ega, chat, id) -> boshqa akkaunt push'i orqali yetkazilgan vaqt (monotonic)
+_shared_at = _RecentValues(100_000)
 
 
 def _new_measure() -> dict:
@@ -1452,7 +1498,15 @@ def _new_measure() -> dict:
     return {
         "push": [0] * size, "poll": [0] * size, "late_push": [0] * size,
         "deleted_seen": [0] * size, "deleted_missed": 0,
+        "shared": 0, "shared_gain": [0] * size,
     }
+
+
+def _note_own_push_after_share(owner_id, chat_id, message_id) -> None:
+    """Egaga xabar boshqa akkaunt orqali yetgan bo'lsa, o'z push'i qancha kech keldi."""
+    shared = _shared_at.pop((owner_id, chat_id, message_id))
+    if shared is not None:
+        _measure_count("shared_gain", time.monotonic() - shared)
 
 
 _measure_window = _new_measure()
@@ -1548,6 +1602,9 @@ def _measure_line(store: dict, title: str) -> str:
         f" | o'chirilgan: oldin ko'rilgan {sum(store['deleted_seen'])}"
         f" (ko'rilgandan o'chirilguncha: {fmt(store['deleted_seen'])}),"
         f" umuman ko'rilmagan {store['deleted_missed']}"
+        f" | boshqa akkaunt push'i orqali yetkazildi: {store['shared']}"
+        f" (shundan o'z push'i keyin keldi: {sum(store['shared_gain'])} —"
+        f" qancha keyin: {fmt(store['shared_gain'])})"
     )
 
 
@@ -1631,6 +1688,43 @@ def _save_poll_state() -> None:
         os.replace(tmp, _POLL_STATE_PATH)
     except OSError:
         logger.warning("[POLL] holat saqlanmadi")
+
+
+_SHARE_PUSH_ENABLED = os.getenv("SCANNER_SHARE_PUSH", "1").strip() != "0"
+
+
+def _share_push(chat_id: int, message, message_id: int, source_owner: int) -> None:
+    """Bir akkauntga kelgan push'ni guruhning boshqa kuzatuvchilariga darhol beradi.
+
+    Telegram bir guruh xabarini a'zolarga navbat bilan yetkazadi: kimgadir
+    darhol, kimgadir 5–60 s keyin. Birinchi kelgan nusxa hamma uchun
+    ishlatiladi — Telegram'ga qo'shimcha so'rov yuborilmaydi. Faqat
+    superguruhlar: ularda xabar ID si barcha a'zolar uchun bir xil.
+    Xavfsizlik zaxira tekshiruvdagidek: faqat guruhning a'zo egalariga
+    (status=ok), manba akkauntning shaxsiy ko'rinishi (kontakt ismi,
+    telefon) o'tmaydi (``foreign_view``).
+    """
+    if not _SHARE_PUSH_ENABLED or message is None or not message_id:
+        return
+    if not _is_supergroup(chat_id):
+        return
+    now = time.monotonic()
+    for owner_id in sorted(_poll_watchers.get(chat_id, ())):
+        if owner_id == source_owner:
+            continue
+        handler = _handlers.get(owner_id)
+        if handler is None or owner_id not in _clients:
+            continue
+        if _poll_no_access.get((owner_id, chat_id), 0) > now:
+            continue
+        key = (owner_id, chat_id, message_id)
+        if not _seen_messages.add(key):
+            continue
+        _shared_at.put(key, now)
+        _measure_count("shared")
+        task = asyncio.create_task(handler(_PolledEvent(message, source_owner)))
+        _poll_dispatch_tasks.add(task)
+        task.add_done_callback(_poll_dispatch_tasks.discard)
 
 
 def _dispatch_polled(chat_id: int, message, polled_by: int | None = None) -> None:
