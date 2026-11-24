@@ -19,6 +19,7 @@ ko'rsatib, qaysi bosqichda to'xtaganini aytadi.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from config import ADMIN_ID
@@ -81,6 +82,27 @@ class Verdict:
 
 def _fmt(words) -> str:
     return ", ".join(words) if words else "—"
+
+
+# Bitta xabar bir necha marta baholanadi: guruhni kuzatayotgan har bir
+# ega uchun, push va zaxira orqali, tahrirda. Kalit so'zlar va shart
+# o'zgarmagan bo'lsa natija bir xil — qayta hisoblanmaydi. Kalit
+# (matn, kalitlar, shart) bo'yicha: ro'yxat o'zgarsa natija yangidan olinadi.
+_RESULT_CACHE_MAX = 2048
+_result_cache: OrderedDict = OrderedDict()
+
+
+def _cached_result(key, compute):
+    """Natija faqat o'qiladi (chaqiruvchilar nusxa oladi), shuning uchun ulashiladi."""
+    value = _result_cache.get(key)
+    if value is not None:
+        _result_cache.move_to_end(key)
+        return value
+    value = compute()
+    _result_cache[key] = value
+    if len(_result_cache) > _RESULT_CACHE_MAX:
+        _result_cache.popitem(last=False)
+    return value
 
 
 def evaluate(
@@ -202,8 +224,9 @@ def _evaluate_with_connection(
     strict_words = [
         word for word, _weight, strict in get_keywords_weighted(conn=conn) if strict
     ]
-    result = match_keywords(
-        text, keywords, required, strict_words=strict_words
+    result = _cached_result(
+        ("count", text, tuple(keywords), required, tuple(strict_words)),
+        lambda: match_keywords(text, keywords, required, strict_words=strict_words),
     )
     verdict.matched = list(result.matched_words)
     if result.matched_count < required:
@@ -243,7 +266,10 @@ def _evaluate_weighted(owner_id, text, verdict, stages, add, finish, conn) -> Ve
     verdict.total_keywords = len(entries)
     if not entries:
         return finish("keywords", "ro'yxat bo'sh — admin kalit so'z kiritmagan")
-    result = score_text(text, entries, threshold)
+    result = _cached_result(
+        ("weight", text, tuple(entries), threshold),
+        lambda: score_text(text, entries, threshold),
+    )
     verdict.score = result.score
     verdict.positives = dict(result.positives)
     verdict.negatives = dict(result.negatives)
