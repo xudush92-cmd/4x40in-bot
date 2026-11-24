@@ -15,6 +15,7 @@ from collections import OrderedDict, deque
 
 from telethon import TelegramClient, events, utils, __version__ as TELETHON_VERSION
 from telethon.errors import FloodWaitError
+from telethon.extensions import html as telethon_html
 from telethon.sessions import StringSession
 from telethon.errors import (
     ChannelInvalidError,
@@ -27,6 +28,8 @@ from telethon.tl.types import (
     ChannelForbidden,
     Chat,
     ChatForbidden,
+    InputMessageEntityMentionName,
+    MessageEntityTextUrl,
     MessageService,
     PeerChannel,
     PeerUser,
@@ -649,6 +652,92 @@ def _public_sender_view(sender):
     )
 
 
+# --- Topilgan mijozni egasining "Saved Messages"iga saqlash ---
+# Guruh boti xabarni o'chirsa, bot bildirishnomasidagi "asl xabar"
+# havolasi ishlamay qoladi, username'siz mijozning profil havolasini esa
+# Bot API ko'pincha rad etadi. Egasining o'z akkaunti mijozni guruh
+# xabaridan taniydi: Saved Messages'ga bosiladigan nom (mention) va asl
+# xabarning forward nusxasi yuboriladi — xabar o'chsa ham mijoz topiladi.
+_SAVED_COPY_ENABLED = os.getenv("SCANNER_SAVED_MESSAGES", "1").strip() != "0"
+_SAVED_TEXT_LIMIT = 3000
+
+
+async def _owner_input_user(client, sender, sender_id, foreign_view):
+    """Egasining akkaunti uchun yaroqli InputUser (access_hash akkauntga xos)."""
+    if not sender_id:
+        return None
+    if not foreign_view and isinstance(sender, User) and sender.id == sender_id:
+        if sender.access_hash and not getattr(sender, "min", False):
+            return utils.get_input_user(sender)
+    try:
+        return utils.get_input_user(await client.get_input_entity(PeerUser(sender_id)))
+    except Exception:
+        return None
+
+
+def _saved_card(*, group_title, sender_name, username, sender_id, phone,
+                raw_text, message_link, protected, input_user):
+    """Saved Messages kartochkasi: (matn, entity'lar)."""
+    esc = html.escape
+    lines = [
+        "🚕 <b>MIJOZ TOPILDI</b>" + (" 🔒" if protected else ""),
+        f"📍 {esc(group_title or 'Nomaʼlum guruh')}",
+    ]
+    name = esc(sender_name or "Mijoz")
+    if sender_id:
+        lines.append(f'👤 <a href="tg://user?id={int(sender_id)}">{name}</a>'
+                     + (f" ({esc(username)})" if username else ""))
+        lines.append(f"🆔 <code>{int(sender_id)}</code>")
+    else:
+        lines.append(f"👤 {name}" + (f" ({esc(username)})" if username else ""))
+    if phone:
+        lines.append(f"📞 {esc(phone)}")
+    if raw_text and not protected:
+        text = raw_text if len(raw_text) <= _SAVED_TEXT_LIMIT else raw_text[:_SAVED_TEXT_LIMIT] + "…"
+        lines += ["", f"💬 {esc(text)}"]
+    if message_link:
+        lines += ["", f'🔗 <a href="{esc(message_link, quote=True)}">Guruhdagi xabar</a>']
+    if sender_id and input_user is None:
+        lines.append("ℹ️ Profilni ochib bo'lmadi — ID orqali qidiring.")
+    text, entities = telethon_html.parse("\n".join(lines))
+    out = []
+    for entity in entities:
+        if isinstance(entity, MessageEntityTextUrl) and entity.url.startswith("tg://user?id="):
+            if input_user is not None:
+                out.append(InputMessageEntityMentionName(entity.offset, entity.length, input_user))
+            continue
+        out.append(entity)
+    return text, out
+
+
+async def _save_lead_copy(client, *, chat_id, message_id, protected, sender,
+                          sender_id, foreign_view, **card) -> None:
+    try:
+        if not protected and message_id:
+            # Avval forward: guruh boti xabarni bir necha soniyada o'chirishi mumkin.
+            try:
+                await client.forward_messages("me", message_id, from_peer=chat_id)
+            except Exception as exc:
+                logger.info("[SAVED] forward bo'lmadi: %s", type(exc).__name__)
+        input_user = await _owner_input_user(client, sender, sender_id, foreign_view)
+        text, entities = _saved_card(
+            sender_id=sender_id, protected=protected, input_user=input_user, **card,
+        )
+        await client.send_message("me", text, formatting_entities=entities, link_preview=False)
+        logger.info("[SAVED] kartochka saqlandi chat=%s mention=%s", chat_id, input_user is not None)
+    except Exception as exc:
+        logger.warning("[SAVED] kartochka saqlanmadi: %s", type(exc).__name__)
+
+
+def _spawn_saved_copy(client, **details) -> None:
+    """Bildirishnomani kechiktirmaslik uchun alohida task."""
+    if not _SAVED_COPY_ENABLED or not hasattr(client, "send_message"):
+        return
+    task = asyncio.create_task(_save_lead_copy(client, **details))
+    _side_tasks.add(task)
+    task.add_done_callback(_side_tasks.discard)
+
+
 # A'zolik o'zgarganda (masalan, akkaunt guruhdan chiqarilsa) Telegram
 # UpdateChannel yuboradi — shunda 10 daqiqani kutmay darhol tekshiramiz.
 _MEMBERSHIP_RECHECK_DEBOUNCE = 30
@@ -864,7 +953,7 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             # ma'lumotni ko'rsatamiz. Xabar matnini yoki profilning yashirin
             # telefon raqamini bildirishnomaga ko'chirmaymiz.
             include_details = protected and not protection_unknown
-            sender_name, username = None, None
+            sender_name, username, sender = None, None, None
             # Telethon ma'lumoti entity keshida bo'lmasa get_sender() None qaytarishi
             # mumkin. Eventning sender_id si profil havolasi uchun fallback bo'ladi.
             protected_sender_id = sender_user_id or getattr(event, "sender_id", None)
@@ -917,6 +1006,17 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                 }])
             if not _claim_notification(chat_id, getattr(event, "id", 0) or 0):
                 return
+            if include_details:
+                # Himoyalangan guruh: forward va matn yo'q, faqat mijoz kartochkasi.
+                _spawn_saved_copy(
+                    client, chat_id=chat_id, message_id=getattr(event, "id", 0) or 0,
+                    protected=True, sender=sender, sender_id=sender_user_id,
+                    foreign_view=foreign_view, group_title=group_title,
+                    sender_name=sender_name,
+                    username=f"@{username}" if username else None,
+                    phone=phone if phone and phone != "Matnda ko'rsatilmagan" else None,
+                    raw_text=None, message_link=message_link,
+                )
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
             increment_counter("leads_found")
@@ -994,6 +1094,15 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                           "callback_data": f"bsp:{sender_user_id}"}])
         if not _claim_notification(chat_id, getattr(event, "id", 0) or 0):
             return
+        _spawn_saved_copy(
+            client, chat_id=chat_id, message_id=getattr(event, "id", 0) or 0,
+            protected=False, sender=sender, sender_id=sender_user_id,
+            foreign_view=foreign_view, group_title=group_title,
+            sender_name=sender_name if sender_name != "Noma'lum" else None,
+            username=username if username != "Yo'q" else None,
+            phone=phone if phone != "Matnda ko'rsatilmagan" else None,
+            raw_text=raw_text, message_link=message_link,
+        )
         # Fikr-mulohaza statistikasi; vaznni faqat admin baholashi o'zgartiradi.
         review_id = save_lead_review(owner_id, verdict.matched)
         if review_id:
