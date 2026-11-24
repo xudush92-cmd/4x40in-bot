@@ -121,24 +121,31 @@ class GroupActionTests(unittest.IsolatedAsyncioTestCase):
         render.assert_awaited_once()
         cb.answer.assert_awaited_once()
 
-    async def test_ask_does_not_delete(self):
+    async def test_list_button_deletes_in_one_tap(self):
+        _, keyboard = bot._group_list_page([group(4)], 0)
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, 'ugl:delete:4:0')
+        # Eski xabarlardagi "ask" tugmasi ham tasdiqlashsiz o'chiradi.
         cb = callback('ugl:ask:4:0')
-        with patch.object(bot, 'get_user_group', return_value=group(4)), patch.object(bot, 'delete_user_group') as delete:
-            await bot.group_list_action(cb, SimpleNamespace(get_data=AsyncMock(return_value={})))
-        delete.assert_not_called()
-        markup = cb.message.edit_text.await_args.kwargs['reply_markup']
-        self.assertEqual(markup.inline_keyboard[0][0].callback_data, 'ugl:delete:4:0')
-
-    async def test_confirm_owner_delete_and_refresh(self):
-        cb = callback('ugl:delete:4:0')
-        with patch.object(bot, 'get_user_group', return_value=group(4)), patch.object(bot, 'delete_user_group') as delete, patch.object(bot, 'get_user_groups', return_value=[]):
+        with patch.object(bot, 'get_user_group', return_value=group(4)), \
+             patch.object(bot, 'delete_user_group_all', return_value=1) as delete, \
+             patch.object(bot, 'get_user_groups', return_value=[]):
             await bot.group_list_action(cb, SimpleNamespace(get_data=AsyncMock(return_value={})))
         delete.assert_called_once_with(4, 777)
+
+    async def test_owner_delete_and_refresh(self):
+        cb = callback('ugl:delete:4:0')
+        with patch.object(bot, 'get_user_group', return_value=group(4)), \
+             patch.object(bot, 'delete_user_group_all', return_value=1) as delete, \
+             patch.object(bot, 'get_user_groups', return_value=[]):
+            await bot.group_list_action(cb, SimpleNamespace(get_data=AsyncMock(return_value={})))
+        delete.assert_called_once_with(4, 777)
+        self.assertIn("O'chirildi", cb.answer.await_args.args[0])
         self.assertIn("bo'sh", cb.message.edit_text.await_args.args[0])
 
     async def test_cannot_delete_another_users_group(self):
         cb = callback('ugl:delete:4:0')
-        with patch.object(bot, 'get_user_group', return_value=group(4, owner=888)), patch.object(bot, 'delete_user_group') as delete:
+        with patch.object(bot, 'get_user_group', return_value=group(4, owner=888)), \
+             patch.object(bot, 'delete_user_group_all') as delete:
             await bot.group_list_action(cb, SimpleNamespace(get_data=AsyncMock(return_value={})))
         delete.assert_not_called()
         self.assertTrue(cb.answer.await_args.kwargs['show_alert'])
@@ -158,7 +165,7 @@ class GroupActionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bad_callback_does_not_delete(self):
         cb = callback('ugl:delete:bad:0')
-        with patch.object(bot, 'delete_user_group') as delete:
+        with patch.object(bot, 'delete_user_group_all') as delete:
             await bot.group_list_action(cb, SimpleNamespace(get_data=AsyncMock(return_value={})))
         delete.assert_not_called()
 

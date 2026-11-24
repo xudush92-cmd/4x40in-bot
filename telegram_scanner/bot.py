@@ -36,7 +36,7 @@ from database import (
     import_phrases,
     keyword_reject_reason,
     delete_user_completely,
-    delete_user_group,
+    delete_user_group_all,
     get_all_phrases_with_id,
     get_all_user_groups,
     get_lead_review as db_get_lead_review,
@@ -1496,11 +1496,17 @@ def _group_list_page(groups, page, links=None):
             'pending': '⏳', 'left': '🚪', 'duplicate': '🔁', 'error': '⚠️'
         }.get(status, '⚠️')
         lines.append(f"{index}. {icon} <b>{html.escape(name)}</b>\n   🔗 {display}")
-        buttons.append([InlineKeyboardButton(text=f"🗑 {index}. {_short_text(name, 38)}", callback_data=f"ugl:ask:{gid}:{page}")])
+        # Bitta bosishda o'chadi (tasdiqlashsiz). Muammoli guruhda holatni
+        # ko'rish va qayta tekshirish uchun yonida ℹ️ tugmasi qoladi.
+        row_buttons = [InlineKeyboardButton(text=f"🗑 {index}. {_short_text(name, 38)}",
+                                            callback_data=f"ugl:delete:{gid}:{page}")]
+        if status not in {'ok', 'duplicate'}:
+            row_buttons.append(InlineKeyboardButton(text="ℹ️", callback_data=f"ugl:info:{gid}:{page}"))
+        buttons.append(row_buttons)
     if not groups:
         lines.append("Guruhlar ro'yxati bo'sh.")
     lines.extend(["", "✅ Faol · ⏳ Tekshirilmoqda · ⚠️ Xato · 🚪 A'zolik yo'q · 🔁 Takror · ⏸ Faol emas",
-                  "Umumiy skaner holati alohida. 🗑 raqamini bosing — tasdiqlash yoki holatni ko'rish mumkin."])
+                  "Umumiy skaner holati alohida. 🗑 tugmasini bosing — guruh darhol o'chadi."])
     if links is None:
         lines.append("⚠️ Joriy havolalar olinmadi; ko'rsatilgan saqlangan manzillar tekshirilmagan.")
     else:
@@ -1538,48 +1544,67 @@ async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Noto'g'ri amal.", show_alert=True)
         return
     if action == 'add':
-        await callback.answer()
+        await _answer_quietly(callback)
         await _show_account_groups(callback.message, uid, state)
         return
     if action == 'page':
+        await _answer_quietly(callback)
         links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
         text, markup = _group_list_page(get_user_groups(uid), page, links)
-        await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
-                                         disable_web_page_preview=True)
-        await callback.answer()
+        await _edit_quietly(callback.message, text, parse_mode='HTML', reply_markup=markup,
+                            disable_web_page_preview=True)
         return
     row = _find_user_group(uid, gid)
     if not row:
         await callback.answer("Guruh topilmadi yoki sizniki emas.", show_alert=True)
         return
-    if action == 'ask':
-        name = _short_text(row[4] or ('@' + _public_group_username(row[2]) if _public_group_username(row[2]) else f'Guruh #{gid}'), 70)
-        markup = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🗑 Ha, o'chirish", callback_data=f"ugl:delete:{gid}:{page}"),
-            InlineKeyboardButton(text="↩️ Bekor qilish", callback_data=f"ugl:page:{page}"),
-        ], [InlineKeyboardButton(text="ℹ️ Holat", callback_data=f"ugl:info:{gid}:{page}")]])
-        await callback.message.edit_text(f"🗑 <b>{html.escape(name)}</b> guruhini ro'yxatdan o'chirasizmi?",
-                                         parse_mode='HTML', reply_markup=markup)
-    elif action == 'info':
+    # Avval amal bajariladi va tugmaga darhol javob beriladi, keyin xabar
+    # yangilanadi: tugma "aylanib" qolmaydi, yangilash xatosi amalni buzmaydi.
+    if action in {'delete', 'ask'}:
+        # 'ask' — eski xabarlardagi tugma: endi u ham tasdiqlashsiz o'chiradi.
+        name = _short_text(row[4] or ('@' + _public_group_username(row[2]) if _public_group_username(row[2]) else f'Guruh #{gid}'), 60)
+        delete_user_group_all(gid, uid)
+        await _answer_quietly(callback, f"🗑 O'chirildi: {name}")
+    elif action == 'retry':
+        requeue_user_group(gid)
+        await _answer_quietly(callback, "Tekshiruvga qo'yildi")
+    else:
+        await _answer_quietly(callback)
+    if action == 'info':
         buttons = []
         if row[6] not in {'ok', 'duplicate'}:
             buttons.append([InlineKeyboardButton(text="🔄 Qayta tekshirish", callback_data=f"ugl:retry:{gid}:{page}")])
+        buttons.append([InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"ugl:delete:{gid}:{page}")])
         buttons.append([InlineKeyboardButton(text="↩️ Ro'yxatga", callback_data=f"ugl:page:{page}")])
-        await callback.message.edit_text(_user_group_text(row), parse_mode='HTML',
-                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    elif action == 'retry':
-        requeue_user_group(gid)
-        links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
-        text, markup = _group_list_page(get_user_groups(uid), page, links)
-        await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
-                                         disable_web_page_preview=True)
-    elif action == 'delete':
-        delete_user_group(gid, uid)
-        links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
-        text, markup = _group_list_page(get_user_groups(uid), page, links)
-        await callback.message.edit_text(text, parse_mode='HTML', reply_markup=markup,
-                                         disable_web_page_preview=True)
-    await callback.answer("O'chirildi" if action == 'delete' else "Tekshiruvga qo'yildi" if action == 'retry' else "")
+        await _edit_quietly(callback.message, _user_group_text(row), parse_mode='HTML',
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        return
+    links = (await state.get_data()).get(GROUP_LIST_LINKS_KEY)
+    text, markup = _group_list_page(get_user_groups(uid), page, links)
+    await _edit_quietly(callback.message, text, parse_mode='HTML', reply_markup=markup,
+                        disable_web_page_preview=True)
+
+
+async def _answer_quietly(callback: types.CallbackQuery, text: str = "") -> None:
+    """Tugmaga javob; kech qolgan javob ("query is too old") amalni buzmaydi."""
+    try:
+        await callback.answer(text)
+    except TelegramBadRequest as exc:
+        logger.info("Tugma javobi yuborilmadi: %s", exc)
+
+
+async def _edit_quietly(message, text: str, **kwargs) -> None:
+    """Xabarni yangilaydi; matn o'zgarmagan bo'lsa jim o'tadi.
+
+    Eski xabarni tahrirlab bo'lmasa, yangi xabar sifatida yuboriladi.
+    """
+    try:
+        await message.edit_text(text, **kwargs)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return
+        logger.warning("Xabarni yangilab bo'lmadi, yangisi yuboriladi: %s", exc)
+        await message.answer(text, **kwargs)
 
 
 @dp.callback_query(F.data.startswith("ugdel:"))
@@ -1595,13 +1620,14 @@ async def user_group_delete(callback: types.CallbackQuery):
         await callback.answer("Bu guruh sizniki emas.", show_alert=True)
         return
     name = row[4] or row[2]
-    delete_user_group(gid, uid)
-    await callback.message.edit_text(
+    delete_user_group_all(gid, uid)
+    await _answer_quietly(callback, "O'chirildi")
+    await _edit_quietly(
+        callback.message,
         f"🗑 Guruh o'chirildi: <b>{html.escape(str(name))}</b>\n"
         "Endi bu guruhdan sizga xabar kelmaydi.",
         parse_mode="HTML",
     )
-    await callback.answer("O'chirildi")
 
 
 @dp.callback_query(F.data.startswith("ugrecheck:"))
