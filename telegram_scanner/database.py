@@ -1072,6 +1072,35 @@ def delete_user_group(group_id: int, owner_user_id: int | None = None) -> None:
             )
 
 
+def delete_user_group_all(group_id: int, owner_user_id: int) -> int:
+    """Egasining shu guruhga tegishli BARCHA qatorlarini o'chiradi.
+
+    Bir guruh username va ID bilan ikki marta qo'shilgan bo'lsa, ikki qator
+    bo'ladi; bittasini o'chirish guruhni kuzatuvdan chiqarmasdi. O'chirilgan
+    qatorlar soni qaytariladi (0 — qator topilmadi yoki egasiniki emas).
+    """
+    with closing(_connect()) as conn, conn:
+        # Ikki bosqich: bitta DELETE ichidagi sub-so'rov o'chirilayotgan
+        # qatorni qayta o'qib, natija qatorlar tartibiga bog'liq bo'lardi.
+        row = conn.execute(
+            "SELECT chat_id FROM user_groups WHERE id = ? AND owner_user_id = ?",
+            (group_id, owner_user_id),
+        ).fetchone()
+        if row is None:
+            return 0
+        if row[0] is None:
+            cur = conn.execute(
+                "DELETE FROM user_groups WHERE id = ? AND owner_user_id = ?",
+                (group_id, owner_user_id),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM user_groups WHERE owner_user_id = ? AND (id = ? OR chat_id = ?)",
+                (owner_user_id, group_id, row[0]),
+            )
+        return cur.rowcount
+
+
 def toggle_user_group(group_id: int, owner_user_id: int, status: int) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute(
