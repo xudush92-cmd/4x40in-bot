@@ -12,7 +12,9 @@ aralashtirib yuborardi.
 
 Fayl ``userbot.py`` deb nomlanmagan, chunki endi bu userbot emas.
 """
+import asyncio
 import html
+import json
 import logging
 import re
 
@@ -21,6 +23,76 @@ import aiohttp
 from config import ADMIN_ID, BOT_TOKEN
 
 logger = logging.getLogger(__name__)
+
+# --- Ishonchli yetkazish ---
+# Bitta doimiy HTTP sessiya (har xabarda yangi TCP/TLS ulanish ochilmaydi).
+# Tarmoq xatosi, 5xx yoki 429 bo'lsa qayta urinadi: 429 da Telegram
+# aytgan ``retry_after`` kutiladi. Bir vaqtda yuborishlar soni cheklangan —
+# qolganlari navbatda kutadi va Bot API limitini oshirib yubormaydi.
+_SEND_ATTEMPTS = 6            # 1 + 5 qayta urinish (~31 s gacha)
+_MAX_RETRY_AFTER = 60.0
+_SEND_CONCURRENCY = 20
+_API_TIMEOUT_SECONDS = 15
+_session = None
+_session_loop = None
+_send_slots: asyncio.Semaphore | None = None
+
+
+def _get_session():
+    global _session, _session_loop, _send_slots
+    loop = asyncio.get_running_loop()
+    if (
+        _session is None
+        or _session_loop is not loop
+        or getattr(_session, "closed", False)
+    ):
+        _session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=_API_TIMEOUT_SECONDS)
+        )
+        _session_loop = loop
+        _send_slots = asyncio.Semaphore(_SEND_CONCURRENCY)
+    return _session
+
+
+def _retry_after(body: str) -> float:
+    """429 javobidagi ``parameters.retry_after`` (sekund)."""
+    try:
+        value = json.loads(body).get("parameters", {}).get("retry_after")
+        return min(_MAX_RETRY_AFTER, max(1.0, float(value)))
+    except (ValueError, TypeError, AttributeError):
+        return 1.0
+
+
+async def _post(session, url, payload) -> tuple[int | None, str]:
+    """Bitta sendMessage; vaqtinchalik xatolarda qayta urinadi.
+
+    Qaytaradi: (HTTP status yoki tarmoq xatosida None, javob matni).
+    """
+    status, body = None, ""
+    for attempt in range(_SEND_ATTEMPTS):
+        try:
+            async with session.post(url, json=payload) as resp:
+                status, body = resp.status, await resp.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            status, body = None, type(exc).__name__
+        if status == 429:
+            delay = _retry_after(body)
+        elif status is None or status >= 500:
+            delay = min(16.0, 2.0 ** attempt)
+        else:
+            return status, body
+        if attempt + 1 >= _SEND_ATTEMPTS:
+            break
+        logger.warning(
+            "[NOTIFY] vaqtinchalik xato (%s), %.0f s dan keyin qayta urinish %s/%s",
+            status or body, delay, attempt + 1, _SEND_ATTEMPTS - 1,
+        )
+        await asyncio.sleep(delay)
+    return status, body
+
+
+def _is_transient(status: int | None) -> bool:
+    return status is None or status == 429 or status >= 500
 
 # O'zbekiston telefon raqamini topish uchun regex
 PHONE_REGEX = re.compile(
@@ -62,7 +134,8 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
 
     chat_id berilmasa — ADMIN_ID (tizim xabarlari faqat adminga).
     Asosiy yuborish xato bersa (tugma/HTML sababli), bildirishnoma
-    yo'qolmasligi uchun oddiy matn bilan qayta yuboriladi.
+    yo'qolmasligi uchun oddiy matn bilan qayta yuboriladi. Tarmoq xatosi,
+    5xx va 429 da esa o'sha xabar o'zi qayta yuboriladi (``_post``).
     """
     target = chat_id or ADMIN_ID
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -76,14 +149,21 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
         payload["reply_markup"] = reply_markup
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as resp:
-                body = await resp.text()
-                if resp.status == 200:
-                    logger.info("[NOTIFY] Yuborildi (chat_id=%s)", target)
-                    return True
-                logger.warning("[NOTIFY] Bot API xatosi (%s): %s", resp.status, body)
-                rejected_status = resp.status
+        session = _get_session()
+        async with _send_slots:
+            status, body = await _post(session, url, payload)
+            if status == 200:
+                logger.info("[NOTIFY] Yuborildi (chat_id=%s)", target)
+                return True
+            logger.warning("[NOTIFY] Bot API xatosi (%s): %s", status, body)
+            # Qayta urinishlardan keyin ham tarmoq/limit xatosi yoki bot
+            # bloklangan (403) bo'lsa, matnni o'zgartirish yordam bermaydi.
+            if _is_transient(status) or status == 403:
+                logger.error(
+                    "[NOTIFY] Yuborilmadi (chat_id=%s, status=%s)", target, status,
+                )
+                return False
+            rejected_status = status
             # Telegram botga noma'lum user ID mention yoki URLni rad etishi
             # mumkin. Aniq 400 da faqat ID havolani olib, boshqa tugma va
             # asl xabar havolasini saqlab qayta yuboramiz.
@@ -95,11 +175,11 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
                 }
                 if safe_markup:
                     safe_payload["reply_markup"] = safe_markup
-                async with session.post(url, json=safe_payload) as safe_resp:
-                    if safe_resp.status == 200:
-                        logger.info("[NOTIFY] ID havolasiz zaxira yuborildi")
-                        return True
-                    logger.warning("[NOTIFY] ID havolasiz zaxira xatosi (%s)", safe_resp.status)
+                safe_status, _ = await _post(session, url, safe_payload)
+                if safe_status == 200:
+                    logger.info("[NOTIFY] ID havolasiz zaxira yuborildi")
+                    return True
+                logger.warning("[NOTIFY] ID havolasiz zaxira xatosi (%s)", safe_status)
             # Avval inline tugmalarsiz, lekin HTML havolalarini saqlab yuboramiz.
             # Reply markupdagi bitta yaroqsiz URL butun klaviaturani yo'qotmasin.
             html_fallback = {
@@ -108,27 +188,21 @@ async def send_to_bot_api(text, reply_markup=None, chat_id=None) -> bool:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             }
-            async with session.post(url, json=html_fallback) as resp2:
-                if resp2.status == 200:
-                    logger.info("[NOTIFY] HTML havolali zaxira xabar yuborildi")
-                    return True
-                logger.warning(
-                    "[NOTIFY] HTML zaxira xatosi (%s): %s",
-                    resp2.status, await resp2.text(),
-                )
+            status2, body2 = await _post(session, url, html_fallback)
+            if status2 == 200:
+                logger.info("[NOTIFY] HTML havolali zaxira xabar yuborildi")
+                return True
+            logger.warning("[NOTIFY] HTML zaxira xatosi (%s): %s", status2, body2)
 
             # Oxirgi zaxira: HTMLsiz oddiy matn.
             plain = re.sub(r"<[^>]+>", "", text)
-            async with session.post(
-                url, json={"chat_id": target, "text": plain}
-            ) as resp3:
-                if resp3.status == 200:
-                    logger.info("[NOTIFY] Oddiy matnli zaxira yuborildi")
-                    return True
-                logger.error(
-                    "[NOTIFY] Zaxira ham yuborilmadi (%s): %s",
-                    resp3.status, await resp3.text(),
-                )
+            status3, body3 = await _post(
+                session, url, {"chat_id": target, "text": plain}
+            )
+            if status3 == 200:
+                logger.info("[NOTIFY] Oddiy matnli zaxira yuborildi")
+                return True
+            logger.error("[NOTIFY] Zaxira ham yuborilmadi (%s): %s", status3, body3)
     except Exception:
         logger.exception("[NOTIFY] Yuborishda tarmoq xatosi")
     return False

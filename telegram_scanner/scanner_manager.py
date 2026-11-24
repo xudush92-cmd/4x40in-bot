@@ -7,15 +7,35 @@ xabar topilsa FAQAT egasiga boradi. Kalitlar va shart — adminniki (global).
 import asyncio
 import datetime
 import html
+import json
 import logging
+import os
 import time
+from collections import OrderedDict
 
 from telethon import TelegramClient, events, utils, __version__ as TELETHON_VERSION
+from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel, Chat, PeerUser, User
+from telethon.errors import (
+    ChannelInvalidError,
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+    ChatForbiddenError,
+)
+from telethon.tl.types import (
+    Channel,
+    ChannelForbidden,
+    Chat,
+    ChatForbidden,
+    PeerChannel,
+    PeerUser,
+    UpdateChannel,
+    User,
+)
 
-from config import ADMIN_ID, API_HASH, API_ID
+from config import ADMIN_ID, API_HASH, API_ID, BASE_DIR
 from database import (
+    get_active_chat_watchers,
     get_all_users_full,
     is_sender_blocked,
     save_lead_review,
@@ -138,6 +158,23 @@ def online_user_ids() -> list[int]:
     return [uid for uid, client in _clients.items() if client.is_connected()]
 
 
+def _is_active_member(entity) -> bool:
+    """Akkaunt shu guruhning haqiqiy a'zosimi (dialogdagi entity bo'yicha).
+
+    Telethon ban qilingan (ChannelForbidden), chiqib ketilgan (left) yoki
+    superguruhga ko'chgan/o'chirilgan (deactivated) guruhlarni ham dialog
+    sifatida qaytaradi — ular a'zolik hisoblanmaydi.
+    """
+    if entity is None or isinstance(entity, (ChannelForbidden, ChatForbidden)):
+        return False
+    if getattr(entity, "left", False) or getattr(entity, "deactivated", False):
+        return False
+    if getattr(entity, "migrated_to", None) is not None:
+        return False
+    rights = getattr(entity, "banned_rights", None)
+    return not (rights is not None and getattr(rights, "view_messages", False))
+
+
 async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
     """Bir egaga parallel ravishda bir nechta guruh resolve qilishni oldini oladi."""
     if owner_id in _resolving_owner_groups:
@@ -227,6 +264,13 @@ async def _resolve_owner_groups_once(owner_id: int, client: TelegramClient) -> N
                     prev_status,
                 )
                 continue
+        if not _is_active_member(entity):
+            await _fail(
+                gid, value,
+                "akkauntingiz bu guruhdan chiqqan yoki chiqarilgan (ban)",
+                prev_status,
+            )
+            continue
         if isinstance(entity, Chat) or (
             isinstance(entity, Channel) and entity.megagroup
         ):
@@ -333,7 +377,8 @@ async def _audit_owner_group_membership(
         checked_ids.add(chat_id)
         same_chat = [item for item in tracked if item[3] == chat_id]
         entity = dialog_by_id.get(chat_id)
-        if status == "ok" and entity is None:
+        member = _is_active_member(entity)
+        if status == "ok" and not member:
             changed = False
             for item in same_chat:
                 if item[6] == "ok":
@@ -341,14 +386,14 @@ async def _audit_owner_group_membership(
             if changed:
                 title = old_title or "Guruh"
                 await send_to_bot_api(
-                    "⚠️ <b>Guruhdan chiqib ketilgani aniqlandi</b>\n\n"
+                    "⚠️ <b>Guruhdan chiqib ketilgani yoki chiqarilgani aniqlandi</b>\n\n"
                     f"👥 {html.escape(title, quote=False)}\n"
                     "Bu guruhdan yangi xabarlar kuzatilmaydi. Guruh yozuvi "
                     "o'chirilmadi; akkaunt qayta a'zo bo'lsa, kuzatuv avtomatik tiklanadi.",
                     chat_id=owner_id,
                 )
                 logger.info("[GROUP] owner=%s a'zolik yo'qoldi chat=%s", owner_id, chat_id)
-        elif status == "left" and entity is not None:
+        elif status == "left" and member:
             title = getattr(entity, "title", "") or old_title or "Guruh"
             changed = False
             for item in same_chat:
@@ -383,6 +428,8 @@ async def list_user_dialogs(owner_id: int, limit: int | None = None):
     out = []
     for d in dialogs:
         entity = d.entity
+        if not _is_active_member(entity):
+            continue
         if isinstance(entity, Chat) or (
             isinstance(entity, Channel) and entity.megagroup
         ):
@@ -520,7 +567,119 @@ def _log_skip(owner_id: int, chat_id, verdict) -> None:
     )
 
 
+class _RecentKeys:
+    """Oxirgi N ta kalitni eslab qoladigan cheklangan to'plam (LRU)."""
+
+    def __init__(self, limit: int):
+        self._keys: OrderedDict = OrderedDict()
+        self._limit = limit
+
+    def __contains__(self, key) -> bool:
+        return key in self._keys
+
+    def add(self, key) -> bool:
+        """Yangi bo'lsa qo'shadi va True; avval bor bo'lsa False."""
+        if key in self._keys:
+            return False
+        self._keys[key] = None
+        if len(self._keys) > self._limit:
+            self._keys.popitem(last=False)
+        return True
+
+
+# (owner, chat, message_id): push yoki zaxira tekshiruv orqali allaqachon
+# ko'rilgan xabarlar. Zaxira tekshiruv shu xabarlarni qayta ishlamaydi.
+_seen_messages = _RecentKeys(200_000)
+# Har bir egasining ishlovchisi — zaxira tekshiruv topgan xabarni shu
+# egasining filtri va bildirishnomasidan o'tkazish uchun.
+_handlers: dict[int, object] = {}
+
+
+class _PolledEvent:
+    """``get_messages()`` natijasini NewMessage eventi kabi ko'rsatadi.
+
+    ``polled_by`` — xabarni olgan akkaunt (u egasidan farq qilishi mumkin).
+    """
+
+    def __init__(self, message, polled_by: int | None = None):
+        self.message = message
+        self.polled_by = polled_by
+
+    def __getattr__(self, name):
+        return getattr(self.message, name)
+
+
+def _public_sender_view(sender):
+    """Boshqa akkaunt orqali olingan yuboruvchidan faqat ommaviy ma'lumot.
+
+    Telegram kontakt uchun akkaunt egasi saqlagan ismni va unga ko'rinadigan
+    telefonni qaytaradi — ular boshqa egaga o'tmasligi kerak. Username va
+    ID ommaviy, ular qoladi.
+    """
+    if not isinstance(sender, User):
+        return sender
+    private_names = bool(
+        getattr(sender, "contact", False) or getattr(sender, "mutual_contact", False)
+    )
+    return User(
+        id=sender.id,
+        username=getattr(sender, "username", None),
+        first_name=None if private_names else getattr(sender, "first_name", None),
+        last_name=None if private_names else getattr(sender, "last_name", None),
+        bot=getattr(sender, "bot", None),
+    )
+
+
+# A'zolik o'zgarganda (masalan, akkaunt guruhdan chiqarilsa) Telegram
+# UpdateChannel yuboradi — shunda 10 daqiqani kutmay darhol tekshiramiz.
+_MEMBERSHIP_RECHECK_DEBOUNCE = 30
+_membership_recheck_at: dict[int, float] = {}
+_side_tasks: set = set()
+
+
+def _request_membership_audit(owner_id: int) -> None:
+    now = time.monotonic()
+    last = _membership_recheck_at.get(owner_id)
+    if last is not None and now - last < _MEMBERSHIP_RECHECK_DEBOUNCE:
+        return
+    client = _clients.get(owner_id)
+    if client is None:
+        return
+    _membership_recheck_at[owner_id] = now
+
+    async def _run():
+        await asyncio.sleep(2)  # Telegram dialoglarni yangilab ulgursin
+        if _clients.get(owner_id) is client:
+            try:
+                await _audit_owner_group_membership(owner_id, client)
+            except Exception:
+                logger.warning("[GROUP] tezkor a'zolik tekshiruvi xato owner=%s", owner_id)
+
+    task = asyncio.create_task(_run())
+    _side_tasks.add(task)
+    task.add_done_callback(_side_tasks.discard)
+
+
 def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | None = None):
+    # Bir xabar push, zaxira tekshiruv va tahrir orqali bir necha marta
+    # kelishi mumkin; egasiga bildirishnoma esa faqat bir marta boradi.
+    notified = _RecentKeys(50_000)
+
+    def _claim_notification(chat_id, message_id) -> bool:
+        return notified.add((chat_id, message_id))
+
+    @client.on(events.Raw(UpdateChannel))
+    async def _membership_changed(update):
+        if ready is not None and not ready.is_set():
+            return
+        try:
+            chat_id = utils.get_peer_id(PeerChannel(update.channel_id))
+        except Exception:
+            return
+        if owner_id in _poll_watchers.get(chat_id, ()):
+            _request_membership_audit(owner_id)
+
+    @client.on(events.MessageEdited)
     @client.on(events.NewMessage)
     async def _handler(event):
         handler_started = time.monotonic()
@@ -548,6 +707,12 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             return
         if chat_id is None or chat_id > 0:
             return
+        if chat_id in _poll_watchers:
+            # Zaxira tekshiruv bu xabarni qayta ishlamasligi uchun.
+            _seen_messages.add((owner_id, chat_id, getattr(event, "id", 0) or 0))
+        # Zaxira xabarni boshqa akkaunt olgan bo'lsa, uning shaxsiy
+        # ko'rinishi (kontakt ismi, telefon) egaga o'tmaydi.
+        foreign_view = getattr(event, "polled_by", owner_id) not in (None, owner_id)
         raw_text = initial_text
         message = getattr(event, "message", None)
         trace = scan_delay_diagnostics.begin_trace(
@@ -625,7 +790,8 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
 
         if chat is None:
             try:
-                chat = await event.get_chat()
+                # Update bilan kelgan entity — tarmoq so'rovisiz, darhol.
+                chat = getattr(event, "chat", None) or await event.get_chat()
                 if chat is None:
                     protection_unknown = True
                 else:
@@ -651,7 +817,9 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             protected_sender_id = sender_user_id or getattr(event, "sender_id", None)
             if include_details:
                 try:
-                    sender = await event.get_sender()
+                    sender = getattr(event, "sender", None) or await event.get_sender()
+                    if foreign_view:
+                        sender = _public_sender_view(sender)
                     if sender is not None:
                         sender_name = (
                             f"{getattr(sender, 'first_name', '') or ''} "
@@ -694,6 +862,8 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                     "text": "🚫 Shu odamni bloklash",
                     "callback_data": f"bsp:{sender_user_id}",
                 }])
+            if not _claim_notification(chat_id, getattr(event, "id", 0) or 0):
+                return
             increment_user_counter(owner_id, "leads_found")
             set_user_last_found(owner_id)
             increment_counter("leads_found")
@@ -720,7 +890,11 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
                 owner_id, event.chat_id, len(verdict.matched), verdict.required,
             )
 
-        sender = await event.get_sender()
+        # Update bilan kelgan yuboruvchi — tarmoq so'rovisiz va xabar
+        # o'chirilgan bo'lsa ham saqlanib qoladi. Yo'q bo'lsagina so'raymiz.
+        sender = getattr(event, "sender", None) or await event.get_sender()
+        if foreign_view:
+            sender = _public_sender_view(sender)
         sender_name, username, user_id = "Noma'lum", "Yo'q", getattr(sender, "id", None)
         if sender is not None:
             sender_name = (
@@ -765,6 +939,8 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
         if sender_user_id and sender_user_id != owner_id:
             rows.append([{"text": "🚫 Shu odamni bloklash",
                           "callback_data": f"bsp:{sender_user_id}"}])
+        if not _claim_notification(chat_id, getattr(event, "id", 0) or 0):
+            return
         # Fikr-mulohaza statistikasi; vaznni faqat admin baholashi o'zgartiradi.
         review_id = save_lead_review(owner_id, verdict.matched)
         if review_id:
@@ -882,7 +1058,7 @@ async def _start_user_client(owner_id: int) -> bool:
     client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
     instrument_telethon_client(client, owner_id)
     ready = asyncio.Event()
-    _make_handler(owner_id, client, ready=ready)
+    handler = _make_handler(owner_id, client, ready=ready)
     try:
         await client.connect()
         if not await client.is_user_authorized():
@@ -908,6 +1084,7 @@ async def _start_user_client(owner_id: int) -> bool:
         await _notify_session_problem(owner_id, invalid=False)
         return False
     _clients[owner_id] = client
+    _handlers[owner_id] = handler
     _start_error.pop(owner_id, None)
     set_session_status(owner_id, "active")
     ready.set()
@@ -938,6 +1115,7 @@ async def restart_user_client(owner_id: int) -> bool:
 
 async def stop_user_client(owner_id: int, revoke: bool = False) -> None:
     client = _clients.pop(owner_id, None)
+    _handlers.pop(owner_id, None)
     _last_group_membership_audit.pop(owner_id, None)
     if client:
         try:
@@ -1035,6 +1213,280 @@ async def _sync_loop():
         await asyncio.sleep(60)
 
 
+# --- Zaxira tekshiruv (polling) ---
+# Telegram ba'zan superguruh xabarini push qilmaydi yoki kechiktiradi;
+# Telethon bo'shliqni ancha keyin to'ldiradi va bu orada guruh boti
+# xabarni o'chirib ulgurgan bo'ladi. Shuning uchun har bir kuzatuvdagi
+# superguruhning yangi xabarlari qisqa oraliqda so'rab turiladi.
+#
+# Bir guruhni o'nlab foydalanuvchi kuzatsa ham, uni faqat BITTA akkaunt
+# so'raydi (yuklama a'zo akkauntlar orasida teng bo'linadi), topilgan xabar
+# esa shu guruhni kuzatayotgan har bir egasining filtridan o'tadi. Ega
+# guruhning o'zi a'zosi (status=ok), shuning uchun begona ma'lumot o'tmaydi.
+
+
+def _env_float(name: str, default: float, low: float, high: float) -> float:
+    try:
+        value = float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+    return min(high, max(low, value))
+
+
+_POLL_ENABLED = os.getenv("SCANNER_POLL_ENABLED", "1").strip() != "0"
+# Bitta guruh shu oraliqdan tez-tez so'ralmaydi.
+_POLL_INTERVAL = _env_float("SCANNER_POLL_INTERVAL_SECONDS", 10.0, 3.0, 300.0)
+# Bitta akkaunt so'rovlari orasidagi minimal pauza (FloodWait'dan himoya).
+_POLL_GAP = _env_float("SCANNER_POLL_ACCOUNT_GAP_SECONDS", 1.0, 0.5, 10.0)
+_POLL_BATCH = 100
+# Shundan eski xabarlar zaxira orqali yuborilmaydi (restartdan keyin ham).
+_POLL_MAX_AGE = 15 * 60
+_POLL_PLAN_SECONDS = 10
+_POLL_REWARM_SECONDS = 10 * 60
+_POLL_STATE_PATH = BASE_DIR / "poll_state.json"
+
+_poll_last: dict[int, int] = {}            # chat -> oxirgi ko'rilgan message_id
+_poll_plan: dict[int, list[int]] = {}      # akkaunt -> u so'raydigan guruhlar
+_poll_assignee: dict[int, int] = {}        # guruh -> so'rovchi akkaunt
+_poll_watchers: dict[int, set[int]] = {}   # guruh -> kuzatuvchi egalar
+_poll_workers: dict[int, asyncio.Task] = {}
+_poll_paused_until: dict[int, float] = {}  # akkaunt -> FloodWait tugashi
+# (akkaunt, guruh) -> shu vaqtgacha bu akkaunt guruhni so'ramaydi
+_poll_chat_backoff: dict[tuple[int, int], float] = {}
+# (ega, guruh) -> guruhga kirish yo'q (ban/chiqarilgan): zaxira xabar
+# bu egaga yuborilmaydi, a'zolik tekshiruvi holatni yangilaguncha.
+_poll_no_access: dict[tuple[int, int], float] = {}
+_POLL_NO_ACCESS_SECONDS = 10 * 60
+_POLL_ACCESS_ERRORS = (
+    ChannelPrivateError, ChannelInvalidError, ChatForbiddenError,
+    ChatAdminRequiredError,
+)
+_poll_need_warm: set[int] = set()
+_poll_dispatch_tasks: set = set()
+_poll_stats = {"recovered": 0}
+
+
+def _client_connected(client) -> bool:
+    try:
+        return bool(client.is_connected())
+    except Exception:
+        return False
+
+
+def _is_supergroup(chat_id: int) -> bool:
+    # Oddiy guruhda message_id har akkauntda alohida — umumiy so'rov
+    # ishlamaydi; ular push orqali kuzatiladi.
+    return str(chat_id).startswith("-100")
+
+
+def _build_poll_plan(watchers: dict[int, set[int]], online: set[int]):
+    """Guruhlarni a'zo onlayn akkauntlar orasida teng taqsimlaydi.
+
+    Oldingi so'rovchi yuklamasi me'yorda bo'lsa o'zgarmaydi (keshlangan
+    entity va oqim barqaror qoladi).
+    """
+    now = time.monotonic()
+    load = dict.fromkeys(online, 0)
+    plan: dict[int, list[int]] = {uid: [] for uid in online}
+    assignee: dict[int, int] = {}
+    chats = [chat for chat in watchers if _is_supergroup(chat)]
+    # Kam nomzodli guruhlar birinchi: ularning tanlovi cheklangan.
+    chats.sort(key=lambda chat: (len(watchers[chat] & online), chat))
+    for chat_id in chats:
+        # Xato bergan akkaunt vaqtincha so'rovchi bo'lmaydi — guruh
+        # boshqa a'zoga o'tadi va kuzatuv to'xtab qolmaydi.
+        candidates = [
+            uid for uid in sorted(watchers[chat_id] & online)
+            if _poll_chat_backoff.get((uid, chat_id), 0) <= now
+        ]
+        if not candidates:
+            continue
+        best = min(candidates, key=lambda uid: (load[uid], uid))
+        previous = _poll_assignee.get(chat_id)
+        pick = (
+            previous
+            if previous in candidates and load[previous] <= load[best] + 1
+            else best
+        )
+        plan[pick].append(chat_id)
+        load[pick] += 1
+        assignee[chat_id] = pick
+    return plan, assignee
+
+
+def _load_poll_state() -> None:
+    """Restartdan oldingi holat: qisqa to'xtashdagi xabarlar ham topiladi."""
+    try:
+        data = json.loads(_POLL_STATE_PATH.read_text(encoding="utf-8"))
+        if time.time() - float(data.get("saved_at", 0)) > _POLL_MAX_AGE:
+            return
+        for chat_id, message_id in (data.get("last") or {}).items():
+            _poll_last.setdefault(int(chat_id), int(message_id))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return
+
+
+def _save_poll_state() -> None:
+    try:
+        tmp = _POLL_STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"saved_at": int(time.time()), "last": _poll_last}),
+            encoding="utf-8",
+        )
+        os.replace(tmp, _POLL_STATE_PATH)
+    except OSError:
+        logger.warning("[POLL] holat saqlanmadi")
+
+
+def _dispatch_polled(chat_id: int, message, polled_by: int | None = None) -> None:
+    """Zaxira topgan xabarni push ko'rmagan har bir kuzatuvchiga beradi."""
+    now = time.monotonic()
+    for owner_id in sorted(_poll_watchers.get(chat_id, ())):
+        handler = _handlers.get(owner_id)
+        if handler is None or owner_id not in _clients:
+            continue
+        if _poll_no_access.get((owner_id, chat_id), 0) > now:
+            continue
+        if not _seen_messages.add((owner_id, chat_id, message.id)):
+            continue
+        _poll_stats["recovered"] += 1
+        logger.info(
+            "[POLL] push kelmagan xabar zaxiradan olindi owner=%s chat=%s msg=%s",
+            owner_id, chat_id, message.id,
+        )
+        task = asyncio.create_task(handler(_PolledEvent(message, polled_by)))
+        _poll_dispatch_tasks.add(task)
+        task.add_done_callback(_poll_dispatch_tasks.discard)
+
+
+async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
+    key = (owner_id, chat_id)
+    if _poll_chat_backoff.get(key, 0) > time.monotonic():
+        return
+    last = _poll_last.get(chat_id)
+    try:
+        entity = await client.get_input_entity(chat_id)
+        if last is None:
+            # Birinchi marta: faqat boshlang'ich nuqta, eski xabarlar emas.
+            latest = await client.get_messages(entity, limit=1)
+            _poll_last.setdefault(chat_id, latest[0].id if latest else 0)
+            return
+        messages = await client.get_messages(entity, limit=_POLL_BATCH, min_id=last)
+    except FloodWaitError as exc:
+        _poll_paused_until[owner_id] = time.monotonic() + exc.seconds + 1
+        logger.warning(
+            "[POLL] FloodWait owner=%s %ss — guruhlari boshqa akkauntlarga o'tadi",
+            owner_id, exc.seconds,
+        )
+        return
+    except _POLL_ACCESS_ERRORS as exc:
+        # Akkaunt guruhga kira olmaydi (ban/chiqarilgan): unga zaxira xabar
+        # yuborilmaydi, guruh boshqa a'zoga o'tadi, a'zolik darhol tekshiriladi.
+        until = time.monotonic() + _POLL_NO_ACCESS_SECONDS
+        _poll_chat_backoff[key] = until
+        _poll_no_access[key] = until
+        logger.warning(
+            "[POLL] owner=%s chat=%s guruhga kirish yo'q: %s",
+            owner_id, chat_id, type(exc).__name__,
+        )
+        _request_membership_audit(owner_id)
+        return
+    except ValueError:
+        # Entity sessiya keshida yo'q — dialoglar qayta yuklanadi.
+        _poll_need_warm.add(owner_id)
+        _poll_chat_backoff[key] = time.monotonic() + 60
+        return
+    except Exception as exc:
+        _poll_chat_backoff[key] = time.monotonic() + 300
+        logger.warning(
+            "[POLL] owner=%s chat=%s so'rov xato: %s",
+            owner_id, chat_id, type(exc).__name__,
+        )
+        return
+    if not messages:
+        return
+    newest = max(message.id for message in messages)
+    _poll_last[chat_id] = max(_poll_last.get(chat_id, 0), newest)
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        seconds=_POLL_MAX_AGE
+    )
+    for message in sorted(messages, key=lambda item: item.id):
+        if message.id <= last or getattr(message, "action", None) is not None:
+            continue
+        date = getattr(message, "date", None)
+        if date is not None and date < cutoff:
+            continue
+        _dispatch_polled(chat_id, message, polled_by=owner_id)
+
+
+async def _poll_worker(owner_id: int) -> None:
+    """Bitta akkaunt: o'ziga biriktirilgan guruhlarni navbat bilan so'raydi."""
+    warmed_client = None
+    warmed_at = 0.0
+    while True:
+        client = _clients.get(owner_id)
+        chats = list(_poll_plan.get(owner_id, ()))
+        if client is None or not chats or not _client_connected(client):
+            return
+        now = time.monotonic()
+        if warmed_client is not client or (
+            owner_id in _poll_need_warm and now - warmed_at >= _POLL_REWARM_SECONDS
+        ):
+            # Guruh entity'lari (access_hash) keshga tushishi uchun.
+            try:
+                await client.get_dialogs(limit=None)
+            except FloodWaitError as exc:
+                _poll_paused_until[owner_id] = time.monotonic() + exc.seconds + 1
+                return
+            except Exception:
+                logger.warning("[POLL] dialoglar yuklanmadi owner=%s", owner_id)
+            warmed_client, warmed_at = client, time.monotonic()
+            _poll_need_warm.discard(owner_id)
+        cycle_started = time.monotonic()
+        for chat_id in chats:
+            if _clients.get(owner_id) is not client or not _client_connected(client):
+                return
+            if _poll_paused_until.get(owner_id, 0) > time.monotonic():
+                return
+            started = time.monotonic()
+            await _poll_chat(owner_id, client, chat_id)
+            await asyncio.sleep(max(0.0, _POLL_GAP - (time.monotonic() - started)))
+        rest = _POLL_INTERVAL - (time.monotonic() - cycle_started)
+        if rest > 0:
+            await asyncio.sleep(rest)
+
+
+async def _poll_supervisor() -> None:
+    global _poll_plan, _poll_assignee, _poll_watchers
+    if not _POLL_ENABLED:
+        logger.info("[POLL] zaxira tekshiruv o'chirilgan (SCANNER_POLL_ENABLED=0)")
+        return
+    _load_poll_state()
+    logger.info(
+        "[POLL] zaxira tekshiruv yoqildi: guruh oralig'i>=%ss, akkaunt pauzasi=%ss",
+        _POLL_INTERVAL, _POLL_GAP,
+    )
+    while True:
+        try:
+            now = time.monotonic()
+            online = {
+                uid for uid, client in _clients.items()
+                if _client_connected(client)
+                and _poll_paused_until.get(uid, 0) <= now
+            }
+            watchers = get_active_chat_watchers()
+            _poll_plan, _poll_assignee = _build_poll_plan(watchers, online)
+            _poll_watchers = watchers
+            for uid, chats in _poll_plan.items():
+                worker = _poll_workers.get(uid)
+                if chats and (worker is None or worker.done()):
+                    _poll_workers[uid] = asyncio.create_task(_poll_worker(uid))
+            _save_poll_state()
+        except Exception:
+            logger.exception("[POLL] supervisor xato")
+        await asyncio.sleep(_POLL_PLAN_SECONDS)
+
+
 async def _send_expiry_warnings(bot_send=send_to_bot_api):
     """Bugungi ogohlantirishni faqat muvaffaqiyatli yuborilganda qayd etadi."""
     from database import get_expiring_users
@@ -1092,6 +1544,7 @@ def start_background() -> None:
     _tasks.append(asyncio.create_task(_expiry_warning_loop()))
     _tasks.append(asyncio.create_task(_event_loop_lag_loop()))
     _tasks.append(asyncio.create_task(_session_health_loop()))
+    _tasks.append(asyncio.create_task(_poll_supervisor()))
 
 
 async def run():

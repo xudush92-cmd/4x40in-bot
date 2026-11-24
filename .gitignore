@@ -71,3 +71,5 @@ telegram_scanner/*.db
 telegram_scanner/*.session
 telegram_scanner/*.session-journal
 telegram_scanner/diagnostics/
+telegram_scanner/poll_state.json
+telegram_scanner/poll_state.tmp
