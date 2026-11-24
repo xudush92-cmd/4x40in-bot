@@ -141,6 +141,7 @@ _PERSON_SUFFIXES = (
 )
 
 
+@lru_cache(maxsize=16384)
 def _verb_parts(word: str) -> tuple[str, int | None, str]:
     """So'zni o'zak, shaxs va zamonga ajratadi.
 
@@ -232,6 +233,11 @@ def _common_prefix_len(a: str, b: str) -> int:
     return n
 
 
+# Quyidagi solishtirish funksiyalari SOF (natija faqat argumentlarga
+# bog'liq), shuning uchun natijalari keshlanadi. Guruhlarda bir xil
+# so'zlar qayta-qayta keladi: kesh bo'lmasa har xabarda har bir kalit
+# difflib bilan qaytadan solishtirilib, CPU to'lib qolardi.
+@lru_cache(maxsize=32768)
 def _word_matches(
     key_word: str,
     message_word: str,
@@ -330,12 +336,25 @@ def _word_matches_single(
     ):
         return True
     # kichik yozuv xatolari: toshkent ~ toshket
-    if (
-        min(len(key_word), len(message_word)) >= 5
-        and SequenceMatcher(None, key_word, message_word).ratio() >= 0.85
+    if min(len(key_word), len(message_word)) >= 5 and _similar_enough(
+        key_word, message_word, 0.85
     ):
         return True
     return False
+
+
+def _similar_enough(a: str, b: str, threshold: float) -> bool:
+    """``SequenceMatcher(None, a, b).ratio() >= threshold`` bilan aynan bir xil.
+
+    ``real_quick_ratio`` (uzunlik bo'yicha) va ``quick_ratio`` (harflar
+    bo'yicha) — ``ratio`` ning hujjatlashtirilgan yuqori chegaralari:
+    ular chegaradan past bo'lsa, ``ratio`` ham past, qimmat hisob kerak emas.
+    """
+    total = len(a) + len(b)
+    if not total or 2.0 * min(len(a), len(b)) / total < threshold:
+        return False
+    matcher = SequenceMatcher(None, a, b)
+    return matcher.quick_ratio() >= threshold and matcher.ratio() >= threshold
 
 
 # --- Tez qidiruv indekslari ---
@@ -434,6 +453,7 @@ def _most_specific_for_token(matched_keys, token: str) -> list[str]:
     return selected
 
 
+@lru_cache(maxsize=8192)
 def _weighted_token_similarity(key: str, token: str) -> float:
     """Imlo mosliklari ichida kalitning xabar tokeniga yaqinligini baholaydi."""
     return max(
@@ -811,6 +831,7 @@ def find_client_words(message_text, client_words) -> list[str]:
 _NEG_FUZZY_MIN = 4  # manfiy yozuv o'zak bo'lib xizmat qilishi uchun
 
 
+@lru_cache(maxsize=32768)
 def _same_word(a: str, b: str) -> bool:
     """Ikki so'z bir xilmi (alifbo va apostrof farqi hisobsiz)."""
     for x in _fold_variants(a):
@@ -845,6 +866,7 @@ def _one_diff(a: str, b: str) -> bool:
     return diff == 1
 
 
+@lru_cache(maxsize=32768)
 def _strict_word_match(key: str, token: str) -> bool:
     """Qat'iy moslik: aynan teng yoki qo'shimchali shakl.
 

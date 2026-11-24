@@ -587,6 +587,23 @@ class _RecentKeys:
         return True
 
 
+class _RecentValues:
+    """Oxirgi N ta kalit -> qiymat (LRU)."""
+
+    def __init__(self, limit: int):
+        self._items: OrderedDict = OrderedDict()
+        self._limit = limit
+
+    def get(self, key):
+        return self._items.get(key)
+
+    def put(self, key, value) -> None:
+        self._items[key] = value
+        self._items.move_to_end(key)
+        if len(self._items) > self._limit:
+            self._items.popitem(last=False)
+
+
 # (owner, chat, message_id): push yoki zaxira tekshiruv orqali allaqachon
 # ko'rilgan xabarlar. Zaxira tekshiruv shu xabarlarni qayta ishlamaydi.
 _seen_messages = _RecentKeys(200_000)
@@ -664,6 +681,9 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
     # Bir xabar push, zaxira tekshiruv va tahrir orqali bir necha marta
     # kelishi mumkin; egasiga bildirishnoma esa faqat bir marta boradi.
     notified = _RecentKeys(50_000)
+    # (chat, message_id) -> tekshirilgan matn xeshi: tahrirda matn
+    # o'zgarmagan bo'lsa, xabar qayta tekshirilmaydi.
+    seen_texts = _RecentValues(50_000)
 
     def _claim_notification(chat_id, message_id) -> bool:
         return notified.add((chat_id, message_id))
@@ -691,6 +711,15 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
         chat_id = getattr(event, "chat_id", None)
         is_private = bool(getattr(event, "is_private", False))
         initial_text = event.raw_text or ""
+        text_key = (chat_id, getattr(event, "id", 0) or 0)
+        if isinstance(event, events.MessageEdited.Event):
+            # Ko'rinmas tahrir (reaksiya, ko'rishlar, havola ko'rinishi)
+            # yoki matni o'zgarmagan tahrir qayta tekshirilmaydi.
+            if getattr(getattr(event, "message", None), "edit_hide", False):
+                return
+            if seen_texts.get(text_key) == hash(initial_text):
+                return
+        seen_texts.put(text_key, hash(initial_text))
         _note_event(owner_id, is_private, chat_id, "")
         if not is_private:
             # Har bir guruh xabari logga tushadi: "kelmayapti" deganda
@@ -1239,6 +1268,8 @@ _POLL_INTERVAL = _env_float("SCANNER_POLL_INTERVAL_SECONDS", 10.0, 3.0, 300.0)
 # Bitta akkaunt so'rovlari orasidagi minimal pauza (FloodWait'dan himoya).
 _POLL_GAP = _env_float("SCANNER_POLL_ACCOUNT_GAP_SECONDS", 1.0, 0.5, 10.0)
 _POLL_BATCH = 100
+_POLL_PEEK = 10            # odatiy so'rov: oxirgi 10 ta xabar
+_POLL_DISPATCH_GRACE = 5   # sekund: push'ga ulgurish uchun
 # Shundan eski xabarlar zaxira orqali yuborilmaydi (restartdan keyin ham).
 _POLL_MAX_AGE = 15 * 60
 _POLL_PLAN_SECONDS = 10
@@ -1371,7 +1402,12 @@ async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
             latest = await client.get_messages(entity, limit=1)
             _poll_last.setdefault(chat_id, latest[0].id if latest else 0)
             return
-        messages = await client.get_messages(entity, limit=_POLL_BATCH, min_id=last)
+        # Telethon min_id ni serverga yubormaydi: oxirgi ``limit`` ta xabarni
+        # yuklab, o'zi filtrlaydi. Shuning uchun avval oz so'raymiz; hammasi
+        # yangi bo'lsagina (ko'proq bo'lishi mumkin) to'liq partiya olinadi.
+        messages = await client.get_messages(entity, limit=_POLL_PEEK, min_id=last)
+        if len(messages) >= _POLL_PEEK:
+            messages = await client.get_messages(entity, limit=_POLL_BATCH, min_id=last)
     except FloodWaitError as exc:
         _poll_paused_until[owner_id] = time.monotonic() + exc.seconds + 1
         logger.warning(
@@ -1410,13 +1446,33 @@ async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
         seconds=_POLL_MAX_AGE
     )
+    fresh = []
     for message in sorted(messages, key=lambda item: item.id):
         if message.id <= last or getattr(message, "action", None) is not None:
             continue
         date = getattr(message, "date", None)
         if date is not None and date < cutoff:
             continue
-        _dispatch_polled(chat_id, message, polled_by=owner_id)
+        fresh.append(message)
+    if fresh:
+        _schedule_polled_dispatch(chat_id, fresh, owner_id)
+
+
+def _schedule_polled_dispatch(chat_id: int, messages, polled_by: int) -> None:
+    """Push'ga ulgurish vaqti beriladi: faqat u ko'rmagan xabarlar ishlanadi.
+
+    Odatda push xabarni 1 soniya ichida yetkazadi. Zaxira uni darhol
+    ishlasa, bir xabar ikki marta tekshirilardi (CPU sarfi, yolg'on
+    "push kelmagan" yozuvlari).
+    """
+    async def _later():
+        await asyncio.sleep(_POLL_DISPATCH_GRACE)
+        for message in messages:
+            _dispatch_polled(chat_id, message, polled_by=polled_by)
+
+    task = asyncio.create_task(_later())
+    _poll_dispatch_tasks.add(task)
+    task.add_done_callback(_poll_dispatch_tasks.discard)
 
 
 async def _poll_worker(owner_id: int) -> None:
