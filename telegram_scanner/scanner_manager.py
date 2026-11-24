@@ -16,7 +16,22 @@ from collections import OrderedDict
 from telethon import TelegramClient, events, utils, __version__ as TELETHON_VERSION
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel, Chat, PeerUser, User
+from telethon.errors import (
+    ChannelInvalidError,
+    ChannelPrivateError,
+    ChatAdminRequiredError,
+    ChatForbiddenError,
+)
+from telethon.tl.types import (
+    Channel,
+    ChannelForbidden,
+    Chat,
+    ChatForbidden,
+    PeerChannel,
+    PeerUser,
+    UpdateChannel,
+    User,
+)
 
 from config import ADMIN_ID, API_HASH, API_ID, BASE_DIR
 from database import (
@@ -143,6 +158,23 @@ def online_user_ids() -> list[int]:
     return [uid for uid, client in _clients.items() if client.is_connected()]
 
 
+def _is_active_member(entity) -> bool:
+    """Akkaunt shu guruhning haqiqiy a'zosimi (dialogdagi entity bo'yicha).
+
+    Telethon ban qilingan (ChannelForbidden), chiqib ketilgan (left) yoki
+    superguruhga ko'chgan/o'chirilgan (deactivated) guruhlarni ham dialog
+    sifatida qaytaradi — ular a'zolik hisoblanmaydi.
+    """
+    if entity is None or isinstance(entity, (ChannelForbidden, ChatForbidden)):
+        return False
+    if getattr(entity, "left", False) or getattr(entity, "deactivated", False):
+        return False
+    if getattr(entity, "migrated_to", None) is not None:
+        return False
+    rights = getattr(entity, "banned_rights", None)
+    return not (rights is not None and getattr(rights, "view_messages", False))
+
+
 async def _resolve_owner_groups(owner_id: int, client: TelegramClient) -> None:
     """Bir egaga parallel ravishda bir nechta guruh resolve qilishni oldini oladi."""
     if owner_id in _resolving_owner_groups:
@@ -232,6 +264,13 @@ async def _resolve_owner_groups_once(owner_id: int, client: TelegramClient) -> N
                     prev_status,
                 )
                 continue
+        if not _is_active_member(entity):
+            await _fail(
+                gid, value,
+                "akkauntingiz bu guruhdan chiqqan yoki chiqarilgan (ban)",
+                prev_status,
+            )
+            continue
         if isinstance(entity, Chat) or (
             isinstance(entity, Channel) and entity.megagroup
         ):
@@ -338,7 +377,8 @@ async def _audit_owner_group_membership(
         checked_ids.add(chat_id)
         same_chat = [item for item in tracked if item[3] == chat_id]
         entity = dialog_by_id.get(chat_id)
-        if status == "ok" and entity is None:
+        member = _is_active_member(entity)
+        if status == "ok" and not member:
             changed = False
             for item in same_chat:
                 if item[6] == "ok":
@@ -346,14 +386,14 @@ async def _audit_owner_group_membership(
             if changed:
                 title = old_title or "Guruh"
                 await send_to_bot_api(
-                    "⚠️ <b>Guruhdan chiqib ketilgani aniqlandi</b>\n\n"
+                    "⚠️ <b>Guruhdan chiqib ketilgani yoki chiqarilgani aniqlandi</b>\n\n"
                     f"👥 {html.escape(title, quote=False)}\n"
                     "Bu guruhdan yangi xabarlar kuzatilmaydi. Guruh yozuvi "
                     "o'chirilmadi; akkaunt qayta a'zo bo'lsa, kuzatuv avtomatik tiklanadi.",
                     chat_id=owner_id,
                 )
                 logger.info("[GROUP] owner=%s a'zolik yo'qoldi chat=%s", owner_id, chat_id)
-        elif status == "left" and entity is not None:
+        elif status == "left" and member:
             title = getattr(entity, "title", "") or old_title or "Guruh"
             changed = False
             for item in same_chat:
@@ -388,6 +428,8 @@ async def list_user_dialogs(owner_id: int, limit: int | None = None):
     out = []
     for d in dialogs:
         entity = d.entity
+        if not _is_active_member(entity):
+            continue
         if isinstance(entity, Chat) or (
             isinstance(entity, Channel) and entity.megagroup
         ):
@@ -554,13 +596,68 @@ _handlers: dict[int, object] = {}
 
 
 class _PolledEvent:
-    """``get_messages()`` natijasini NewMessage eventi kabi ko'rsatadi."""
+    """``get_messages()`` natijasini NewMessage eventi kabi ko'rsatadi.
 
-    def __init__(self, message):
+    ``polled_by`` — xabarni olgan akkaunt (u egasidan farq qilishi mumkin).
+    """
+
+    def __init__(self, message, polled_by: int | None = None):
         self.message = message
+        self.polled_by = polled_by
 
     def __getattr__(self, name):
         return getattr(self.message, name)
+
+
+def _public_sender_view(sender):
+    """Boshqa akkaunt orqali olingan yuboruvchidan faqat ommaviy ma'lumot.
+
+    Telegram kontakt uchun akkaunt egasi saqlagan ismni va unga ko'rinadigan
+    telefonni qaytaradi — ular boshqa egaga o'tmasligi kerak. Username va
+    ID ommaviy, ular qoladi.
+    """
+    if not isinstance(sender, User):
+        return sender
+    private_names = bool(
+        getattr(sender, "contact", False) or getattr(sender, "mutual_contact", False)
+    )
+    return User(
+        id=sender.id,
+        username=getattr(sender, "username", None),
+        first_name=None if private_names else getattr(sender, "first_name", None),
+        last_name=None if private_names else getattr(sender, "last_name", None),
+        bot=getattr(sender, "bot", None),
+    )
+
+
+# A'zolik o'zgarganda (masalan, akkaunt guruhdan chiqarilsa) Telegram
+# UpdateChannel yuboradi — shunda 10 daqiqani kutmay darhol tekshiramiz.
+_MEMBERSHIP_RECHECK_DEBOUNCE = 30
+_membership_recheck_at: dict[int, float] = {}
+_side_tasks: set = set()
+
+
+def _request_membership_audit(owner_id: int) -> None:
+    now = time.monotonic()
+    last = _membership_recheck_at.get(owner_id)
+    if last is not None and now - last < _MEMBERSHIP_RECHECK_DEBOUNCE:
+        return
+    client = _clients.get(owner_id)
+    if client is None:
+        return
+    _membership_recheck_at[owner_id] = now
+
+    async def _run():
+        await asyncio.sleep(2)  # Telegram dialoglarni yangilab ulgursin
+        if _clients.get(owner_id) is client:
+            try:
+                await _audit_owner_group_membership(owner_id, client)
+            except Exception:
+                logger.warning("[GROUP] tezkor a'zolik tekshiruvi xato owner=%s", owner_id)
+
+    task = asyncio.create_task(_run())
+    _side_tasks.add(task)
+    task.add_done_callback(_side_tasks.discard)
 
 
 def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | None = None):
@@ -570,6 +667,17 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
 
     def _claim_notification(chat_id, message_id) -> bool:
         return notified.add((chat_id, message_id))
+
+    @client.on(events.Raw(UpdateChannel))
+    async def _membership_changed(update):
+        if ready is not None and not ready.is_set():
+            return
+        try:
+            chat_id = utils.get_peer_id(PeerChannel(update.channel_id))
+        except Exception:
+            return
+        if owner_id in _poll_watchers.get(chat_id, ()):
+            _request_membership_audit(owner_id)
 
     @client.on(events.MessageEdited)
     @client.on(events.NewMessage)
@@ -602,6 +710,9 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
         if chat_id in _poll_watchers:
             # Zaxira tekshiruv bu xabarni qayta ishlamasligi uchun.
             _seen_messages.add((owner_id, chat_id, getattr(event, "id", 0) or 0))
+        # Zaxira xabarni boshqa akkaunt olgan bo'lsa, uning shaxsiy
+        # ko'rinishi (kontakt ismi, telefon) egaga o'tmaydi.
+        foreign_view = getattr(event, "polled_by", owner_id) not in (None, owner_id)
         raw_text = initial_text
         message = getattr(event, "message", None)
         trace = scan_delay_diagnostics.begin_trace(
@@ -707,6 +818,8 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
             if include_details:
                 try:
                     sender = getattr(event, "sender", None) or await event.get_sender()
+                    if foreign_view:
+                        sender = _public_sender_view(sender)
                     if sender is not None:
                         sender_name = (
                             f"{getattr(sender, 'first_name', '') or ''} "
@@ -780,6 +893,8 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
         # Update bilan kelgan yuboruvchi — tarmoq so'rovisiz va xabar
         # o'chirilgan bo'lsa ham saqlanib qoladi. Yo'q bo'lsagina so'raymiz.
         sender = getattr(event, "sender", None) or await event.get_sender()
+        if foreign_view:
+            sender = _public_sender_view(sender)
         sender_name, username, user_id = "Noma'lum", "Yo'q", getattr(sender, "id", None)
         if sender is not None:
             sender_name = (
@@ -1136,7 +1251,16 @@ _poll_assignee: dict[int, int] = {}        # guruh -> so'rovchi akkaunt
 _poll_watchers: dict[int, set[int]] = {}   # guruh -> kuzatuvchi egalar
 _poll_workers: dict[int, asyncio.Task] = {}
 _poll_paused_until: dict[int, float] = {}  # akkaunt -> FloodWait tugashi
+# (akkaunt, guruh) -> shu vaqtgacha bu akkaunt guruhni so'ramaydi
 _poll_chat_backoff: dict[tuple[int, int], float] = {}
+# (ega, guruh) -> guruhga kirish yo'q (ban/chiqarilgan): zaxira xabar
+# bu egaga yuborilmaydi, a'zolik tekshiruvi holatni yangilaguncha.
+_poll_no_access: dict[tuple[int, int], float] = {}
+_POLL_NO_ACCESS_SECONDS = 10 * 60
+_POLL_ACCESS_ERRORS = (
+    ChannelPrivateError, ChannelInvalidError, ChatForbiddenError,
+    ChatAdminRequiredError,
+)
 _poll_need_warm: set[int] = set()
 _poll_dispatch_tasks: set = set()
 _poll_stats = {"recovered": 0}
@@ -1161,6 +1285,7 @@ def _build_poll_plan(watchers: dict[int, set[int]], online: set[int]):
     Oldingi so'rovchi yuklamasi me'yorda bo'lsa o'zgarmaydi (keshlangan
     entity va oqim barqaror qoladi).
     """
+    now = time.monotonic()
     load = dict.fromkeys(online, 0)
     plan: dict[int, list[int]] = {uid: [] for uid in online}
     assignee: dict[int, int] = {}
@@ -1168,7 +1293,12 @@ def _build_poll_plan(watchers: dict[int, set[int]], online: set[int]):
     # Kam nomzodli guruhlar birinchi: ularning tanlovi cheklangan.
     chats.sort(key=lambda chat: (len(watchers[chat] & online), chat))
     for chat_id in chats:
-        candidates = sorted(watchers[chat_id] & online)
+        # Xato bergan akkaunt vaqtincha so'rovchi bo'lmaydi — guruh
+        # boshqa a'zoga o'tadi va kuzatuv to'xtab qolmaydi.
+        candidates = [
+            uid for uid in sorted(watchers[chat_id] & online)
+            if _poll_chat_backoff.get((uid, chat_id), 0) <= now
+        ]
         if not candidates:
             continue
         best = min(candidates, key=lambda uid: (load[uid], uid))
@@ -1208,11 +1338,14 @@ def _save_poll_state() -> None:
         logger.warning("[POLL] holat saqlanmadi")
 
 
-def _dispatch_polled(chat_id: int, message) -> None:
+def _dispatch_polled(chat_id: int, message, polled_by: int | None = None) -> None:
     """Zaxira topgan xabarni push ko'rmagan har bir kuzatuvchiga beradi."""
+    now = time.monotonic()
     for owner_id in sorted(_poll_watchers.get(chat_id, ())):
         handler = _handlers.get(owner_id)
         if handler is None or owner_id not in _clients:
+            continue
+        if _poll_no_access.get((owner_id, chat_id), 0) > now:
             continue
         if not _seen_messages.add((owner_id, chat_id, message.id)):
             continue
@@ -1221,7 +1354,7 @@ def _dispatch_polled(chat_id: int, message) -> None:
             "[POLL] push kelmagan xabar zaxiradan olindi owner=%s chat=%s msg=%s",
             owner_id, chat_id, message.id,
         )
-        task = asyncio.create_task(handler(_PolledEvent(message)))
+        task = asyncio.create_task(handler(_PolledEvent(message, polled_by)))
         _poll_dispatch_tasks.add(task)
         task.add_done_callback(_poll_dispatch_tasks.discard)
 
@@ -1245,6 +1378,18 @@ async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
             "[POLL] FloodWait owner=%s %ss — guruhlari boshqa akkauntlarga o'tadi",
             owner_id, exc.seconds,
         )
+        return
+    except _POLL_ACCESS_ERRORS as exc:
+        # Akkaunt guruhga kira olmaydi (ban/chiqarilgan): unga zaxira xabar
+        # yuborilmaydi, guruh boshqa a'zoga o'tadi, a'zolik darhol tekshiriladi.
+        until = time.monotonic() + _POLL_NO_ACCESS_SECONDS
+        _poll_chat_backoff[key] = until
+        _poll_no_access[key] = until
+        logger.warning(
+            "[POLL] owner=%s chat=%s guruhga kirish yo'q: %s",
+            owner_id, chat_id, type(exc).__name__,
+        )
+        _request_membership_audit(owner_id)
         return
     except ValueError:
         # Entity sessiya keshida yo'q — dialoglar qayta yuklanadi.
@@ -1271,7 +1416,7 @@ async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
         date = getattr(message, "date", None)
         if date is not None and date < cutoff:
             continue
-        _dispatch_polled(chat_id, message)
+        _dispatch_polled(chat_id, message, polled_by=owner_id)
 
 
 async def _poll_worker(owner_id: int) -> None:
