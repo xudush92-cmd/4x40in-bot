@@ -34,7 +34,7 @@ from database import (
     get_user_match_count,
     get_user,
     get_user_scanner_enabled,
-    read_connection,
+    cached_read_connection,
 )
 from matcher import match_keywords, score_text
 
@@ -91,8 +91,11 @@ def evaluate(
     chat_id: int | None = None,
     check_group: bool = True,
 ) -> Verdict:
-    """Xabar egasiga yuboriladimi — to'liq zanjir bo'yicha."""
-    with read_connection() as conn:
+    """Xabar egasiga yuboriladimi — to'liq zanjir bo'yicha.
+
+    O'qishlar keshdan beriladi; baza o'zgarsa kesh darhol yangilanadi.
+    """
+    with cached_read_connection() as conn:
         return _evaluate_with_connection(
             owner_id,
             text,

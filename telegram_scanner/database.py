@@ -27,6 +27,98 @@ def read_connection():
         yield conn
 
 
+# --- Skaner uchun tez o'qish keshi ---
+# Har bir guruh xabarida filtr 5-10 ta SELECT bajaradi. Yuzlab guruh va
+# o'nlab akkauntda (bitta xabar har akkauntga alohida keladi) bu event
+# loopni bloklab, topishni kechiktiradi. Kesh SELECT natijalarini xotirada
+# saqlaydi va bazaga ISTALGAN ulanishdan (bot, skaner, boshqa jarayon)
+# yozilganda darhol tozalanadi: buni uzoq yashovchi ulanishdagi
+# ``PRAGMA data_version`` aniqlaydi (boshqa ulanish commit qilsa o'zgaradi).
+_watch_conn: sqlite3.Connection | None = None
+_watch_path: str | None = None
+_read_cache: dict = {}
+_read_cache_marker = None
+_READ_CACHE_MAX = 5000
+
+
+def _change_marker():
+    """Baza o'zgarganini bildiruvchi qiymat; aniqlab bo'lmasa None."""
+    global _watch_conn, _watch_path
+    try:
+        if _watch_conn is None or _watch_path != DB_NAME:
+            if _watch_conn is not None:
+                try:
+                    _watch_conn.close()
+                except sqlite3.Error:
+                    pass
+            _watch_conn = sqlite3.connect(DB_NAME, timeout=10, check_same_thread=False)
+            _watch_path = DB_NAME
+        return (_watch_path, _watch_conn.execute("PRAGMA data_version").fetchone()[0])
+    except sqlite3.Error:
+        _watch_conn = None
+        return None
+
+
+class _CachedResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __iter__(self):
+        return iter(list(self._rows))
+
+
+class _CachingReadConnection:
+    """Faqat SELECT uchun: natijani keshdan beradi, kerak bo'lsagina ulanadi."""
+
+    def __init__(self):
+        self._conn = None
+
+    def execute(self, sql, params=()):
+        key = (sql, tuple(params))
+        rows = _read_cache.get(key)
+        if rows is None:
+            if self._conn is None:
+                self._conn = _connect()
+            rows = tuple(self._conn.execute(sql, params).fetchall())
+            if len(_read_cache) >= _READ_CACHE_MAX:
+                _read_cache.clear()
+            _read_cache[key] = rows
+        return _CachedResult(rows)
+
+    def close(self):
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+
+@contextmanager
+def cached_read_connection():
+    """Skaner filtri uchun keshli o'qish ulanishi (faqat SELECT!).
+
+    Baza o'zgarganini aniqlab bo'lmasa, oddiy ulanishga qaytadi.
+    """
+    global _read_cache_marker
+    marker = _change_marker()
+    if marker is None:
+        with read_connection() as conn:
+            yield conn
+        return
+    if marker != _read_cache_marker:
+        _read_cache.clear()
+        _read_cache_marker = marker
+    conn = _CachingReadConnection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 @contextmanager
 def _connection_scope(conn=None):
     """Berilgan ulanishni qayta ishlatadi yoki mustaqil ulanish ochadi."""
@@ -1085,6 +1177,19 @@ def get_owner_active_chat_ids(owner_user_id: int, *, conn=None) -> list[int]:
             (owner_user_id,),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+def get_active_chat_watchers() -> dict[int, set[int]]:
+    """Kuzatuvdagi har bir guruh -> uni kuzatayotgan egalar to'plami."""
+    with read_connection() as conn:
+        rows = conn.execute(
+            "SELECT chat_id, owner_user_id FROM user_groups WHERE "
+            "status = 'ok' AND is_active = 1 AND chat_id IS NOT NULL"
+        ).fetchall()
+    watchers: dict[int, set[int]] = {}
+    for chat_id, owner_id in rows:
+        watchers.setdefault(chat_id, set()).add(owner_id)
+    return watchers
 
 
 def increment_user_counter(user_id: int, key: str, amount: int = 1) -> None:
