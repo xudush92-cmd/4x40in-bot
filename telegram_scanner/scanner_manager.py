@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 from telethon import TelegramClient, events, utils, __version__ as TELETHON_VERSION
 from telethon.errors import FloodWaitError
@@ -27,9 +27,11 @@ from telethon.tl.types import (
     ChannelForbidden,
     Chat,
     ChatForbidden,
+    MessageService,
     PeerChannel,
     PeerUser,
     UpdateChannel,
+    UpdateNewChannelMessage,
     User,
 )
 
@@ -699,6 +701,28 @@ def _make_handler(owner_id: int, client: TelegramClient, ready: asyncio.Event | 
         if owner_id in _poll_watchers.get(chat_id, ()):
             _request_membership_audit(owner_id)
 
+    # O'lchov: xabar bizga qachon yetdi (servis xabarlar ham — guruh
+    # botlari "qo'shildi" xabarlarini ham o'chiradi) va qachon o'chirildi.
+    @client.on(events.Raw(UpdateNewChannelMessage))
+    async def _measure_arrival(update):
+        if ready is not None and not ready.is_set():
+            return
+        message = getattr(update, "message", None)
+        try:
+            chat_id = utils.get_peer_id(message.peer_id)
+        except Exception:
+            return
+        _note_arrival(
+            chat_id, getattr(message, "id", 0), message, "push",
+            service=isinstance(message, MessageService),
+        )
+
+    @client.on(events.MessageDeleted)
+    async def _measure_deleted(event):
+        if ready is not None and not ready.is_set():
+            return
+        _note_deleted(getattr(event, "chat_id", None), getattr(event, "deleted_ids", None) or ())
+
     @client.on(events.MessageEdited)
     @client.on(events.NewMessage)
     async def _handler(event):
@@ -1297,6 +1321,137 @@ _poll_dispatch_tasks: set = set()
 _poll_stats = {"recovered": 0}
 
 
+# --- O'lchov: push kechikishi va o'chirilgan xabarlar ---
+# Faqat kuzatuvdagi superguruhlar. Har 10 daqiqada logga bitta qator:
+#   * push: xabar yozilganidan bizga yetguncha (Telegram vaqti bo'yicha);
+#   * zaxira birinchi topgan: push'dan oldin zaxira topgan xabar yoshi;
+#   * push zaxiradan keyin keldi: zaxira topgandan keyin push necha s kechikdi;
+#   * o'chirilgan: o'chirilishidan oldin ko'rib ulgurdikmi yoki umuman yo'q.
+# Xabar matni yoki shaxsiy ma'lumot yozilmaydi — faqat sonlar.
+_MEASURE_INTERVAL = 600
+_MEASURE_WINDOW = 15 * 60           # shundan eski xabar o'chirilishi hisoblanmaydi
+_MEASURE_BUCKETS = (1, 5, 15, 60)   # sekund chegaralari
+_MEASURE_LABELS = ("≤1s", "1–5s", "5–15s", "15–60s", ">60s")
+_arrivals = _RecentValues(60_000)   # (chat, id) -> [manba, monotonic, push_keyin]
+_deleted_counted = _RecentKeys(60_000)
+_recent_arrival_ids: dict[int, deque] = {}
+_max_seen_id: dict[int, int] = {}
+
+
+def _new_measure() -> dict:
+    size = len(_MEASURE_LABELS)
+    return {
+        "push": [0] * size, "poll": [0] * size, "late_push": [0] * size,
+        "deleted_seen": [0] * size, "deleted_missed": 0,
+    }
+
+
+_measure_window = _new_measure()
+_measure_total = _new_measure()
+_measure_window_started = time.monotonic()
+
+
+def _measure_bucket(seconds: float) -> int:
+    for index, limit in enumerate(_MEASURE_BUCKETS):
+        if seconds <= limit:
+            return index
+    return len(_MEASURE_BUCKETS)
+
+
+def _measure_count(kind: str, seconds: float | None = None) -> None:
+    for store in (_measure_window, _measure_total):
+        if seconds is None:
+            store[kind] += 1
+        else:
+            store[kind][_measure_bucket(seconds)] += 1
+
+
+def _message_age_seconds(message) -> float | None:
+    date = getattr(message, "date", None)
+    if date is None:
+        return None
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return max(0.0, (now - date).total_seconds())
+    except Exception:
+        return None
+
+
+def _note_arrival(chat_id, message_id, message, source: str, *, service: bool = False) -> None:
+    """Xabar bizga birinchi marta qaysi yo'l bilan va qachon yetganini yozadi."""
+    if not message_id or chat_id not in _poll_watchers:
+        return
+    key = (chat_id, message_id)
+    now = time.monotonic()
+    known = _arrivals.get(key)
+    if known is None:
+        _arrivals.put(key, [source, now, False])
+        ids = _recent_arrival_ids.setdefault(chat_id, deque())
+        ids.append((now, message_id))
+        while ids and now - ids[0][0] > _MEASURE_WINDOW:
+            ids.popleft()
+        if message_id > _max_seen_id.get(chat_id, 0):
+            _max_seen_id[chat_id] = message_id
+        if not service:
+            age = _message_age_seconds(message)
+            if age is not None:
+                _measure_count(source, age)
+    elif source == "push" and known[0] == "poll" and not known[2]:
+        known[2] = True
+        if not service:
+            _measure_count("late_push", now - known[1])
+
+
+def _note_deleted(chat_id, message_ids) -> None:
+    """O'chirilgan xabarni o'chirilishidan oldin ko'rganmidik — sanaydi."""
+    if chat_id is None or chat_id not in _poll_watchers:
+        return
+    now = time.monotonic()
+    ids = _recent_arrival_ids.get(chat_id)
+    while ids and now - ids[0][0] > _MEASURE_WINDOW:
+        ids.popleft()
+    floor = min(mid for _t, mid in ids) if ids else None
+    last_max = _max_seen_id.get(chat_id)
+    for message_id in message_ids:
+        key = (chat_id, message_id)
+        known = _arrivals.get(key)
+        if known is not None and now - known[1] <= _MEASURE_WINDOW:
+            if _deleted_counted.add(key):
+                _measure_count("deleted_seen", now - known[1])
+            continue
+        # Ko'rilmagan, lekin yaqinda yozilgan (oxirgi 15 daqiqada ko'rilgan
+        # xabarlardan yangiroq) — haqiqatan o'tkazib yuborilgan xabar.
+        recent = (floor is not None and message_id >= floor) or (
+            last_max is not None and message_id > last_max
+        )
+        if recent and _deleted_counted.add(key):
+            _measure_count("deleted_missed")
+
+
+def _measure_line(store: dict, title: str) -> str:
+    def fmt(values):
+        return ", ".join(f"{label} {value}" for label, value in zip(_MEASURE_LABELS, values))
+
+    return (
+        f"[MEASURE] {title} | push: {sum(store['push'])} ({fmt(store['push'])})"
+        f" | zaxira birinchi topgan: {sum(store['poll'])} (xabar yoshi: {fmt(store['poll'])})"
+        f" | push zaxiradan keyin keldi: {sum(store['late_push'])} ({fmt(store['late_push'])})"
+        f" | o'chirilgan: oldin ko'rilgan {sum(store['deleted_seen'])}"
+        f" (ko'rilgandan o'chirilguncha: {fmt(store['deleted_seen'])}),"
+        f" umuman ko'rilmagan {store['deleted_missed']}"
+    )
+
+
+def _maybe_log_measure() -> None:
+    global _measure_window, _measure_window_started
+    if time.monotonic() - _measure_window_started < _MEASURE_INTERVAL:
+        return
+    logger.info(_measure_line(_measure_window, "oxirgi 10 daqiqa"))
+    logger.info(_measure_line(_measure_total, "ishga tushgandan beri"))
+    _measure_window = _new_measure()
+    _measure_window_started = time.monotonic()
+
+
 def _client_connected(client) -> bool:
     try:
         return bool(client.is_connected())
@@ -1441,6 +1596,12 @@ async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
         return
     if not messages:
         return
+    for message in messages:
+        if message.id > last:
+            _note_arrival(
+                chat_id, message.id, message, "poll",
+                service=getattr(message, "action", None) is not None,
+            )
     newest = max(message.id for message in messages)
     _poll_last[chat_id] = max(_poll_last.get(chat_id, 0), newest)
     cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
@@ -1538,6 +1699,7 @@ async def _poll_supervisor() -> None:
                 if chats and (worker is None or worker.done()):
                     _poll_workers[uid] = asyncio.create_task(_poll_worker(uid))
             _save_poll_state()
+            _maybe_log_measure()
         except Exception:
             logger.exception("[POLL] supervisor xato")
         await asyncio.sleep(_POLL_PLAN_SECONDS)
