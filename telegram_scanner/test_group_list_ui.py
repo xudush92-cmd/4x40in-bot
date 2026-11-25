@@ -160,7 +160,7 @@ class GroupActionTests(unittest.IsolatedAsyncioTestCase):
         cb = callback('ugl:retry:4:0')
         with patch.object(bot, 'get_user_group', return_value=group(4, status='error')), patch.object(bot, 'requeue_user_group') as retry, patch.object(bot, 'get_user_groups', return_value=[group(4, status='pending')]):
             await bot.group_list_action(cb, SimpleNamespace(get_data=AsyncMock(return_value={})))
-        retry.assert_called_once_with(4)
+        retry.assert_called_once_with(4, 777)
         self.assertIn('⏳', cb.message.edit_text.await_args.args[0])
 
     async def test_bad_callback_does_not_delete(self):

@@ -1566,7 +1566,7 @@ async def group_list_action(callback: types.CallbackQuery, state: FSMContext):
         delete_user_group_all(gid, uid)
         await _answer_quietly(callback, f"🗑 O'chirildi: {name}")
     elif action == 'retry':
-        requeue_user_group(gid)
+        requeue_user_group(gid, uid)
         await _answer_quietly(callback, "Tekshiruvga qo'yildi")
     else:
         await _answer_quietly(callback)
@@ -1641,7 +1641,7 @@ async def user_group_recheck(callback: types.CallbackQuery):
     if not _find_user_group(uid, gid):
         await callback.answer("Bu guruh sizniki emas.", show_alert=True)
         return
-    requeue_user_group(gid)
+    requeue_user_group(gid, uid)
     row = get_user_group(gid)
     if row:
         await callback.message.edit_text(
