@@ -1189,13 +1189,20 @@ def get_user_group_created_at(group_id: int) -> int:
     return int(row[0] or 0) if row else 0
 
 
-def requeue_user_group(group_id: int) -> None:
+def requeue_user_group(group_id: int, owner_user_id: int | None = None) -> None:
     with closing(_connect()) as conn, conn:
-        conn.execute(
-            "UPDATE user_groups SET status = 'pending', last_error = NULL "
-            "WHERE id = ?",
-            (group_id,),
-        )
+        if owner_user_id is None:
+            conn.execute(
+                "UPDATE user_groups SET status = 'pending', last_error = NULL "
+                "WHERE id = ?",
+                (group_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE user_groups SET status = 'pending', last_error = NULL "
+                "WHERE id = ? AND owner_user_id = ?",
+                (group_id, owner_user_id),
+            )
 
 
 def get_owner_active_chat_ids(owner_user_id: int, *, conn=None) -> list[int]:

@@ -7,6 +7,7 @@ xabar topilsa FAQAT egasiga boradi. Kalitlar va shart — adminniki (global).
 import asyncio
 import datetime
 import html
+import itertools
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from telethon import TelegramClient, events, utils, __version__ as TELETHON_VERS
 from telethon.errors import FloodWaitError
 from telethon.extensions import html as telethon_html
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import GetPeerDialogsRequest
 from telethon.errors import (
     ChannelInvalidError,
     ChannelPrivateError,
@@ -28,6 +30,7 @@ from telethon.tl.types import (
     ChannelForbidden,
     Chat,
     ChatForbidden,
+    InputDialogPeer,
     InputMessageEntityMentionName,
     InputUserFromMessage,
     MessageEntityTextUrl,
@@ -220,7 +223,7 @@ async def _resolve_owner_groups_once(owner_id: int, client: TelegramClient) -> N
 
     async def _fail(gid: int, value: str, reason: str, prev: str) -> None:
         mark_user_group_error(gid, reason)
-        logger.info("[GROUP] owner=%s xato: %s -> %s", owner_id, value, reason)
+        logger.info("[GROUP] owner=%s xato: %s -> %s", owner_id, _safe_group_value(value), reason)
         # Xato guruhlar har 60 soniyada qayta tekshiriladi. Faqat birinchi
         # urinishda (pending -> xato) xabar beramiz, aks holda spam bo'ladi.
         if prev != "pending":
@@ -336,7 +339,7 @@ async def _resolve_owner_groups_once(owner_id: int, client: TelegramClient) -> N
                     gid, value, "guruh yozuvini yangilab bo'lmadi", prev_status
                 )
                 continue
-            logger.info("[GROUP] owner=%s ulandi: %s", owner_id, value)
+            logger.info("[GROUP] owner=%s ulandi: %s", owner_id, _safe_group_value(value))
             if prev_status != "ok":
                 await send_to_bot_api(
                     "✅ <b>Guruh ulandi!</b>\n\n"
@@ -1447,6 +1450,17 @@ _POLL_GAP = _env_float("SCANNER_POLL_ACCOUNT_GAP_SECONDS", 1.0, 0.5, 10.0)
 _POLL_BATCH = 100
 _POLL_PEEK = 10            # odatiy so'rov: oxirgi 10 ta xabar
 _POLL_DISPATCH_GRACE = 5   # sekund: push'ga ulgurish uchun
+# Tez usul: bitta so'rov (getPeerDialogs) bilan ko'p guruhning oxirgi
+# xabari olinadi. Shuning uchun har guruh tez-tez tekshiriladi, lekin
+# Telegram'ga so'rovlar soni kam bo'ladi. Bir so'rovga ko'pi bilan 100 guruh.
+_POLL_FAST = os.getenv("SCANNER_POLL_FAST", "1").strip() != "0"
+_POLL_FAST_INTERVAL = _env_float("SCANNER_POLL_FAST_INTERVAL_SECONDS", 3.0, 1.0, 60.0)
+_POLL_FAST_CHUNK = 100
+# Tez usulda ketma-ket FloodWait kelsa, shu akkauntda tez usul vaqtincha
+# o'chadi va oddiy (per-chat) usulga qaytiladi.
+_POLL_FAST_DISABLE_SECONDS = 30 * 60
+_poll_fast_off: dict[int, float] = {}     # akkaunt -> shu vaqtgacha tez usul o'chiq
+_poll_fast_floods: dict[int, int] = {}    # akkaunt -> ketma-ket FloodWait soni
 # Shundan eski xabarlar zaxira orqali yuborilmaydi (restartdan keyin ham).
 _POLL_MAX_AGE = 15 * 60
 _POLL_PLAN_SECONDS = 10
@@ -1631,6 +1645,19 @@ def _is_supergroup(chat_id: int) -> bool:
     return str(chat_id).startswith("-100")
 
 
+def _safe_group_value(value) -> str:
+    """Log uchun: yopiq taklif havolasi (maxfiy) yashiriladi.
+
+    ``t.me/+hash`` yoki ``t.me/joinchat/hash`` — maxfiy, chunki havola
+    kim guruhga kira olishini belgilaydi. ID va @username log uchun xavfsiz.
+    """
+    text = str(value or "")
+    low = text.lower()
+    if "t.me/+" in low or "joinchat/" in low:
+        return "<yopiq taklif havolasi>"
+    return text
+
+
 def _build_poll_plan(watchers: dict[int, set[int]], online: set[int]):
     """Guruhlarni a'zo onlayn akkauntlar orasida teng taqsimlaydi.
 
@@ -1748,6 +1775,134 @@ def _dispatch_polled(chat_id: int, message, polled_by: int | None = None) -> Non
         task.add_done_callback(_poll_dispatch_tasks.discard)
 
 
+def _can_poll(owner_id: int, client) -> bool:
+    return (
+        _clients.get(owner_id) is client
+        and _client_connected(client)
+        and _poll_paused_until.get(owner_id, 0) <= time.monotonic()
+    )
+
+
+def _chunks(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _fast_enabled(owner_id: int) -> bool:
+    return _POLL_FAST and _poll_fast_off.get(owner_id, 0) <= time.monotonic()
+
+
+def _process_peer_dialogs(owner_id: int, client, result, gap_chats: list) -> None:
+    """getPeerDialogs javobini qayta ishlaydi: har guruhning oxirgi xabari.
+
+    Bir guruhda bir necha yangi xabar bo'lsa (bo'shliq), to'liq olish uchun
+    o'sha guruh ``gap_chats`` ga qo'shiladi va oddiy usul bilan to'ldiriladi.
+    """
+    entities = {}
+    for item in itertools.chain(result.users, result.chats):
+        try:
+            entities[utils.get_peer_id(item)] = item
+        except Exception:
+            continue
+    message_by_chat = {}
+    for message in result.messages:
+        try:
+            message._finish_init(client, entities, None)
+            message_by_chat[utils.get_peer_id(message.peer_id)] = message
+        except Exception:
+            continue
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        seconds=_POLL_MAX_AGE
+    )
+    for dialog in result.dialogs:
+        try:
+            chat_id = utils.get_peer_id(dialog.peer)
+        except Exception:
+            continue
+        top = getattr(dialog, "top_message", 0) or 0
+        last = _poll_last.get(chat_id)
+        if last is None:
+            # Birinchi marta: boshlang'ich nuqta, eski xabarlar yuborilmaydi.
+            _poll_last.setdefault(chat_id, top)
+            continue
+        if top <= last:
+            continue
+        if top - last > 1:
+            # Oraliqda bir nechta xabar bo'lishi mumkin — oddiy usul to'ldiradi
+            # (u _poll_last ni ham o'zi yangilaydi).
+            gap_chats.append(chat_id)
+            continue
+        _poll_last[chat_id] = top
+        message = message_by_chat.get(chat_id)
+        if message is None or message.id <= last:
+            continue
+        if getattr(message, "action", None) is not None:
+            _note_arrival(chat_id, message.id, message, "poll", service=True)
+            continue
+        _note_arrival(chat_id, message.id, message, "poll")
+        date = getattr(message, "date", None)
+        if date is not None and date < cutoff:
+            continue
+        _schedule_polled_dispatch(chat_id, [message], owner_id)
+
+
+async def _poll_account_fast(owner_id: int, client, chats: list) -> bool:
+    """Guruhlarni bitta so'rovda (chunklab) tekshiradi.
+
+    Qaytaradi: True — tez usul ishladi; False — getPeerDialogs xato berdi,
+    chaqiruvchi oddiy (per-chat) usulga qaytsin.
+    """
+    gap_chats: list = []
+    for chunk in _chunks(chats, _POLL_FAST_CHUNK):
+        if not _can_poll(owner_id, client):
+            return True
+        input_peers = []
+        for chat_id in chunk:
+            try:
+                input_peers.append(InputDialogPeer(peer=await client.get_input_entity(chat_id)))
+            except ValueError:
+                _poll_need_warm.add(owner_id)
+            except Exception:
+                continue
+        if not input_peers:
+            continue
+        started = time.monotonic()
+        try:
+            result = await client(GetPeerDialogsRequest(peers=input_peers))
+        except FloodWaitError as exc:
+            _poll_paused_until[owner_id] = time.monotonic() + exc.seconds + 1
+            _poll_fast_floods[owner_id] = _poll_fast_floods.get(owner_id, 0) + 1
+            if _poll_fast_floods[owner_id] >= 3:
+                # Ketma-ket FloodWait — tez usul bu akkaunt uchun vaqtincha o'chadi.
+                _poll_fast_off[owner_id] = time.monotonic() + _POLL_FAST_DISABLE_SECONDS
+                logger.warning(
+                    "[POLL] tez usul owner=%s uchun vaqtincha o'chirildi (FloodWait)", owner_id,
+                )
+            else:
+                logger.warning("[POLL] tez usul FloodWait owner=%s %ss", owner_id, exc.seconds)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[POLL] tez so'rov xato owner=%s: %s — oddiy usulga qaytiladi",
+                owner_id, type(exc).__name__,
+            )
+            return False
+        _poll_fast_floods.pop(owner_id, None)
+        try:
+            _process_peer_dialogs(owner_id, client, result, gap_chats)
+        except Exception:
+            logger.warning("[POLL] getPeerDialogs javobini qayta ishlashda xato owner=%s", owner_id)
+        await asyncio.sleep(max(0.0, _POLL_GAP - (time.monotonic() - started)))
+    # Bo'shliqlar (bir guruhda bir nechta yangi xabar) oddiy usul bilan to'ldiriladi.
+    for chat_id in gap_chats:
+        if not _can_poll(owner_id, client):
+            break
+        started = time.monotonic()
+        await _poll_chat(owner_id, client, chat_id)
+        await asyncio.sleep(max(0.0, _POLL_GAP - (time.monotonic() - started)))
+    return True
+
+
 async def _poll_chat(owner_id: int, client, chat_id: int) -> None:
     key = (owner_id, chat_id)
     if _poll_chat_backoff.get(key, 0) > time.monotonic():
@@ -1863,15 +2018,20 @@ async def _poll_worker(owner_id: int) -> None:
             warmed_client, warmed_at = client, time.monotonic()
             _poll_need_warm.discard(owner_id)
         cycle_started = time.monotonic()
-        for chat_id in chats:
-            if _clients.get(owner_id) is not client or not _client_connected(client):
-                return
-            if _poll_paused_until.get(owner_id, 0) > time.monotonic():
-                return
-            started = time.monotonic()
-            await _poll_chat(owner_id, client, chat_id)
-            await asyncio.sleep(max(0.0, _POLL_GAP - (time.monotonic() - started)))
-        rest = _POLL_INTERVAL - (time.monotonic() - cycle_started)
+        fast = _fast_enabled(owner_id)
+        if fast:
+            # Bitta so'rov bilan hamma guruh — tezroq va yengilroq.
+            fast = await _poll_account_fast(owner_id, client, chats)
+        if not fast:
+            # Tez usul o'chiq yoki xato berdi — oddiy (per-chat) usul.
+            for chat_id in chats:
+                if not _can_poll(owner_id, client):
+                    return
+                started = time.monotonic()
+                await _poll_chat(owner_id, client, chat_id)
+                await asyncio.sleep(max(0.0, _POLL_GAP - (time.monotonic() - started)))
+        interval = _POLL_FAST_INTERVAL if _fast_enabled(owner_id) else _POLL_INTERVAL
+        rest = interval - (time.monotonic() - cycle_started)
         if rest > 0:
             await asyncio.sleep(rest)
 
@@ -1882,10 +2042,16 @@ async def _poll_supervisor() -> None:
         logger.info("[POLL] zaxira tekshiruv o'chirilgan (SCANNER_POLL_ENABLED=0)")
         return
     _load_poll_state()
-    logger.info(
-        "[POLL] zaxira tekshiruv yoqildi: guruh oralig'i>=%ss, akkaunt pauzasi=%ss",
-        _POLL_INTERVAL, _POLL_GAP,
-    )
+    if _POLL_FAST:
+        logger.info(
+            "[POLL] zaxira tekshiruv yoqildi (tez usul): oraliq>=%ss, akkaunt pauzasi>=%ss",
+            _POLL_FAST_INTERVAL, _POLL_GAP,
+        )
+    else:
+        logger.info(
+            "[POLL] zaxira tekshiruv yoqildi (oddiy usul): guruh oralig'i>=%ss, akkaunt pauzasi=%ss",
+            _POLL_INTERVAL, _POLL_GAP,
+        )
     while True:
         try:
             now = time.monotonic()
