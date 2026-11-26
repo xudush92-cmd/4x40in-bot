@@ -10,6 +10,14 @@ mijozlarni **o'sha guruh egasiga** yuboradigan tizim: **boshqaruv boti**
 > umumiy ro'yxat** — ularni faqat admin kiritadi (stop-so'zlar va mijoz
 > so'zlari kabi alohida ro'yxatlar yo'q).
 
+Bildirishnomalar faqat foydalanuvchining bot bilan shaxsiy chatiga yuboriladi;
+Telegram Saved Messages'ga nusxa yuborilmaydi. Eski `SCANNER_SAVED_MESSAGES`
+sozlamasi endi ishlatilmaydi. Bot bloklangan bo'lsa yoki Telegram API xatoligi
+yuz bersa, bildirishnoma yetmasligi mumkin. Oddiy bildirishnomada xabar matni va mavjud yuboruvchi ma'lumotlari bor;
+bu forward emas. Asl xabar o'chirilsa, uning havolasi ishlamasligi mumkin.
+Himoyalangan xabar matni ko'chirilmaydi. Username bo'lmagan profil havolasi
+Telegram cheklovlari sababli ishlamasligi mumkin.
+
 ## O'rnatish
 
 ```bash
